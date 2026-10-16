@@ -1,0 +1,61 @@
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { DiffFile, MovedBlock } from '../main/git/diff'
+
+// The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
+const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
+
+const api = {
+  getConfig: () => invoke('config:get'),
+  updateConfig: (patch: unknown) => invoke('config:update', patch),
+  getTree: () => invoke('sources:tree'),
+  pickSources: () => invoke('sources:pick'),
+  pickFolder: () => invoke('folder:pick') as Promise<string | null>,
+  addSources: (paths: string[]) => invoke('sources:add', paths),
+  removeSource: (path: string) => invoke('sources:remove', path),
+  status: (repo: string) => invoke('repo:status', repo),
+  history: (repo: string, skip: number, limit: number) => invoke('repo:history', repo, skip, limit),
+  searchHistory: (repo: string, query: string) => invoke('repo:search', repo, query),
+  commit: (repo: string, hash: string, context: number) => invoke('repo:commit', repo, hash, context),
+  working: (repo: string, staged: boolean, context: number, path?: string) => invoke('repo:working', repo, staged, context, path),
+  stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
+  unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
+  discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),
+  commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
+  branches: (repo: string) => invoke('repo:branches', repo),
+  switchBranch: (repo: string, name: string) => invoke('repo:switch', repo, name),
+  fetch: (repo: string) => invoke('repo:fetch', repo),
+  pull: (repo: string, mode?: 'merge' | 'rebase') => invoke('repo:pull', repo, mode),
+  pullFrom: (repo: string, remote: string, branch: string) => invoke('repo:pull-from', repo, remote, branch),
+  remotes: (repo: string) => invoke('repo:remotes', repo) as Promise<{ name: string; url: string }[]>,
+  resetToUpstream: (repo: string) => invoke('repo:reset-upstream', repo) as Promise<string>,
+  checkoutDetached: (repo: string, hash: string) => invoke('repo:checkout-detached', repo, hash),
+  branchFromCommit: (repo: string, name: string, hash: string) => invoke('repo:branch-from', repo, name, hash),
+  tagFromCommit: (repo: string, name: string, hash: string) => invoke('repo:tag-from', repo, name, hash),
+  cherryPick: (repo: string, hash: string) => invoke('repo:cherry-pick', repo, hash) as Promise<string>,
+  revertCommit: (repo: string, hash: string) => invoke('repo:revert', repo, hash) as Promise<string>,
+  amendMessage: (repo: string, message: string, expectedHash: string) => invoke('repo:amend-message', repo, message, expectedHash),
+  mergeBase: (repo: string, a: string, b: string) => invoke('repo:merge-base', repo, a, b) as Promise<string>,
+  compare: (repo: string, from: string, to: string) =>
+    invoke('repo:compare', repo, from, to) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
+  openExternal: (url: string) => invoke('system:open-url', url),
+  push: (repo: string) => invoke('repo:push', repo),
+  stashes: (repo: string) => invoke('repo:stashes', repo),
+  stash: (repo: string, message: string) => invoke('repo:stash', repo, message),
+  stashAction: (repo: string, action: string, ref: string) => invoke('repo:stash-action', repo, action, ref),
+  backup: (repo: string, label: string) => invoke('repo:backup', repo, label),
+  restore: (repo: string, ref: string) => invoke('repo:restore', repo, ref),
+  clone: (url: string, parent: string) => invoke('clone', url, parent),
+  reveal: (repo: string) => invoke('repo:reveal', repo),
+  // Drag-and-drop gives a File; webUtils turns it into a real path without exposing fs to the page.
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
+  fetchNow: () => invoke('fetch:now'),
+  // Main-process events (file changes, background fetch reports) arrive here; returns an unsubscribe.
+  onEvent: (channel: 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action', listener: (payload: unknown) => void) => {
+    const handler = (_event: unknown, payload: unknown) => listener(payload)
+    ipcRenderer.on(channel, handler)
+    return () => { ipcRenderer.removeListener(channel, handler) }
+  },
+}
+
+contextBridge.exposeInMainWorld('bettergit', api)
+export type BetterGitApi = typeof api

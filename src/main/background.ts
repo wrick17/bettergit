@@ -1,0 +1,71 @@
+import { powerMonitor } from 'electron'
+import { git } from './git/exec'
+import { fetchAll } from './git/ops'
+import { readStatus } from './git/status'
+
+export interface FetchReport {
+  fetched: string[]
+  skipped: { repo: string; reason: string }[]
+  failed: { repo: string; reason: string }[]
+}
+
+interface Options {
+  intervalMinutes: number
+  idleThresholdSeconds: number
+  enabled: boolean
+  repos: () => Promise<string[]>
+  onReport: (report: FetchReport) => void
+}
+
+// Fetches every visible repo on an interval, but only while the user is at the machine.
+// Fetch never pulls or pushes, and it never prompts for credentials, so it cannot block the user.
+export class BackgroundFetcher {
+  private timer: ReturnType<typeof setInterval> | null = null
+  private running = false
+
+  constructor(private options: Options) {}
+
+  start() {
+    this.stop()
+    if (!this.options.enabled) return
+    this.timer = setInterval(() => void this.runOnce(), this.options.intervalMinutes * 60_000)
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer)
+    this.timer = null
+  }
+
+  // Skips the run if a previous one is still going or the user has been idle too long.
+  async runOnce(): Promise<FetchReport | null> {
+    if (this.running) return null
+    if (powerMonitor.getSystemIdleTime() > this.options.idleThresholdSeconds) {
+      return { fetched: [], skipped: [{ repo: '*', reason: 'user idle' }], failed: [] }
+    }
+    this.running = true
+    const report: FetchReport = { fetched: [], skipped: [], failed: [] }
+    try {
+      for (const repo of await this.options.repos()) {
+        try {
+          const status = await readStatus(repo)
+          if (!status.upstream && !(await hasRemote(repo))) {
+            report.skipped.push({ repo, reason: 'no remote' })
+            continue
+          }
+          await fetchAll(repo)
+          report.fetched.push(repo)
+        } catch (failure) {
+          report.failed.push({ repo, reason: failure instanceof Error ? failure.message : String(failure) })
+        }
+      }
+    } finally {
+      this.running = false
+    }
+    this.options.onReport(report)
+    return report
+  }
+}
+
+async function hasRemote(repo: string): Promise<boolean> {
+  return (await git(repo, ['remote'])).trim().length > 0
+}

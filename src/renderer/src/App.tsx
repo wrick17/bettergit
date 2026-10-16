@@ -1,0 +1,395 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import type { AppConfig, ThemeMode } from '../../main/config'
+import type { TreeNode, RepoNode } from '../../main/scan'
+import type { RepoStatus } from '../../main/git/status'
+import type { Branch } from '../../main/git/ops'
+import { Icon, IconButton } from './Icons'
+import { Sidebar } from './Sidebar'
+import type { MenuAction } from '../../main/menu'
+import { ChangesView } from './ChangesView'
+import { HistoryView } from './HistoryView'
+import { OverflowBar } from './OverflowBar'
+import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
+import { CloneDialog, SettingsDialog } from './Dialogs'
+import { useResizable } from './Splitter'
+import { setLanguageOverrides } from './prefs'
+import { loadSession, saveSession } from './session'
+
+const api = window.bettergit
+// The repo pane's tab panels fill the pane height, as the grid inside them expects.
+const PANEL_STYLE: CSSProperties = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }
+
+export function App() {
+  const [initial] = useState(loadSession)
+  const [config, setConfig] = useState<AppConfig | null>(null)
+  const [tree, setTree] = useState<TreeNode[]>([])
+  const [selected, setSelected] = useState<string | null>(initial.selected)
+  const [tab, setTab] = useState<'changes' | 'history'>(initial.tab)
+  const [error, setError] = useState<string | null>(null)
+  // Uncommitted-file counts by repo path. The main process fills these in the background.
+  const [dirty, setDirty] = useState<Record<string, number>>({})
+  const [revision, setRevision] = useState(0)
+  const [sidebarOpen, setSidebarOpen] = useState(initial.sidebarOpen)
+  const [listOpen, setListOpen] = useState(initial.listOpen)
+  const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
+  const [cloneOpen, setCloneOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { size: sidebarWidth, handle: sidebarHandle } = useResizable('bettergit.sidebarWidth', 264, 200, 420)
+
+  const refreshTree = useCallback(async () => setTree(await api.getTree()), [])
+  const reportError = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))
+  const reportErrorRef = useRef(reportError)
+  reportErrorRef.current = reportError
+
+  // The banner clears itself, so an old failure does not stay over the pane.
+  useEffect(() => {
+    if (!error) return
+    const timer = window.setTimeout(() => setError(null), 8000)
+    return () => window.clearTimeout(timer)
+  }, [error])
+
+  useEffect(() => {
+    saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen })
+  }, [selected, tab, sidebarOpen, listOpen, detailOpen])
+
+  useEffect(() => {
+    api.getConfig().then(setConfig).then(refreshTree).catch(reportError)
+  }, [refreshTree])
+
+  useEffect(() => {
+    // Live file changes and background fetch results both mean "the open repo may have new data".
+    const offChanged = api.onEvent('repos:changed', (payload) => {
+      const event = payload as { repos: string[]; tree: boolean }
+      if (event.tree) refreshTree().catch(reportError)
+      setRevision((value) => value + 1)
+    })
+    const offFetch = api.onEvent('fetch:report', () => setRevision((value) => value + 1))
+    const offDirty = api.onEvent('repos:dirty', (payload) => {
+      const { path, count } = payload as { path: string; count: number }
+      setDirty((prev) => ({ ...prev, [path]: count }))
+    })
+    return () => { offChanged(); offFetch(); offDirty() }
+  }, [refreshTree])
+
+  // Menu commands that need the open repo or the sidebar are handled here, where that state lives.
+  const selectedRef = useRef<string | null>(null)
+  selectedRef.current = selected
+  useEffect(() => {
+    const off = api.onEvent('menu:action', (payload) => {
+      const repo = selectedRef.current
+      const runRepo = (action: () => Promise<unknown>) => {
+        if (!repo) return setError('Select a repository first.')
+        return action().then(() => setRevision((value) => value + 1)).catch(reportErrorRef.current)
+      }
+      switch (payload as MenuAction) {
+        case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch(reportErrorRef.current)
+        case 'clone': return setCloneOpen(true)
+        case 'open-settings': return setSettingsOpen(true)
+        case 'refresh': return void refreshTree().then(() => setRevision((value) => value + 1))
+        case 'fetch': return void runRepo(() => api.fetch(repo!))
+        case 'pull': return void runRepo(() => api.pull(repo!))
+        case 'push': return void runRepo(() => api.push(repo!))
+        case 'stash': return void runRepo(() => api.stash(repo!, 'BetterGit stash'))
+        case 'show-changes': return setTab('changes')
+        case 'show-history': return setTab('history')
+        case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
+        case 'toggle-sidebar': return setSidebarOpen((open) => !open)
+        case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
+        case 'fetch-all': return void (async () => {
+          for (const node of flatten(await api.getTree())) await api.fetch(node.path).catch(() => undefined)
+          setRevision((value) => value + 1)
+        })()
+      }
+    })
+    return off
+  }, [refreshTree])
+
+  useEffect(() => {
+    // Keep the page in step with macOS light/dark when the setting is "system".
+    const query = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => {
+      const mode: ThemeMode = config?.settings.theme ?? 'system'
+      const resolved = mode === 'system' ? (query.matches ? 'dark' : 'light') : mode
+      document.documentElement.dataset.theme = resolved
+    }
+    apply()
+    query.addEventListener('change', apply)
+    return () => query.removeEventListener('change', apply)
+  }, [config?.settings.theme])
+
+  useEffect(() => {
+    // Selections dim when the window is not key, as they do in Finder. The CSS reads this attribute.
+    const root = document.documentElement
+    const setWindowState = (state: 'active' | 'inactive') => { root.dataset.window = state }
+    setWindowState(document.hasFocus() ? 'active' : 'inactive')
+    const onFocus = () => setWindowState('active')
+    const onBlur = () => setWindowState('inactive')
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
+  useEffect(() => {
+    setLanguageOverrides(config?.settings.languages ?? {})
+  }, [config?.settings.languages])
+
+  const repos = useMemo(() => flatten(tree), [tree])
+  const repo = repos.find((node) => node.path === selected) ?? null
+
+  const update = async (patch: Partial<AppConfig>) => {
+    setConfig(await api.updateConfig(patch))
+  }
+
+  const addPaths = async (paths: string[]) => {
+    setConfig(await api.addSources(paths))
+    await refreshTree()
+  }
+
+  const handleDrop = async (event: DragEvent) => {
+    event.preventDefault()
+    const paths = Array.from(event.dataTransfer.files).map((file) => api.pathForFile(file)).filter(Boolean)
+    if (paths.length) await addPaths(paths).catch(reportError)
+  }
+
+  if (!config) return <div className="boot">Loading…</div>
+
+  return (
+    <div className={`shell${sidebarOpen ? '' : ' sidebar-closed'}`} style={{ gridTemplateColumns: sidebarOpen ? `${sidebarWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+      {sidebarOpen && (
+        <Sidebar
+          tree={tree}
+          dirty={dirty}
+          config={config}
+          selected={selected}
+          onSelect={(path) => { setSelected(path); setTab('changes') }}
+          onToggleCollapsed={(path) => update({
+            collapsed: config.collapsed.includes(path)
+              ? config.collapsed.filter((item) => item !== path)
+              : [...config.collapsed, path],
+          }).catch(reportError)}
+          onToggleHidden={(path) => update({
+            hidden: config.hidden.includes(path)
+              ? config.hidden.filter((item) => item !== path)
+              : [...config.hidden, path],
+          }).catch(reportError)}
+          onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch(reportError)}
+          onClone={() => setCloneOpen(true)}
+          onReveal={(path) => api.reveal(path).catch(reportError)}
+          onRemoveSource={(path) => api.removeSource(path).then(async (next: AppConfig) => {
+            setConfig(next)
+            if (selected === path) setSelected(null)
+            await refreshTree()
+          }).catch(reportError)}
+          onDrop={handleDrop}
+          onSettings={() => setSettingsOpen(true)}
+        />
+      )}
+      {sidebarOpen && <div className="splitter gap" {...sidebarHandle} />}
+      <main className="pane">
+        {error && (
+          <div className="banner" role="alert">
+            {error}
+            <button type="button" className="icon-button" aria-label="Dismiss error" onClick={() => setError(null)}>
+              <Icon name="close" />
+            </button>
+          </div>
+        )}
+        {!repo && (
+          <Empty
+            hasSources={config.sources.length > 0}
+            onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch(reportError)}
+            onClone={() => setCloneOpen(true)}
+          />
+        )}
+        {repo && (
+          <RepoPane
+            key={repo.path}
+            repo={repo}
+            tab={tab}
+            onTab={setTab}
+            sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen((open) => !open)}
+            listOpen={listOpen}
+            onToggleList={() => setListOpen((open) => !open)}
+            detailOpen={detailOpen}
+            onToggleDetail={() => setDetailOpen((open) => !open)}
+            revision={revision}
+            onChanged={() => setRevision((value) => value + 1)}
+            onError={reportError}
+          />
+        )}
+      </main>
+      {cloneOpen && (
+        <CloneDialog
+          defaultParent={config.lastCloneDirectory ?? config.sources[0] ?? ''}
+          onClose={() => setCloneOpen(false)}
+          onCloned={async (destination) => {
+            setCloneOpen(false)
+            setSelected(destination)
+            await refreshTree()
+          }}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsDialog config={config} onUpdate={(patch) => update(patch).catch(reportError)} onClose={() => setSettingsOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+function Empty({ hasSources, onAddFolder, onClone }: {
+  hasSources: boolean
+  onAddFolder: () => void
+  onClone: () => void
+}) {
+  return (
+    <div className="empty">
+      <svg className="empty-mark" viewBox="0 0 52 52" aria-hidden="true">
+        <path d="M14 18v16" />
+        <path d="M38 19c0 7-24 4-24 13" />
+        <circle cx="14" cy="13" r="4.5" />
+        <circle cx="14" cy="39" r="4.5" />
+        <circle cx="38" cy="14" r="4.5" />
+      </svg>
+      <h1>BetterGit</h1>
+      <p>{hasSources ? 'Select a repository in the sidebar to see its changes and history.' : 'Add a folder of projects, or drop one into the sidebar.'}</p>
+      <div className="empty-actions">
+        <button className="primary" onClick={onAddFolder}>Add folder…</button>
+        <button onClick={onClone}>Clone from URL…</button>
+      </div>
+    </div>
+  )
+}
+
+function RepoPane({ repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError }: {
+  repo: RepoNode
+  tab: 'changes' | 'history'
+  onTab: (tab: 'changes' | 'history') => void
+  sidebarOpen: boolean
+  onToggleSidebar: () => void
+  listOpen: boolean
+  onToggleList: () => void
+  detailOpen: boolean
+  onToggleDetail: () => void
+  revision: number
+  onChanged: () => void
+  onError: (error: unknown) => void
+}) {
+  const [status, setStatus] = useState<RepoStatus | null>(null)
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [dialog, setDialog] = useState<RepoDialog | null>(null)
+
+  const load = useCallback(async () => {
+    const [nextStatus, nextBranches] = await Promise.all([api.status(repo.path), api.branches(repo.path)])
+    setStatus(nextStatus)
+    setBranches(nextBranches)
+  }, [repo.path])
+
+  useEffect(() => {
+    load().catch(onError)
+  }, [load, revision])
+
+  // Resolves to whether the action succeeded, so dialogs can stay open on failure.
+  const run = async (label: string, action: () => Promise<unknown>) => {
+    setBusy(label)
+    try {
+      await action()
+      onChanged()
+      return true
+    } catch (failure) {
+      onError(failure)
+      return false
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const headLabel = status ? (status.head ?? (status.headHash ? `detached at ${status.headHash.slice(0, 7)}` : 'no commits yet')) : '…'
+
+  return (
+    <>
+      <header className="toolbar">
+        <div className="repo-title">
+          <h1 className="repo-name">{repo.name}</h1>
+          <label className="branch-pill" title="Switch branch">
+            <Icon name="branch" />
+            <span>{headLabel}</span>
+            <Icon name="chevronDown" className="chevron-down" />
+            <select
+              value={status?.head ?? ''}
+              aria-label="Switch branch"
+              disabled={busy !== null}
+              onChange={(event) => run('switch', () => api.switchBranch(repo.path, event.target.value))}
+            >
+              {!status?.head && <option value="">(no branch)</option>}
+              {branches.filter((branch) => !branch.remote).map((branch) => (
+                <option key={branch.name} value={branch.name}>{branch.name}</option>
+              ))}
+            </select>
+          </label>
+          {status?.upstream && (
+            <span className="sync" title={`Ahead/behind ${status.upstream}`}>
+              <span><b>{status.ahead}</b> ahead</span>
+              <span><b>{status.behind}</b> behind</span>
+            </span>
+          )}
+        </div>
+        <div className="toolbar-actions">
+          <OverflowBar items={repoItems({ repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog })} />
+          <RepoDialogs
+            repo={repo.path}
+            branch={status?.head ?? ''}
+            dialog={dialog}
+            run={run}
+            onError={onError}
+            onClose={() => setDialog(null)}
+          />
+        </div>
+      </header>
+      {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
+      <div className="tab-row">
+        <nav
+          className="tabs"
+          role="tablist"
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const next = tab === 'changes' ? 'history' : 'changes'
+            onTab(next)
+            document.getElementById(`tab-${next}`)?.focus()
+          }}
+        >
+          <button id="tab-changes" role="tab" tabIndex={tab === 'changes' ? 0 : -1} aria-selected={tab === 'changes'} aria-controls={tab === 'changes' ? 'panel-changes' : undefined} onClick={() => onTab('changes')}>
+            Changes
+            {status && status.changes.length > 0 && <span className="tab-count">{status.changes.length}</span>}
+          </button>
+          <button id="tab-history" role="tab" tabIndex={tab === 'history' ? 0 : -1} aria-selected={tab === 'history'} aria-controls={tab === 'history' ? 'panel-history' : undefined} onClick={() => onTab('history')}>History</button>
+        </nav>
+        <div className="pane-toggles">
+          <IconButton icon="panelLeft" label="Sidebar" active={sidebarOpen} onClick={onToggleSidebar} />
+          <IconButton icon="paneList" label={tab === 'changes' ? 'File list' : 'Commit list'} active={listOpen} onClick={onToggleList} />
+          <IconButton icon="panelRight" label="Detail" active={detailOpen} onClick={onToggleDetail} />
+        </div>
+      </div>
+      {tab === 'changes' && (
+        <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" style={PANEL_STYLE}>
+          {status && <ChangesView repo={repo.path} status={status} revision={revision} listOpen={listOpen} detailOpen={detailOpen} onChanged={onChanged} onError={onError} />}
+        </div>
+      )}
+      {tab === 'history' && (
+        <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" style={PANEL_STYLE}>
+          <HistoryView repo={repo.path} head={status?.headHash ?? null} revision={revision} listOpen={listOpen} detailOpen={detailOpen} onError={onError} onChanged={onChanged} />
+        </div>
+      )}
+    </>
+  )
+}
+
+function flatten(nodes: TreeNode[]): RepoNode[] {
+  return nodes.flatMap((node) => (node.kind === 'repo' ? [node] : flatten(node.children)))
+}

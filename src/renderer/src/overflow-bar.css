@@ -1,0 +1,11 @@
+/* A row of icon actions that never clips. Items that do not fit move into a "..." menu. */
+.overflow-bar { position: relative; display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.overflow-bar.end { justify-content: flex-end; }
+/* Off-screen copy of every item, measured once so the bar knows how many fit. */
+.overflow-probe { position: absolute; left: 0; top: 0; display: flex; gap: 2px; visibility: hidden; pointer-events: none; white-space: nowrap; }
+.overflow-more { position: relative; flex: none; }
+.overflow-menu { top: calc(100% + 6px); right: 0; }
+.overflow-menu button svg { flex: none; width: 15px; height: 15px; margin-right: 9px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* The commit detail action row: sits above the header and never wraps it. */
+.commit-bar { display: flex; align-items: center; flex: none; padding: 8px; border-bottom: 1px solid var(--line); }

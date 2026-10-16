@@ -1,0 +1,55 @@
+import type { DiffFile } from '../../main/git/diff'
+import { countLines } from './DiffView'
+import { FileIcon } from './FileIcon'
+import { splitPath } from './paths'
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+
+// Counts come from the parsed patch, not the --stat text: --stat lists a rename as a delete plus an add.
+export function CommitStat({ files }: { files: DiffFile[] }) {
+  if (!files.length) return null
+  const counts = files.map(countLines)
+  // Bars share one scale, so the commit's largest change fills the bar.
+  const largest = counts.reduce((max, { adds, dels }) => Math.max(max, adds + dels), 0)
+  const width = (value: number) => `${largest ? (value / largest) * 100 : 0}%`
+  const insertions = counts.reduce((sum, count) => sum + count.adds, 0)
+  const deletions = counts.reduce((sum, count) => sum + count.dels, 0)
+  return (
+    <div className="commit-stat-block">
+      <ul className="commit-stat-list">
+        {files.map((file, index) => {
+          const path = file.newPath ?? file.oldPath ?? ''
+          const { name, dir } = splitPath(path)
+          const { adds, dels } = counts[index]
+          return (
+            <li key={`${index}-${path}`} className="commit-stat-row">
+              <FileIcon name={name} />
+              <span className="path" title={path}>
+                <span className="path-name">{name}</span>
+                {dir && <span className="path-dir">{dir}</span>}
+              </span>
+              {file.binary ? (
+                <span className="commit-stat-note">binary</span>
+              ) : (
+                <>
+                  <span className="commit-stat-bar" aria-hidden="true">
+                    <span className="add" style={{ width: width(adds) }} />
+                    <span className="del" style={{ width: width(dels) }} />
+                  </span>
+                  <span className="row-stat">
+                    <span className="add">+{adds}</span>
+                    <span className="del">−{dels}</span>
+                  </span>
+                </>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      <p className="commit-stat-summary">
+        {plural(files.length, 'file')} changed, <span className="add">{plural(insertions, 'insertion')}(+)</span>,{' '}
+        <span className="del">{plural(deletions, 'deletion')}(-)</span>
+      </p>
+    </div>
+  )
+}
