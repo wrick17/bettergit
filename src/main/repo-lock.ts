@@ -87,10 +87,18 @@ export function subscribeRepoLocks(listener: (snapshot: RepoLockSnapshot) => voi
   return () => { listeners.delete(listener) }
 }
 
+// A failing listener is logged, not thrown: it must not leak a claimed holder, replace the Git result,
+// or keep later listeners from hearing about a release.
 function changed() {
   seq += 1
   const snapshot = repoLockSnapshot()
-  for (const listener of listeners) listener(snapshot)
+  for (const listener of listeners) {
+    try {
+      listener(snapshot)
+    } catch (error) {
+      console.error('Could not publish repo lock state:', error)
+    }
+  }
 }
 
 export async function withRepoLock<T>(

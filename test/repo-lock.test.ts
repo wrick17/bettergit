@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, symlinkSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
@@ -102,6 +102,28 @@ test('subscribers see each claim and release, and the snapshot reflects the hold
   expect(seen.map((snapshot): string | null => snapshot.holders[lockPath('/lock-e')] ?? null)).toEqual(['background-fetch', null])
   expect(seen[1].seq).toBeGreaterThan(seen[0].seq)
   expect(repoLockSnapshot().holders[lockPath('/lock-e')]).toBeUndefined()
+})
+
+test('a throwing subscriber neither leaks the holder, changes the result, nor starves other subscribers', async () => {
+  // A plain folder is enough: the lock only resolves the path.
+  const repo = path.join(lockRoot, 'lock-throwing-subscriber')
+  mkdirSync(repo, { recursive: true })
+  const quiet = spyOn(console, 'error').mockImplementation(() => {})
+  const offBroken = subscribeRepoLocks(() => { throw new Error('snapshot transport failed') })
+  const seen: (string | null)[] = []
+  const off = subscribeRepoLocks((snapshot) => seen.push(snapshot.holders[repo] ?? null))
+  try {
+    expect(await withRepoLock(repo, 'repo:stage', async () => 'staged')).toBe('staged')
+    await expect(withRepoLock(repo, 'repo:commit-changes', async () => { throw new Error('nothing to commit') }))
+      .rejects.toThrow('nothing to commit')
+  } finally {
+    offBroken()
+    off()
+    quiet.mockRestore()
+  }
+  expect(seen).toEqual(['repo:stage', null, 'repo:commit-changes', null])
+  expect(repoLockHolder(repo)).toBeNull()
+  expect(await withRepoLock(repo, 'repo:push', async () => 'pushed')).toBe('pushed')
 })
 
 test('an operation in one repo does not hold another repo', async () => {
