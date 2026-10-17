@@ -27,7 +27,7 @@
    Code sits on denser fills so it stays sharp. */
 :root[data-theme='light'] {
   color-scheme: light;
-  --glass-fill: rgba(255, 255, 255, 0.46);
+  --glass-fill: rgba(255, 255, 255, 0.4);
   --glass-strong: rgba(252, 252, 255, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.62);
   --glass-edge: rgba(255, 255, 255, 0.95);
@@ -36,9 +36,9 @@
   --glass-sheen: 0.7;
   --aurora-a: rgba(120, 170, 255, 0.22);
   --aurora-b: rgba(255, 170, 215, 0.18);
-  --content: rgba(255, 255, 255, 0.93);
+  --content: rgba(255, 255, 255, 0.85);
   --surface: var(--content);
-  --list: rgba(247, 248, 251, 0.78);
+  --list: rgba(247, 248, 251, 0.62);
   --raised: var(--glass-strong);
   --sunken: rgba(20, 26, 44, 0.06);
   --text: #111114;
@@ -69,7 +69,7 @@
 }
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --glass-fill: rgba(16, 17, 22, 0.6);
+  --glass-fill: rgba(16, 17, 22, 0.5);
   --glass-strong: rgba(20, 21, 27, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.07);
   --glass-edge: rgba(255, 255, 255, 0.2);
@@ -78,9 +78,9 @@
   --glass-sheen: 0.12;
   --aurora-a: rgba(70, 110, 255, 0.18);
   --aurora-b: rgba(255, 80, 170, 0.12);
-  --content: rgba(9, 10, 13, 0.88);
+  --content: rgba(9, 10, 13, 0.8);
   --surface: var(--content);
-  --list: rgba(12, 13, 17, 0.6);
+  --list: rgba(12, 13, 17, 0.5);
   --raised: var(--glass-strong);
   --sunken: rgba(255, 255, 255, 0.06);
   --text: #f5f5f8;
@@ -161,6 +161,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .boot { display: grid; place-items: center; height: 100%; color: var(--text-3); }
 
 /* Shell: floating panels with 8px of window margin. The gaps between panels are the dividers. */
+/* Row 1 is the titlebar band, fixed in height and reserve whatever the folds do. Row 2 holds the panes. */
 .shell { position: relative; display: grid; grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100%; }
 .titlebar {
   grid-row: 1; grid-column: 1 / -1; display: flex; align-items: center; min-width: 0;
@@ -298,7 +299,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
-.toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-sm); }
+.toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-pill); }
 
 .tabs { display: flex; align-items: stretch; gap: 22px; height: 40px; padding: 0 20px; flex: none; }
 .tabs button {
@@ -391,7 +392,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
-.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: 14px/1.45 var(--font-ui); border-radius: var(--radius); }
+.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: 14px/1.45 var(--font-ui); border-radius: var(--radius-sm); }
 .commit-action {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   height: 34px; padding: 0 16px; border-radius: var(--radius-pill);
@@ -410,14 +411,14 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .move-arrows { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 /* Above the file headers (z 2), below popovers (z 40) and dialogs (z 50). Near-opaque like the headers (--content), so diff text barely shows through. */
 .diff-toolbar {
-  position: sticky; top: 0; z-index: 3; background: var(--content);
+  position: sticky; top: 0; z-index: 3; background: var(--content); border-radius: var(--panel-radius) var(--panel-radius) 0 0;
   display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--diff-toolbar-height); padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); font: 13px/1 var(--font-ui);
 }
 .diff-toolbar-controls { display: inline-flex; align-items: center; gap: 8px; }
 .moves { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .diff-layout-toggle, .context-toggle, .changes-view-toggle { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--glass-chip); }
 /* Icon buttons in a toggle keep their own size. The text-button padding below would push the icon off the centre line. */
-.diff-layout-toggle .icon-button, .changes-view-toggle .icon-button { width: 30px; height: 24px; padding: 0; border-radius: var(--radius-sm); }
+.diff-layout-toggle .icon-button, .changes-view-toggle .icon-button { width: 30px; height: 24px; padding: 0; border-radius: var(--radius-pill); }
 .diff-layout-toggle .icon-button.on { background: var(--glass-strong); color: var(--text); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
 .context-toggle button, .changes-view-toggle button { background: transparent; box-shadow: none; padding: 3px 10px; border-radius: 999px; font-size: 13px; color: var(--text-2); }
 .context-toggle button:hover:not(:disabled), .changes-view-toggle button:hover:not(:disabled) { background: transparent; color: var(--text); }
@@ -719,6 +720,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   position: fixed; z-index: 60; padding: 5px 9px; border-radius: 7px; background: var(--tip); color: var(--tip-text);
   font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm);
   animation: fade 120ms var(--ease) 350ms both;
 }
 /* Destructive icon actions, such as reset (OverflowBar danger). */
