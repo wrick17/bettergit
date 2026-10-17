@@ -333,6 +333,46 @@ describe('branch picker operations with real Git', () => {
     expect((await readStatus(dir)).head).toBe('main')
   })
 
+  test('a unique existing tracker is reused before a new-branch fetch mapping is required, without overwriting ignored files', async () => {
+    const { dir, tip } = await fixture()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await switchBranch(dir, remote)
+    await git(dir, ['branch', '-m', 'my-topic'])
+    writeFileSync(path.join(dir, 'build.log'), 'tracked on my-topic\n')
+    await git(dir, ['add', 'build.log'])
+    await git(dir, ['commit', '-qm', 'local only'])
+    const ahead = await sha(dir)
+    await git(dir, ['switch', 'main'])
+    // A duplicate refspec leaves no single mapping for a new branch, but Git still resolves the existing tracker's upstream.
+    await git(dir, ['config', '--add', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'])
+    expect((await readBranches(dir)).find((entry) => entry.name === 'my-topic')!.upstreamRef).toBe(remote.fullRef)
+    // An ignored file that the switch would overwrite is kept, and the switch is refused.
+    mkdirSync(path.join(dir, '.git', 'info'), { recursive: true })
+    writeFileSync(path.join(dir, '.git', 'info', 'exclude'), 'build.log\n')
+    writeFileSync(path.join(dir, 'build.log'), 'ignored on main\n')
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      readFileSync(path.join(dir, '.git', 'config'), 'utf8'), readFileSync(path.join(dir, 'build.log'), 'utf8'),
+    ]
+    const before = await snapshot()
+    await expect(switchBranch(dir, remote)).rejects.toThrow('would be overwritten')
+    expect(await snapshot()).toEqual(before)
+    unlinkSync(path.join(dir, 'build.log'))
+    await switchBranch(dir, remote)
+    expect((await readStatus(dir)).head).toBe('my-topic')
+    expect(await sha(dir)).toBe(ahead)
+    // A new branch still needs exactly one mapping, and a second tracker still makes the choice explicit.
+    await git(dir, ['switch', 'main'])
+    await git(dir, ['update-ref', 'refs/remotes/origin/later', tip])
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/later'))).rejects.toThrow('Ambiguous or unsupported')
+    expect((await readBranches(dir)).some((entry) => entry.name === 'later')).toBe(false)
+    await git(dir, ['branch', 'second', tip])
+    await git(dir, ['config', 'branch.second.remote', 'origin'])
+    await git(dir, ['config', 'branch.second.merge', 'refs/heads/topic'])
+    await expect(switchBranch(dir, remote)).rejects.toThrow('my-topic, second')
+    expect((await readStatus(dir)).head).toBe('main')
+  })
+
   test('refuses existing names and ref-directory collisions without changing upstreams', async () => {
     const { dir, base } = await fixture()
     await git(dir, ['branch', 'topic'])
