@@ -59,6 +59,8 @@ interface StageEntry {
 }
 
 interface Snapshot {
+  // The checked path relative to the repository, as git lists it.
+  relPath: string
   file: string
   mode: number
   fingerprint: ConflictFingerprint
@@ -145,7 +147,7 @@ async function readSnapshot(repo: string, relPath: unknown): Promise<Snapshot> {
       ? 'This file contains NUL bytes, so it is not text. Resolve it outside BetterGit.'
       : 'This file is not valid UTF-8 text, so it cannot be resolved here.')
   }
-  return { file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
+  return { relPath: checked, file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
 }
 
 async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
@@ -157,17 +159,32 @@ async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-// The three stage sides as bytes, ours, base, theirs. Null when git lacks a side or a side is not text.
+// The three stage sides as bytes, ours, base, theirs. Sizes come first, in one call, so an oversized blob is never
+// read. Throws a refusal when git lacks a side, or a side is too large or not text.
+async function readStageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer]> {
+  const unreadable = new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
+  const shas = [2, 1, 3].map((stage) => stages.get(stage)?.sha)
+  if (shas.some((sha) => !sha)) throw unreadable
+  const sizes = await gitRaw(repo, ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], Buffer.from(`${shas.join('\n')}\n`))
+  const listed = sizes.stdout.toString('utf8').trim().split('\n')
+  if (sizes.code !== 0 || listed.length !== 3 || listed.some((line) => !/^blob \d+$/.test(line))) throw unreadable
+  if (listed.some((line) => Number(line.slice(5)) > MAX_BYTES)) throw new ConflictRefusal(TOO_LARGE)
+  const blobs = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', 'blob', sha!])))
+  if (blobs.some((blob) => blob.code !== 0 || blob.stdout.length > MAX_BYTES)) throw unreadable
+  if (blobs.some((blob) => decodeText(blob.stdout) === null)) {
+    throw new ConflictRefusal('A version of this file in Git is not UTF-8 text, so it cannot be reset here.')
+  }
+  return [blobs[0].stdout, blobs[1].stdout, blobs[2].stdout]
+}
+
+// The same sides for combining, or null when they cannot be read within the limits.
 async function stageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer] | null> {
-  const ours = stages.get(2)?.sha
-  const base = stages.get(1)?.sha
-  const theirs = stages.get(3)?.sha
-  if (!ours || !base || !theirs) return null
-  const blobs = await Promise.all([ours, base, theirs].map((sha) => gitRaw(repo, ['cat-file', 'blob', sha])))
-  if (blobs.some((blob) => blob.code !== 0)) return null
-  const [oursBytes, baseBytes, theirsBytes] = blobs.map((blob) => blob.stdout)
-  if (decodeText(oursBytes) === null || decodeText(baseBytes) === null || decodeText(theirsBytes) === null) return null
-  return [oursBytes, baseBytes, theirsBytes]
+  try {
+    return await readStageSides(repo, stages)
+  } catch (error) {
+    if (error instanceof ConflictRefusal) return null
+    throw error
+  }
 }
 
 // git's 3-way merge of the stage sides in one marker style. Null when git's answer cannot be read as conflict blocks.
@@ -276,21 +293,28 @@ export async function previewConflict(repo: string, relPath: string, save: Confl
   return { text, unresolved }
 }
 
-// Writes the resolution to a temp file beside the original, checks the file and its stages once more, then renames
-// the temp file over the original. Nothing is staged, and nothing is retried.
-export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
-  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
-  const bytes = Buffer.from(text, 'utf8')
+// Writes bytes to a temp file beside the original, checks the file, its stages, place and mode once more, then renames
+// the temp file over the original. Nothing is staged, and nothing is retried. `recheck` adds a caller's own last check.
+async function replaceWorkingFile(repo: string, snapshot: Snapshot, bytes: Buffer, stale: string, recheck?: (again: Snapshot) => Promise<void>) {
   const temp = path.join(path.dirname(snapshot.file), `.${path.basename(snapshot.file)}.bettergit-${randomUUID()}.tmp`)
   try {
     await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 })
     await fs.chmod(temp, snapshot.mode)
-    const again = await readSnapshot(repo, relPath)
-    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint)) throw new ConflictRefusal(STALE)
+    const again = await readSnapshot(repo, snapshot.relPath)
+    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint) || again.file !== snapshot.file || again.mode !== snapshot.mode) {
+      throw new ConflictRefusal(stale)
+    }
+    await recheck?.(again)
     await fs.rename(temp, snapshot.file)
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => {})
     throw error
   }
+}
+
+export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
+  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
+  const bytes = Buffer.from(text, 'utf8')
+  await replaceWorkingFile(repo, snapshot, bytes, STALE)
   return { fingerprint: { working: digest(bytes), stages: snapshot.fingerprint.stages }, unresolved }
 }
