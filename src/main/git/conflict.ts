@@ -43,11 +43,19 @@ export async function assertSupportedConflictFormat(repo: string, relPath: strin
   if (driver === 'unspecified') {
     const configured = await gitRaw(repo, ['config', '--get', 'merge.default'])
     if (configured.code !== 0 && configured.code !== 1) throw new ConflictRefusal('Git could not read the merge driver. Reload the conflict.')
-    driver = configured.code === 0 ? configured.stdout.toString('utf8').trim() : 'text'
+    // With no merge.default, git uses its built-in text driver without looking for a configured one.
+    if (configured.code === 1) return
+    driver = configured.stdout.toString('utf8').trim()
   }
-  if (driver !== 'set' && driver !== 'text') {
-    throw new ConflictRefusal('This file uses a custom or non-text merge driver. Resolve and stage it outside BetterGit.')
+  // git runs a driver configured under the selected name before its built-in ones, so set and text can name one too.
+  // shortcut: check-attr prints set for a bare merge attribute as well, which never runs a driver, so a configured set
+  // driver refuses it too. Upgrade if such files need resolving here.
+  if (driver === 'set' || driver === 'text') {
+    const custom = await gitRaw(repo, ['config', '--get-regexp', `^merge\\.${driver}\\.`])
+    if (custom.code !== 0 && custom.code !== 1) throw new ConflictRefusal('Git could not read the merge driver. Reload the conflict.')
+    if (custom.code === 1) return
   }
+  throw new ConflictRefusal('This file uses a custom or non-text merge driver. Resolve and stage it outside BetterGit.')
 }
 
 interface StageEntry {
