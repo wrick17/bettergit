@@ -47,6 +47,8 @@ const react = require('react')
 react.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
 const { renderToStaticMarkup } = await import('react-dom/server')
 const { ConflictView } = await import('./src/renderer/src/ConflictView')
+const { DiffView, setDiffLayout } = await import('./src/renderer/src/DiffView')
+const { parseDiff } = await import('./src/main/git/diff')
 ` + MODEL + String.raw`
 // Finds the first element in the tree whose props match. The save control is rendered by ConflictView itself,
 // so walking its element tree reaches the callback without a DOM.
@@ -94,6 +96,9 @@ console.log(JSON.stringify({
   inline: render({ model: modelFor(threeBlocks), choices: ['incoming', null, 'incoming'] }),
   inlineText: applyChoices(modelFor(threeBlocks).parts, ['incoming', null, 'incoming'], []).text,
   distant: render({ model: modelFor(distant) }),
+  lockUnified: render({ path: 'package-lock.json' }),
+  lockSplit: (setDiffLayout('split'), render({ path: 'bun.lock' })),
+  ordinaryLock: (setDiffLayout('unified'), renderToStaticMarkup(react.createElement(DiffView, { files: parseDiff('diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-old\n+new\n'), moves: [] }))),
   saved,
 }))
 `
@@ -279,6 +284,11 @@ const splitFolded = { hunks: hunks(), view: splitView() }
 press(button('2 of 2', 'Accept current'))
 press(all(host, (node) => hasClass(node, 'hunk-expand-btn'))[0])
 const splitWidened = { hunks: hunks(), view: splitView() }
+await React.act(async () => root.render(React.createElement(Parent, { key: 'lock', model })))
+React.act(() => setPath('package-lock.json'))
+const lockOpen = { rows: splitView().length, note: all(host, (node) => hasClass(node, 'collapsed-note')).length }
+press(all(host, (node) => hasClass(node, 'diff-file-toggle'))[0])
+const lockCollapsed = { rows: splitView().length, note: all(host, (node) => hasClass(node, 'collapsed-note')).length }
 await React.act(async () => root.unmount())
 console.log(JSON.stringify({
   unresolvedText: applyChoices(model.parts, [], []).text,
@@ -287,7 +297,7 @@ console.log(JSON.stringify({
   bothText: applyChoices(model.parts, ['incoming', null, 'incoming'], []).text,
   farText: applyChoices(far.parts, [], []).text,
   widenedText: applyChoices(far.parts, [null, 'current'], []).text,
-  first, unresolved, switched, switchedColoured, emptyAtEnd, undone, neutral, folded, widened, split, initialActions, unifiedActions, emptyEndActions, bothActions, bothClearedActions, bothFromRightActions, combinedActions, combinedUndoneActions, combinedFromRightActions, splitLabels, splitColoured, splitChosenImmediate, splitChosenColoured, splitToUnified, flippedBack, splitEmptyEnd, splitUndo, splitBoth, splitSaved, rawAfterChoices, unequal, splitCombined, unequalUndo, emptyCurrent, splitFolded, splitWidened, saved, errors,
+  first, unresolved, switched, switchedColoured, emptyAtEnd, undone, neutral, folded, widened, split, initialActions, unifiedActions, emptyEndActions, bothActions, bothClearedActions, bothFromRightActions, combinedActions, combinedUndoneActions, combinedFromRightActions, splitLabels, splitColoured, splitChosenImmediate, splitChosenColoured, splitToUnified, flippedBack, splitEmptyEnd, splitUndo, splitBoth, splitSaved, rawAfterChoices, unequal, splitCombined, unequalUndo, emptyCurrent, splitFolded, splitWidened, lockOpen, lockCollapsed, saved, errors,
 }))
 `
 
@@ -416,6 +426,24 @@ describe('conflictRows', () => {
 })
 
 describe('ConflictView', () => {
+  test('a conflicted lock file starts open with its markers and actions, in both layouts; an ordinary lock diff stays collapsed', () => {
+    const { lockUnified, lockSplit, ordinaryLock } = views()
+    for (const markup of [lockUnified, lockSplit]) {
+      for (const code of ['alpha', 'beta', 'gamma', 'delta', escape('<<<<<<< HEAD'), 'Accept incoming']) expect(markup).toContain(code)
+      expect(markup).not.toContain('changed lines hidden')
+    }
+    expect(lockSplit).toContain('conflict-split-controls')
+    expect(ordinaryLock).toContain('2 changed lines hidden')
+  })
+
+  test('collapsing a conflicted lock file by hand keeps it collapsed', () => {
+    const { lockOpen, lockCollapsed, errors } = clientRun()
+    expect(lockOpen.rows).toBeGreaterThan(0)
+    expect(lockOpen.note).toBe(0)
+    expect(lockCollapsed).toEqual({ rows: 0, note: 1 })
+    expect(errors).toEqual([])
+  })
+
   test('shows both sides of every conflict and a count of unresolved ones, with save disabled', () => {
     const markup = views().plain
     for (const code of ['alpha', 'beta', 'gamma', 'delta']) expect(markup).toContain(code)

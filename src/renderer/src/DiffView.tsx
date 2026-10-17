@@ -238,7 +238,8 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         const path = pathOf(file)
         const stat = stats[fileIndex]
         const changed = stat.adds + stat.dels
-        const open = choices[path] ?? !startsCollapsed(file, changed)
+        // A conflict being resolved starts open, even in a lock file, since its markers and actions are the point. A choice made by hand wins.
+        const open = choices[path] ?? (!!conflict || !startsCollapsed(file, changed))
         const toggle = () => setChoices((prev) => ({ ...prev, [path]: !open }))
         return (
           <section key={`${fileIndex}-${path}`} className="diff-file" data-path={path}>
