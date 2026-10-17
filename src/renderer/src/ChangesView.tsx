@@ -44,6 +44,8 @@ interface SectionProps {
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
+  // Stages or unstages every file in this section. Omitted for the conflicts section.
+  onToggleAll?: () => void
   // The write running in this repo, or null. Conflicting controls stay blocked until it settles.
   busy: string | null
 }
@@ -159,6 +161,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
 
+  // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
+  const togglePaths = (paths: string[], stage: boolean) => {
+    if (busy || !paths.length) return
+    void write(stage ? 'stage:all' : 'unstage:all', () => (stage ? api.stage(repo, paths) : api.unstage(repo, paths)))
+  }
+
   const choose = (change: FileChange, isStaged: boolean) => {
     revealRef.current = change.path
     setSelection({ path: change.path, staged: isStaged })
@@ -264,6 +272,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, true)}
               onToggle={(change) => toggle(change, false)}
+              onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
               busy={busy}
             />
             <List
@@ -277,6 +286,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onSelect={(change) => choose(change, false)}
               onToggle={(change) => toggle(change, true)}
               onDiscard={discard}
+              onToggleAll={() => togglePaths(unstaged.map((change) => change.path), true)}
               busy={busy}
             />
             {conflicted.length > 0 && (
@@ -401,11 +411,11 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, busy }: SectionProps) {
+function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
   if (!changes.length) return null
   return (
     <section className="group">
-      <h3>{title} <span className="count">{changes.length}</span></h3>
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <ul>
         {changes.map((change) => {
           const active = selection?.path === change.path && selection.staged === staged
@@ -421,7 +431,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, busy }: SectionProps) {
+function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
   const folder = useMemo(() => buildTree(changes), [changes])
   if (!changes.length) return null
   const renderFile = (change: FileChange) => {
@@ -436,11 +446,38 @@ function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFol
   }
   return (
     <section className="group">
-      <h3>{title} <span className="count">{changes.length}</span></h3>
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <div className="tree" role="tree">
         <TreeLevel folder={folder} section={title} collapsed={collapsed} onToggleFolder={onToggleFolder} renderFile={renderFile} />
       </div>
     </section>
+  )
+}
+
+// The section title with its count. The header button stages every file in an unstaged section, or unstages a staged one.
+function SectionHeader({ title, count, staged, onToggleAll, busy }: {
+  title: string
+  count: number
+  staged: boolean
+  onToggleAll?: () => void
+  busy: string | null
+}) {
+  const key = staged ? 'unstage:all' : 'stage:all'
+  return (
+    <h3>
+      {title} <span className="count">{count}</span>
+      {onToggleAll && (
+        <span style={{ marginLeft: 'auto' }}>
+          <IconButton
+            icon={staged ? 'undo' : 'plus'}
+            label={staged ? 'Unstage all changes' : 'Stage all changes'}
+            busy={busy === key}
+            blocked={busy !== null && busy !== key ? blockedReason(busy) : undefined}
+            onClick={onToggleAll}
+          />
+        </span>
+      )}
+    </h3>
   )
 }
 
