@@ -3,6 +3,7 @@ import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
 import { git, gitOk, gitRaw } from './exec'
+import { readStatus } from './status'
 
 export interface Branch {
   name: string
@@ -70,8 +71,16 @@ async function hasUnresolvedMarkers(file: string): Promise<boolean> {
 export async function unstagePaths(repo: string, paths: string[], hasHead: boolean): Promise<void> {
   if (!paths.length) return
   // Before the first commit there is no HEAD to restore from, so unstaging removes entries from the index.
-  if (hasHead) await git(repo, ['restore', '--staged', '--', ...paths])
-  else await git(repo, ['rm', '--cached', '-q', '--', ...paths])
+  if (!hasHead) {
+    await git(repo, ['rm', '--cached', '-q', '--', ...paths])
+    return
+  }
+  // Status lists a staged rename only under its new path. Restoring that alone leaves the original's deletion staged.
+  // Paths are literal, so an original name such as [ab].txt cannot also unstage a.txt.
+  const originals = (await readStatus(repo)).changes.flatMap((change) =>
+    change.staged && change.kind === 'renamed' && change.originalPath && paths.includes(change.path) ? [change.originalPath] : [])
+  const literal = [...new Set([...paths, ...originals])].map((file) => `:(literal)${file}`)
+  await git(repo, ['restore', '--staged', '--', ...literal])
 }
 
 // Discards worktree changes for tracked files. Callers must confirm with the user first.

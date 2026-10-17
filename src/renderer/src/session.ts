@@ -89,6 +89,8 @@ export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, 
     const element = ref.current
     if (!element || !ready || restoredFor.current === element) return
     restoredFor.current = element
+    // A pane shown again before the 250ms write restores the position still buffered, not the older one in storage.
+    flushScroll()
     const top = savedView<number | null>(id, key, null)
     if (top === null) return
     // Rows and diffs lay out a frame after their data arrives, so the position is set after two frames.

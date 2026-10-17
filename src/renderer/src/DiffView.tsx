@@ -362,14 +362,15 @@ function FileHeader({ file, stat, open, onToggle, stage }: {
   )
 }
 
-// Opens the file's working copy in the chosen editor. A deleted file has none, so the button says why it cannot open.
+// Opens the file's working copy in the chosen editor. A file deleted in the working view has none, so the button says why
+// it cannot open. A file deleted in history may exist now, so the main process checks it and reports a missing one.
 function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBridge }) {
   const path = pathOf(file)
   const { label } = EDITORS[bridge.editor]
   const { busy, open } = useEditorLaunch(() => bridge.openFile(path), bridge.onError)
   const commit = bridge.source === 'commit'
   const target = commit ? `working copy of ${path}` : path
-  const deleted = file.status === 'deleted'
+  const deleted = !commit && file.status === 'deleted'
   // The wrapper stops the click before it reaches any ancestor that might collapse or select the file.
   return (
     <span className="diff-file-open" onClick={(event) => event.stopPropagation()}>
@@ -377,7 +378,7 @@ function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBr
         icon="externalLink"
         label={busy ? `Opening ${target} in ${label}…` : `Open ${target} in ${label}`}
         busy={busy}
-        blocked={deleted ? (commit ? 'Deleted in this commit.' : 'Deleted in the working copy.') : undefined}
+        blocked={deleted ? 'Deleted in the working copy.' : undefined}
         onClick={open}
       />
     </span>
