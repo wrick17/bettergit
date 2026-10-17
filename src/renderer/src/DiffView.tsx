@@ -8,7 +8,7 @@ import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespac
 import { highlightFile, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
-import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownPlan, type MarkdownSide } from './MarkdownLine'
+import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
 import './intraline.css'
 
 interface Props {
@@ -78,10 +78,6 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   const formatMarkdown = useFormatMarkdown()
   // Conflict markers are source, so a conflicted file is never formatted.
   const formatted = formatMarkdown && !conflict
-  const markdown = useMemo(() => files.map((file, fileIndex) => formatted && isMarkdownPath(pathOf(file))
-    ? file.hunks.map((hunk, hunkIndex) => markdownHunk(hunk.lines, intra[fileIndex][hunkIndex],
-      toRows(hunk.lines).map(row => [row.left?.index ?? null, row.right?.index ?? null]),
-      new Set(hunk.lines.flatMap((_, index) => labels.has(key(fileIndex, hunkIndex, index)) ? [index] : [])))) : undefined), [files, formatted, intra, labels])
   const tokens = useTokens(files, useLanguageOverrides())
   // A conflict row shows only its own text: colours made for other lines, such as before a choice changed the file, are dropped.
   const decorate = (line: DiffLine, segments?: Segment[]) => {
@@ -258,8 +254,8 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                 {onExpand && <ExpandRow label={`Show more context above line ${edgeLines(hunk.lines).first}`} onExpand={() => onExpand(file)} />}
                 <div className="hunk">
                   <div className="hunk-header">{hunk.header}</div>
-                  {markdown[fileIndex]?.[hunkIndex]
-                    ? <MarkdownHunkView plan={markdown[fileIndex]![hunkIndex]} lines={hunk.lines} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
+                  {formatted && isMarkdownPath(path)
+                    ? <MarkdownHunkView lines={hunk.lines} changes={intra[fileIndex][hunkIndex]} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
                     : current === 'unified'
                     ? hunk.lines.map((line, lineIndex) => {
                       const row = decorate(line, tokens[fileIndex]?.[hunkIndex]?.[lineIndex])
@@ -494,15 +490,18 @@ export function SplitCell({ cell, side, segments, changed, label, anchor, source
 }
 
 interface MarkdownHunkProps {
-  plan: MarkdownPlan
   lines: DiffLine[]
+  changes: Map<number, Span[]>
   layout: DiffLayout
   prefix: string
   labels: Map<string, string>
   anchors: Map<string, string>
 }
 
-function MarkdownHunkView({ plan, lines, layout, prefix, labels, anchors }: MarkdownHunkProps) {
+// The plan is built here, so only hunks of open files are parsed. A collapsed file parses when it is opened.
+function MarkdownHunkView({ lines, changes, layout, prefix, labels, anchors }: MarkdownHunkProps) {
+  const plan = useMemo(() => markdownHunk(lines, changes, toRows(lines).map(row => [row.left?.index ?? null, row.right?.index ?? null]),
+    new Set(lines.flatMap((_, index) => labels.has(`${prefix}:${index}`) ? [index] : []))), [lines, changes, prefix, labels])
   return (
     <div className={`md-hunk md-${layout}`}>
       {lines.length > 0 && <div className="md-fragment-note">Visible Markdown fragment. Source gutters identify original lines.</div>}
