@@ -29,22 +29,9 @@ export function git(cwd: string, args: string[], options: GitOptions = {}): Prom
   return new Promise((resolve, reject) => {
     // Node reports a missing working folder as "spawn git ENOENT", which looks like git is missing.
     if (!existsSync(cwd)) return reject(new GitError(`Folder not found: ${cwd}`, args, null, ''))
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      // Apps launched from Finder get a minimal PATH, which can hide Homebrew or Xcode git.
-      PATH: [process.env.PATH, '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'].filter(Boolean).join(':'),
-      LC_ALL: 'C',
-      GIT_PAGER: 'cat',
-      PAGER: 'cat',
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_OPTIONAL_LOCKS: options.optionalLocks === false ? '1' : '0',
-      GIT_ASKPASS: '',
-      SSH_ASKPASS_REQUIRE: 'never',
-    }
-    if (options.interactive) delete env.GIT_TERMINAL_PROMPT
     const child = spawn('git', ['-c', 'core.quotepath=off', '-c', 'color.ui=never', ...args], {
       cwd,
-      env,
+      env: gitEnv(options),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const limit = options.maxBuffer ?? DEFAULT_MAX_BUFFER
@@ -80,4 +67,57 @@ export async function gitOk(cwd: string, args: string[], options?: GitOptions): 
   } catch {
     return false
   }
+}
+
+function gitEnv(options: GitOptions): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    // Apps launched from Finder get a minimal PATH, which can hide Homebrew or Xcode git.
+    PATH: [process.env.PATH, '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'].filter(Boolean).join(':'),
+    LC_ALL: 'C',
+    GIT_PAGER: 'cat',
+    PAGER: 'cat',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: options.optionalLocks === false ? '1' : '0',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS_REQUIRE: 'never',
+  }
+  if (options.interactive) delete env.GIT_TERMINAL_PROMPT
+  return env
+}
+
+export interface RawResult {
+  // The exit code, or -1 when the process ended without one.
+  code: number
+  stdout: Buffer
+  stderr: string
+}
+
+// For commands whose answer is the exit code, such as merge-file, where a non-zero exit is a result, not a failure.
+// Output stays raw bytes. Spawn failures still reject.
+export function gitRaw(cwd: string, args: string[], input?: Buffer): Promise<RawResult> {
+  return new Promise((resolve, reject) => {
+    if (!existsSync(cwd)) return reject(new GitError(`Folder not found: ${cwd}`, args, null, ''))
+    const child = spawn('git', ['-c', 'core.quotepath=off', '-c', 'color.ui=never', ...args], {
+      cwd,
+      env: gitEnv({}),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const out: Buffer[] = []
+    const err: Buffer[] = []
+    let size = 0
+    child.stdout.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > DEFAULT_MAX_BUFFER) {
+        child.kill()
+        return reject(new GitError(`git ${args[0]} output exceeds ${DEFAULT_MAX_BUFFER} bytes`, args, null, ''))
+      }
+      out.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => err.push(chunk))
+    child.on('error', (error) => reject(new GitError(error.message, args, null, '')))
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8').trim() }))
+    child.stdin.on('error', () => {})
+    child.stdin.end(input ?? Buffer.alloc(0))
+  })
 }
