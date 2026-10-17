@@ -35,19 +35,32 @@ export async function assertSupportedConflictFormat(repo: string, relPath: strin
     if (fields[index] === relPath) attributes.set(fields[index + 1], fields[index + 2])
   }
   const size = attributes.get('conflict-marker-size')
-  let driver = attributes.get('merge')
+  const driver = attributes.get('merge')
   if (size === undefined || driver === undefined) throw new ConflictRefusal('Git could not read the conflict attributes. Reload the conflict.')
   if (![String(DEFAULT_MARKER_SIZE), 'unspecified', 'set', 'unset'].includes(size)) {
     throw new ConflictRefusal(`This file uses conflict-marker-size=${size}. Only seven-character markers are supported. Resolve and stage it outside BetterGit.`)
   }
-  if (driver === 'unspecified') {
-    const configured = await gitRaw(repo, ['config', '--get', 'merge.default'])
-    if (configured.code !== 0 && configured.code !== 1) throw new ConflictRefusal('Git could not read the merge driver. Reload the conflict.')
-    driver = configured.code === 0 ? configured.stdout.toString('utf8').trim() : 'text'
-  }
-  if (driver !== 'set' && driver !== 'text') {
-    throw new ConflictRefusal('This file uses a custom or non-text merge driver. Resolve and stage it outside BetterGit.')
-  }
+  const custom = new ConflictRefusal('This file uses a custom or non-text merge driver. Resolve and stage it outside BetterGit.')
+  // git runs a driver configured under the attribute's name before its built-in ones. check-attr prints set, unset, and
+  // unspecified both for those states and for a merge attribute with that literal value, so a driver configured under
+  // the printed word refuses either reading. unset is refused anyway, as a binary merge or a custom name.
+  // shortcut: a bare or absent merge attribute never runs such a driver, but refuses with it too. Upgrade if such files
+  // need resolving here.
+  if ((driver !== 'set' && driver !== 'text' && driver !== 'unspecified') || await configuresMergeDriver(repo, driver)) throw custom
+  if (driver !== 'unspecified') return
+  const configured = await gitRaw(repo, ['config', '--get', 'merge.default'])
+  if (configured.code !== 0 && configured.code !== 1) throw new ConflictRefusal('Git could not read the merge driver. Reload the conflict.')
+  // With no merge.default, git uses its built-in text driver without looking for a configured one.
+  if (configured.code === 1) return
+  const fallback = configured.stdout.toString('utf8').replace(/\n$/, '')
+  if ((fallback !== 'set' && fallback !== 'text') || await configuresMergeDriver(repo, fallback)) throw custom
+}
+
+// Whether git has any setting for a merge driver of this name, which it would run before a built-in driver.
+async function configuresMergeDriver(repo: string, name: string): Promise<boolean> {
+  const listed = await gitRaw(repo, ['config', '--get-regexp', `^merge\\.${name}\\.`])
+  if (listed.code !== 0 && listed.code !== 1) throw new ConflictRefusal('Git could not read the merge driver. Reload the conflict.')
+  return listed.code === 0
 }
 
 interface StageEntry {
