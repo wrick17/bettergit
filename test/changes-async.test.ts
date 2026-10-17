@@ -205,6 +205,96 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     commits.length = 0
     unmount()
   }
+} else if (process.env.CHECK_MODE === 'restore') {
+  const frames = new Map()
+  let nextFrame = 1
+  globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
+  const revealed = []
+  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path) }))
+  const pane = { scrollTop: 400, querySelectorAll: () => sections }
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+  }
+  render()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = pane
+  render()
+  // A restored file with no saved position is shown once its diff loads, two frames later.
+  await load('initial')
+  tick()
+  assert.deepEqual(revealed, [])
+  tick()
+  assert.deepEqual(revealed, ['a.ts'])
+  assert.equal(pane.scrollTop, 400)
+  // Picking another file waits for its own diff. The old file's diff on screen is not ready for it.
+  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  tick(); tick()
+  assert.deepEqual(revealed, ['a.ts'])
+  await load('latest')
+  tick(); tick()
+  assert.equal(revealed.at(-1), 'b.ts')
+  assert.equal(pane.scrollTop, 400)
+  // The same pane leaves the file for all changes and restores the saved position for all, here 0.
+  const session = JSON.parse(stored.get('bettergit.session'))
+  session.views = { '/repo|changes-diff': { key: 'all', value: 0 } }
+  stored.set('bettergit.session', JSON.stringify(session))
+  find(tree, (p) => p.className?.startsWith('file-list')).onClick({ target: { closest: () => null } }); render()
+  tick(); tick()
+  assert.equal(pane.scrollTop, 0)
+  unmount()
+} else if (process.env.CHECK_MODE === 'whitespace-failure') {
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  const counts = (node, out = []) => {
+    for (const child of Array.isArray(node) ? node : [node]) {
+      if (!react.isValidElement(child)) continue
+      if (child.props.className === 'diff-section') out.push(child)
+      counts(child.props.children, out)
+    }
+    return out.filter((h2) => [].concat(h2.props.children).some((c) => react.isValidElement(c) && c.props.className === 'count')).length
+  }
+  const settle = async (outcome) => {
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) {
+      request.done = true
+      if (outcome instanceof Error) request.reject(outcome)
+      else request.resolve(outcome)
+    }
+    await flush()
+  }
+  for (const selected of [false, true]) {
+    await start(selected)
+    // Hiding whitespace reloads with the new option. If that load fails, the hunks loaded without it are not shown under it.
+    setIgnoreWhitespace(true); render()
+    assert.ok(requests.filter((r) => !r.done && r.args[3] === undefined).every((r) => r.args[4] === true))
+    await settle(new Error('filtered load failed'))
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: filtered load failed'))
+    // The failure stays on screen in place of the changes, with the toolbar mounted so the option can be changed back.
+    for (let pass = 0; pass < 2; pass++) {
+      for (const view of views(selected)) {
+        assert.ok(view, 'toolbar unmounted after a failed load')
+        assert.deepEqual(view.files, [], 'hunks loaded with whitespace shown under hidden whitespace')
+        assert.equal(view.emptyHint, 'Could not load these changes.')
+      }
+      if (!selected) assert.equal(counts(tree), 0, 'a failed load shows file counts')
+      render()
+    }
+    // A refresh with the same options that loads no files is a valid empty view, with the default text.
+    props = { ...props, revision: 2 }; render()
+    await settle({ files: [], moves: [] })
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    if (!selected) assert.equal(counts(tree), 2)
+    // Showing whitespace again loads the changes. A failed refresh with those options keeps them.
+    setIgnoreWhitespace(false); render(); await load('shown')
+    props = { ...props, revision: 3 }; render()
+    await settle(new Error('refresh failed'))
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'shown')
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    unmount()
+  }
 } else if (process.env.CHECK_MODE === 'status-loads') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
     await start(false)
@@ -379,3 +469,5 @@ test('a base reload invalidates old file widens before React renders the replace
 test('status changes invalidate pending base loads and start current staged, working and selected loads', () => check('status-loads'))
 test('a widen requested under the current revision remains valid after its base reload fails', () => check('retained'))
 test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
+test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
+test('a failed load with new whitespace options shows the failure in place of the old hunks and keeps the toolbar', () => check('whitespace-failure'))

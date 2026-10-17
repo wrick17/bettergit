@@ -22,6 +22,8 @@ interface Props {
   persist?: { id: string; key: string }
   // Set by the conflict resolver, which shows a conflicted file here with its controls inline.
   conflict?: ConflictDecor
+  // Replaces the text shown when there are no files. Set when the caller has nothing to show because a load failed.
+  emptyHint?: string
 }
 
 // A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
@@ -67,7 +69,7 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict }: Props) {
+export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
   // The changed words of each paired line, per file and hunk. Pure text work, so it does not wait for colours.
@@ -230,7 +232,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         </div>
       </div>
       {!files.length && (
-        <p className="hint">{ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.'}</p>
+        <p className="hint">{emptyHint ?? (ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.')}</p>
       )}
       {files.map((file, fileIndex) => {
         const path = pathOf(file)
