@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fs, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { DEFAULT_EDITOR, isEditorId, type EditorId } from '../shared/editors'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -13,6 +14,8 @@ export interface Settings {
   textZoom: number
   // Extension (without the dot) to Shiki language id. Overrides the built-in map.
   languages: Record<string, string>
+  // The app that Open in … launches. Unknown values fall back to the default.
+  editor: EditorId
 }
 
 export interface RepoGroup {
@@ -53,6 +56,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     idleThresholdSeconds: 120,
     textZoom: 1,
     languages: {},
+    editor: DEFAULT_EDITOR,
   },
   lastCloneDirectory: null,
 }
@@ -67,6 +71,7 @@ function normalizeSettings(input: unknown): Settings {
     ...source,
     textZoom: typeof source.textZoom === 'number' ? Math.min(1.6, Math.max(0.8, source.textZoom)) : DEFAULT_CONFIG.settings.textZoom,
     languages,
+    editor: isEditorId(source.editor) ? source.editor : DEFAULT_EDITOR,
   }
 }
 

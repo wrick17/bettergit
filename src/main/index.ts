@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { loadConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
+import { loadConfig, normalizeConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
+import { openFileInEditor, openRepoInEditor } from './editor'
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
@@ -131,7 +132,7 @@ function registerIpc() {
   app.once('will-quit', offLocks)
   ipcMain.handle('config:get', () => config)
   ipcMain.handle('config:update', async (_event, patch: Partial<AppConfig>) => {
-    await persist({ ...config, ...patch, settings: { ...config.settings, ...(patch.settings ?? {}) } })
+    await persist(normalizeConfig({ ...config, ...patch, settings: { ...config.settings, ...(patch.settings ?? {}) } }))
     return config
   })
   ipcMain.handle('sources:tree', async () => {
@@ -234,6 +235,13 @@ function registerIpc() {
     previewConflict(assertKnownRepo(repoPath), filePath, parseConflictSave(save)))
   handleWrite('repo:conflict-save', (_event, repoPath: string, filePath: string, save: unknown) =>
     saveConflict(repoPath, filePath, parseConflictSave(save)))
+  // Launching an editor does not write Git state, so it stays available while the repo is busy.
+  ipcMain.handle('repo:open-in-editor', (_event, repoPath: string, filePath?: string) => {
+    const repo = assertKnownWriteRepo(repoPath)
+    return filePath === undefined
+      ? openRepoInEditor(config.settings.editor, repo)
+      : openFileInEditor(config.settings.editor, repo, filePath)
+  })
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
   ipcMain.handle('clone', async (_event, url: string, parent: string) => {
     const destination = path.join(parent, path.basename(url.replace(/\.git$/, '')))
