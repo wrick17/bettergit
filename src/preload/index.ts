@@ -19,8 +19,9 @@ const api = {
   status: (repo: string) => invoke('repo:status', repo),
   history: (repo: string, skip: number, limit: number) => invoke('repo:history', repo, skip, limit),
   searchHistory: (repo: string, query: string) => invoke('repo:search', repo, query),
-  commit: (repo: string, hash: string, context: number) => invoke('repo:commit', repo, hash, context),
-  working: (repo: string, staged: boolean, context: number, path?: string) => invoke('repo:working', repo, staged, context, path),
+  commit: (repo: string, hash: string, context: number, ignoreWhitespace = false) => invoke('repo:commit', repo, hash, context, ignoreWhitespace),
+  working: (repo: string, staged: boolean, context: number, path?: string, ignoreWhitespace = false) =>
+    invoke('repo:working', repo, staged, context, path, ignoreWhitespace),
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
   discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),
@@ -40,8 +41,8 @@ const api = {
   revertCommit: (repo: string, hash: string) => invoke('repo:revert', repo, hash) as Promise<string>,
   amendMessage: (repo: string, message: string, expectedHash: string) => invoke('repo:amend-message', repo, message, expectedHash),
   mergeBase: (repo: string, a: string, b: string) => invoke('repo:merge-base', repo, a, b) as Promise<string>,
-  compare: (repo: string, from: string, to: string) =>
-    invoke('repo:compare', repo, from, to) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
+  compare: (repo: string, from: string, to: string, ignoreWhitespace = false) =>
+    invoke('repo:compare', repo, from, to, ignoreWhitespace) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
   openExternal: (url: string) => invoke('system:open-url', url),
   push: (repo: string) => invoke('repo:push', repo),
   stashes: (repo: string) => invoke('repo:stashes', repo),
