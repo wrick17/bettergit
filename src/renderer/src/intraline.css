@@ -1,0 +1,4 @@
+/* Changed words inside a paired removed or added line. Same hue as the line tint, but stronger, so only the edited text stands out. */
+.line.add .intra, .split-cell.add .intra { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.line.del .intra, .split-cell.del .intra { background: color-mix(in srgb, var(--del) 30%, transparent); }
+.intra { border-radius: 3px; }
