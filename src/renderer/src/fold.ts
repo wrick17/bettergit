@@ -47,8 +47,9 @@ export function useFoldHold<T extends HTMLElement>(folded: boolean, focusTarget:
     if (collapsed) {
       if (!onStrip && pane.current?.contains(active)) strip.current?.focus()
     } else if (onStrip) {
-      const target = pane.current?.querySelector<HTMLElement>(focusTarget)
-      // No target to hand focus to, so the keyboard hold is released rather than left open with nothing focused.
+      // With no target (an empty or fully hidden repo list has no tree row), the pane's first enabled control takes focus.
+      const target = pane.current?.querySelector<HTMLElement>(focusTarget) ?? pane.current?.querySelector<HTMLElement>('button:not(.fold-strip):not(:disabled)')
+      // Nothing to hand focus to, so the keyboard hold is released rather than left open with nothing focused.
       if (target) target.focus()
       else setKeyboard(false)
     }
