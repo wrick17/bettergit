@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import type { DiffLine } from '../src/main/git/diff'
+import { parseDiff, type DiffLine } from '../src/main/git/diff'
 import { changedSpans, emphasize, intralineSpans, type Span } from '../src/renderer/src/intraline'
 
 // The changed text of one side, so assertions read as the words a reader sees highlighted.
@@ -46,6 +46,22 @@ test('a replacement block pairs its lines in order and leaves the extra line pla
   expect(changedText(lines[0].text, spans.get(0))).toEqual(['old'])
   expect(changedText(lines[2].text, spans.get(2))).toEqual(['new'])
   expect(spans.has(1)).toBe(false)
+})
+
+test('a last line that gains or loses its final newline still pairs across git\'s note', () => {
+  const note = '\\ No newline at end of file'
+  const hunk = (body: string[]) => parseDiff(['diff --git a/f b/f', '--- a/f', '+++ b/f', '@@ -1 +1 @@', ...body].join('\n'))[0].hunks[0].lines
+  const oldMissing = hunk(['-const total = count + 1', note, '+const total = amount + 1'])
+  const newMissing = hunk(['-const total = count + 1', '+const total = amount + 1', note])
+  expect(oldMissing.map((line) => line.type)).toEqual(['del', 'note', 'add'])
+  for (const lines of [oldMissing, newMissing]) {
+    const spans = intralineSpans(lines)
+    const del = lines.findIndex((line) => line.type === 'del')
+    const add = lines.findIndex((line) => line.type === 'add')
+    expect(changedText(lines[del].text, spans.get(del))).toEqual(['count'])
+    expect(changedText(lines[add].text, spans.get(add))).toEqual(['amount'])
+    expect(spans.size).toBe(2)
+  }
 })
 
 test('a long line with one edit is still compared cheaply, and a fully rewritten long line is left plain', () => {
