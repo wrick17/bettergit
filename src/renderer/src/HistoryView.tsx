@@ -46,6 +46,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
   const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
+  const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
   const diffRef = useRef<HTMLDivElement>(null)
   const selectedRef = useRef(selected)
   // Each list (repo, search, or refresh) has a generation. Replies from an older one are dropped.
@@ -145,7 +146,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     head,
     upstream,
     webBase,
-    onOpenChanges: () => diffRef.current?.scrollIntoView({ block: 'start' }),
+    onOpenChanges: () => diffRef.current?.scrollTo({ top: 0 }),
     onCompare: compareWith,
     onChanged,
     onError,
@@ -191,7 +192,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   return (
-    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `${historyWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `min(${historyWidth}px, 35%) 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
       {listOpen && (
         <div className="history-list">
           <div className="search">
@@ -228,48 +229,54 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       )}
       {listOpen && detailOpen && <div className="splitter" {...historyHandle} />}
       {detailOpen && (
-        <div className="commit-detail">
+        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `min(${detailWidth}px, 40%) 9px minmax(0, 1fr)` } : undefined}>
           {!selected && (empty
             ? <p className="hint">This repository has no commits yet.</p>
             : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}
           {selected && !current && <p className="hint">Loading…</p>}
           {selected && current && (
             <>
-              {commitInput && (
-                <div className="commit-bar">
-                  <OverflowBar items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })} align="start" />
-                </div>
-              )}
-              <header className="commit-head">
-                {picked && (
-                  <div className="commit-title">
-                    <h2 className="commit-subject">{picked.subject}</h2>
-                    {notice && <p className="commit-notice" role="status">{notice}</p>}
-                    {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} setPending={setPending} />}
+              <div className="commit-info">
+                {commitInput && (
+                  <div className="commit-bar">
+                    <OverflowBar items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })} align="start" />
                   </div>
                 )}
-                {picked && (
-                  <div className="commit-meta-line">
-                    <span className="avatar" aria-hidden="true">{picked.author.charAt(0).toUpperCase()}</span>
-                    <span>{picked.author}</span>
-                    <span className="dot-sep" aria-hidden="true" />
-                    <span>{new Date(picked.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
-                    <span className="dot-sep" aria-hidden="true" />
-                    <code className="hash">{picked.hash.slice(0, 7)}</code>
+                <header className="commit-head">
+                  {picked && (
+                    <div className="commit-title">
+                      <h2 className="commit-subject">{picked.subject}</h2>
+                      {notice && <p className="commit-notice" role="status">{notice}</p>}
+                      {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} setPending={setPending} />}
+                    </div>
+                  )}
+                  {picked && (
+                    <div className="commit-meta-line">
+                      <span className="avatar" aria-hidden="true">{picked.author.charAt(0).toUpperCase()}</span>
+                      <span>{picked.author}</span>
+                      <span className="dot-sep" aria-hidden="true" />
+                      <span>{new Date(picked.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      <span className="dot-sep" aria-hidden="true" />
+                      <code className="hash">{picked.hash.slice(0, 7)}</code>
+                    </div>
+                  )}
+                  {body && <pre className="commit-body">{body}</pre>}
+                </header>
+                <CommitStat files={compare?.files ?? current.files} onSelect={(path) => {
+                  Array.from(diffRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
+                    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
+                }} />
+              </div>
+              <div className="splitter" aria-label="Commit details width" {...detailHandle} />
+              <div className="diff-pane" ref={diffRef}>
+                {compare && totals && (
+                  <div className="compare-bar">
+                    <span>
+                      Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats at left are for this comparison.
+                    </span>
+                    <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
                   </div>
                 )}
-                {body && <pre className="commit-body">{body}</pre>}
-                <CommitStat files={current.files} />
-              </header>
-              {compare && totals && (
-                <div className="compare-bar">
-                  <span>
-                    Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats above are for the selected commit.
-                  </span>
-                  <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
-                </div>
-              )}
-              <div ref={diffRef}>
                 <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} />
               </div>
             </>

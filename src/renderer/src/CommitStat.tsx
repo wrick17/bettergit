@@ -6,7 +6,7 @@ import { splitPath } from './paths'
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 // Counts come from the parsed patch, not the --stat text: --stat lists a rename as a delete plus an add.
-export function CommitStat({ files }: { files: DiffFile[] }) {
+export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (path: string) => void }) {
   if (!files.length) return null
   const counts = files.map(countLines)
   // Bars share one scale, so the commit's largest change fills the bar.
@@ -22,26 +22,28 @@ export function CommitStat({ files }: { files: DiffFile[] }) {
           const { name, dir } = splitPath(path)
           const { adds, dels } = counts[index]
           return (
-            <li key={`${index}-${path}`} className="commit-stat-row">
-              <FileIcon name={name} />
-              <span className="path" title={path}>
-                <span className="path-name">{name}</span>
-                {dir && <span className="path-dir">{dir}</span>}
-              </span>
-              {file.binary ? (
-                <span className="commit-stat-note">binary</span>
-              ) : (
-                <>
-                  <span className="commit-stat-bar" aria-hidden="true">
-                    <span className="add" style={{ width: width(adds) }} />
-                    <span className="del" style={{ width: width(dels) }} />
-                  </span>
-                  <span className="row-stat">
-                    <span className="add">+{adds}</span>
-                    <span className="del">−{dels}</span>
-                  </span>
-                </>
-              )}
+            <li key={`${index}-${path}`}>
+              <button className="commit-stat-row" onClick={() => onSelect(path)} title={path} aria-label={`Show diff for ${path}`}>
+                <FileIcon name={name} />
+                <span className="path" title={path}>
+                  <span className="path-name">{name}</span>
+                  {dir && <span className="path-dir">{dir}</span>}
+                </span>
+                {file.binary ? (
+                  <span className="commit-stat-note">binary</span>
+                ) : (
+                  <>
+                    <span className="commit-stat-bar" aria-hidden="true">
+                      <span className="add" style={{ width: width(adds) }} />
+                      <span className="del" style={{ width: width(dels) }} />
+                    </span>
+                    <span className="row-stat">
+                      <span className="add">+{adds}</span>
+                      <span className="del">−{dels}</span>
+                    </span>
+                  </>
+                )}
+              </button>
             </li>
           )
         })}
