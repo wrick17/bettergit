@@ -12,6 +12,8 @@ import { readHistory, commitDetails, searchHistory } from './git/history'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
+import { loadConflict, previewConflict, saveConflict } from './git/conflict'
+import { parseConflictSave } from '../shared/conflict'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -226,6 +228,12 @@ function registerIpc() {
     ops.restoreBackup(repoPath, ref))
   handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
   ipcMain.handle('repo:search', (_event, repoPath: string, query: string) => searchHistory(assertKnownRepo(repoPath), query))
+  // Reads take no lock. The save runs under the repo lock, and it checks the fingerprint the renderer got at load.
+  ipcMain.handle('repo:conflict-load', (_event, repoPath: string, filePath: string) => loadConflict(assertKnownRepo(repoPath), filePath))
+  ipcMain.handle('repo:conflict-preview', (_event, repoPath: string, filePath: string, save: unknown) =>
+    previewConflict(assertKnownRepo(repoPath), filePath, parseConflictSave(save)))
+  handleWrite('repo:conflict-save', (_event, repoPath: string, filePath: string, save: unknown) =>
+    saveConflict(repoPath, filePath, parseConflictSave(save)))
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
   ipcMain.handle('clone', async (_event, url: string, parent: string) => {
     const destination = path.join(parent, path.basename(url.replace(/\.git$/, '')))

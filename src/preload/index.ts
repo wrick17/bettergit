@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { RepoLockSnapshot } from '../main/repo-lock'
+import type { ConflictDocument, ConflictPreview, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
@@ -48,6 +49,12 @@ const api = {
   restore: (repo: string, ref: string) => invoke('repo:restore', repo, ref),
   clone: (url: string, parent: string) => invoke('clone', url, parent),
   reveal: (repo: string) => invoke('repo:reveal', repo),
+  // Conflict resolution. The save sends back the fingerprint from load, never a fresh one, and no file text.
+  conflictLoad: (repo: string, file: string) => invoke('repo:conflict-load', repo, file) as Promise<ConflictDocument>,
+  conflictPreview: (repo: string, file: string, save: ConflictSave) =>
+    invoke('repo:conflict-preview', repo, file, save) as Promise<ConflictPreview>,
+  conflictSave: (repo: string, file: string, save: ConflictSave) =>
+    invoke('repo:conflict-save', repo, file, save) as Promise<ConflictSaved>,
   // Drag-and-drop gives a File; webUtils turns it into a real path without exposing fs to the page.
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),
