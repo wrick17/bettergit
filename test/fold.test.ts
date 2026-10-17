@@ -50,25 +50,67 @@ test('opening commit details from the strip with no control focuses the header a
   expect(released).toEqual([])
 })
 
-// Runs the real divider hook in memory on a stub grid. getComputedStyle reports the first track as laid out on screen.
-async function dragDivider(stored: number, shown: string, args: number[], dx: number | null) {
+// Runs the real divider hook in memory on a stub grid. getComputedStyle reports the tracks as laid out on screen;
+// with no tracks it throws, so an uncapped divider shows it never measures. State survives between renders, as in React.
+async function loadDivider(stored: number, shown: string | null, args: number[]) {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/Splitter.tsx', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['react'] })
   const saved = new Map([['width', String(stored)]])
   const grid = { style: { gridTemplateColumns: '' }, dataset: {} }
-  const react = { useState: (init: () => number) => [init(), () => {}], useRef: (current: unknown) => ({ current }) }
-  const module = { exports: {} as { useResizable: (key: string, ...args: number[]) => { track?: string; handle: Record<string, (event?: unknown) => void> } } }
+  const slots: unknown[] = []
+  let slot = 0
+  const keep = (create: () => unknown) => {
+    const at = slot++
+    if (!(at in slots)) slots[at] = create()
+    return at
+  }
+  const react = {
+    useState: (init: unknown) => {
+      const at = keep(() => (typeof init === 'function' ? init() : init))
+      return [slots[at], (value: unknown) => { slots[at] = value }]
+    },
+    useRef: (current: unknown) => slots[keep(() => ({ current }))],
+  }
+  const module = { exports: {} as { useResizable: (key: string, ...args: number[]) => { track?: string; handle: Record<string, any> } } }
   runInNewContext(await compiled.outputs[0].text(), {
     module, exports: module.exports, require: () => react,
     localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) },
-    getComputedStyle: () => ({ gridTemplateColumns: shown }),
+    getComputedStyle: () => {
+      if (shown === null) throw new Error('an uncapped divider measured the grid')
+      return { gridTemplateColumns: shown }
+    },
     requestAnimationFrame: (run: () => void) => { run(); return 0 },
     cancelAnimationFrame() {},
   })
-  const { track, handle } = module.exports.useResizable('width', ...args)
-  handle.onPointerDown({ clientX: 500, pointerId: 1, currentTarget: { parentElement: grid, setPointerCapture() {} } })
+  const render = () => {
+    slot = 0
+    return module.exports.useResizable('width', ...args)
+  }
+  return { render, grid, saved, target: { parentElement: grid, setPointerCapture() {} } }
+}
+
+async function dragDivider(stored: number, shown: string, args: number[], dx: number | null) {
+  const { render, grid, saved, target } = await loadDivider(stored, shown, args)
+  const { track, handle } = render()
+  handle.onPointerDown({ clientX: 500, pointerId: 1, currentTarget: target })
   if (dx !== null) handle.onPointerMove({ clientX: 500 + dx })
   handle.onPointerUp()
   return { track, painted: grid.style.gridTemplateColumns, saved: saved.get('width') }
+}
+
+// Focuses the divider, presses keys, and reads the separator's [value, min, max] after each render.
+async function pressDivider(stored: number, shown: string | null, args: number[], keys: string[]) {
+  const { render, saved, target } = await loadDivider(stored, shown, args)
+  const value = () => {
+    const { handle } = render()
+    return [handle['aria-valuenow'], handle['aria-valuemin'], handle['aria-valuemax']]
+  }
+  render().handle.onFocus?.({ currentTarget: target })
+  const seen = [value()]
+  for (const key of keys) {
+    render().handle.onKeyDown({ key, shiftKey: false, currentTarget: target })
+    seen.push(value())
+  }
+  return { seen, saved: saved.get('width') }
 }
 
 // A saved width above the cap renders at the cap. Dragging starts there and keeps the cap, as History renders it.
@@ -80,9 +122,29 @@ test('capped History dividers drag from the rendered width and paint the same ca
   // A click without a move keeps the saved width.
   expect(await dragDivider(1100, '350px 8px 642px', [400, 280, 1100, 35], null))
     .toEqual({ track: 'min(1100px, 35%)', painted: 'min(1100px, 35%) 8px minmax(0, 1fr)', saved: '1100' })
+  // In a 600px grid the 35% cap, 210px, is below the 280px minimum, so a drag cannot move the track and keeps the saved width.
+  expect(await dragDivider(400, '210px 8px 382px', [400, 280, 1100, 35], -30))
+    .toEqual({ track: 'min(400px, 35%)', painted: 'min(400px, 35%) 8px minmax(0, 1fr)', saved: '400' })
 })
 
 test('an uncapped divider still drags from its saved width', async () => {
   const { painted, saved } = await dragDivider(300, '999px 8px 400px', [264, 200, 420], -1)
   expect({ painted, saved }).toEqual({ painted: '299px 8px minmax(0, 1fr)', saved: '299' })
+})
+
+// A saved 400px list in a 1000px grid shows at the 35% cap, 350px. Each step moves what is shown, and the value reports it.
+test('a capped divider steps from its rendered width and reports the width on screen', async () => {
+  expect(await pressDivider(400, '350px 8px 642px', [400, 280, 1100, 35], ['ArrowLeft', 'ArrowRight', 'ArrowRight']))
+    .toEqual({ seen: [[350, 280, 350], [338, 280, 350], [350, 280, 350], [350, 280, 350]], saved: '350' })
+})
+
+// Below its minimum the cap pins the track. Steps cannot move it, so the saved width is kept for a wider window.
+test('a divider capped below its minimum is pinned and keeps the saved width', async () => {
+  expect(await pressDivider(400, '210px 8px 382px', [400, 280, 1100, 35], ['ArrowLeft', 'ArrowLeft']))
+    .toEqual({ seen: [[210, 210, 210], [210, 210, 210], [210, 210, 210]], saved: '400' })
+})
+
+test('an uncapped divider still steps from its saved width without measuring', async () => {
+  expect(await pressDivider(300, null, [264, 200, 420], ['ArrowLeft', 'ArrowRight', 'ArrowRight']))
+    .toEqual({ seen: [[300, 200, 420], [288, 200, 420], [300, 200, 420], [312, 200, 420]], saved: '312' })
 })

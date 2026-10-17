@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
@@ -31,7 +31,7 @@ export async function stagePaths(repo: string, paths: string[]): Promise<void> {
   if (!paths.length) return
   for (const file of await unmergedPaths(repo, paths)) {
     await assertSupportedConflictFormat(repo, file)
-    if (await hasUnresolvedMarkers(path.join(repo, file))) {
+    if (await hasUnresolvedMarkers(repo, file)) {
       throw new Error(`${file} still has conflict markers. Resolve the conflict before staging it.`)
     }
   }
@@ -49,14 +49,26 @@ async function unmergedPaths(repo: string, paths: string[]): Promise<string[]> {
   return [...new Set(files)]
 }
 
+// The conflict loader's limit. Staging reads a file only this far, so a huge file is never buffered whole.
+const MAX_MARKER_SCAN = 2 * 1024 * 1024
+
 // A file counts as unresolved when its text parses into conflict blocks, or holds a marker that cannot be parsed.
-// Binary files are not checked here, and the resolver reports them as unsupported.
-async function hasUnresolvedMarkers(file: string): Promise<boolean> {
-  const info = await fs.lstat(file).catch(() => null)
+// Binary files, found by a NUL byte in the part read, are not checked here, and the resolver reports them as
+// unsupported. Text past the limit is refused, never taken as resolved.
+async function hasUnresolvedMarkers(repo: string, file: string): Promise<boolean> {
+  const full = path.join(repo, file)
+  const info = await fs.lstat(full).catch(() => null)
   if (!info?.isFile()) return false
-  const bytes = await fs.readFile(file)
-  if (bytes.includes(0)) return false
-  const parsed = parseConflicts(new TextDecoder('utf-8').decode(bytes))
+  const chunks: Buffer[] = []
+  let size = 0
+  // end is inclusive, so the read stops one byte past the limit, even for a file that grew after lstat.
+  for await (const chunk of createReadStream(full, { end: MAX_MARKER_SCAN })) {
+    if (chunk.includes(0)) return false
+    chunks.push(chunk)
+    size += chunk.length
+  }
+  if (size > MAX_MARKER_SCAN) throw new Error(`${file} is too large to check for conflict markers. Stage it outside BetterGit.`)
+  const parsed = parseConflicts(new TextDecoder('utf-8').decode(Buffer.concat(chunks)))
   return parsed.ok ? conflictBlocks(parsed.parts).length > 0 : true
 }
 
