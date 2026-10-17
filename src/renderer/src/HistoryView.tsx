@@ -11,7 +11,7 @@ import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { loadSession, savePlace } from './session'
+import { loadSession, savePlace, useScrollMemory } from './session'
 
 const api = window.bettergit
 const PAGE = 300
@@ -36,7 +36,7 @@ interface Props {
 
 export function HistoryView({ repo, head, revision, listOpen, detailOpen, onError, onChanged }: Props) {
   const [commits, setCommits] = useState<Commit[]>([])
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
   const [detail, setDetail] = useState<{ hash: string; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
   const [compare, setCompare] = useState<{ label: string; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
@@ -103,10 +103,14 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     return () => { stale = true }
   }, [repo, selected, context, onError])
 
-  // Remembers the open commit per repo, so a reload returns to it.
+  // Remembers the open commit and the search per repo, so a reload returns to them.
   useEffect(() => {
     savePlace(repo, { commit: selected ?? undefined })
   }, [repo, selected])
+
+  useEffect(() => {
+    savePlace(repo, { query: query || undefined })
+  }, [repo, query])
 
   // The remote link and the upstream feed the commit menu. Both follow the repository, so they reload with it.
   useEffect(() => {
@@ -166,6 +170,11 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const picked = commits.find((commit) => commit.hash === selected) ?? null
   // Detail for another commit is not shown, so moving the selection clears it until its own reply arrives.
   const current = detail && detail.hash === selected ? detail : null
+  // The list and the open commit's diff return to their saved scroll. A diff only returns for the commit it was saved with.
+  // The diff's file collapse map has its own id: a scroll write replaces whatever is stored under the scroll's id.
+  const onListScroll = useScrollMemory(list.pane, `${repo}|history-list`, 'list', rows.length > 0)
+  const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', current !== null)
+
   // The heading already shows the subject, so the body under it leaves the subject out.
   const body = current ? bodyBelow(current.details.body, picked?.subject ?? '') : ''
   // A repo with no commits gets its own message in place of the selection hint.
@@ -241,6 +250,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
           className={`history-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
           ref={list.pane}
           {...list.paneHandlers}
+          onScroll={onListScroll}
         >
           {list.folded && (
             <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" onClick={list.activate}>
@@ -334,7 +344,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                 }} />
               </div>
               <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />
-              <div className="diff-pane" ref={diffRef}>
+              <div className="diff-pane" ref={diffRef} onScroll={onDiffScroll}>
                 {compare && totals && (
                   <div className="compare-bar">
                     <span>
@@ -343,7 +353,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
                   </div>
                 )}
-                <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} />
+                <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} />
               </div>
             </>
           )}

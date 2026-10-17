@@ -4,6 +4,7 @@ import type { AppConfig } from '../../main/config'
 import type { TreeNode } from '../../main/scan'
 import { Icon, IconButton } from './Icons'
 import { FolderIcon } from './FileIcon'
+import { useScrollMemory } from './session'
 import type { FoldHold } from './fold'
 
 interface SidebarProps {
@@ -40,6 +41,9 @@ export function Sidebar(props: SidebarProps) {
   const addTrigger = useRef<HTMLButtonElement>(null)
   const contextRef = useRef<HTMLDivElement>(null)
   const [focusPath, setFocusPath] = useState<string | null>(null)
+
+  const treeRef = useRef<HTMLDivElement>(null)
+  const onTreeScroll = useScrollMemory(treeRef, 'sidebar', '', props.tree.length > 0)
 
   // Popovers close on any outside click or Escape.
   useEffect(() => {
@@ -125,8 +129,10 @@ export function Sidebar(props: SidebarProps) {
       </div>
 
       <div
+        ref={treeRef}
         className="tree"
         role="tree"
+        onScroll={onTreeScroll}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
           const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')]

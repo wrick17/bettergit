@@ -8,7 +8,7 @@ import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { loadSession, savePlace } from './session'
+import { loadSession, savePlace, useScrollMemory } from './session'
 
 const api = window.bettergit
 
@@ -50,27 +50,29 @@ interface SectionProps {
 }
 
 const VIEW_KEY = 'bettergit.changesView'
-// Commit drafts by repo path. A module-level map survives unmounts, such as opening History.
-const drafts = new Map<string, string>()
 
 export function ChangesView({ repo, status, revision, listOpen, detailOpen, onChanged, onError }: Props) {
   const [selection, setSelection] = useState<Selection | null>(() => savedSelection(repo, status))
-  const [, rerender] = useState(0)
   const [pending, setPending] = useState<Pending | null>(null)
-  const message = drafts.get(repo) ?? ''
+  // The draft is kept in the session, so a reload keeps what was typed.
+  const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
+  const messageRef = useRef(message)
   const paneRef = useRef<HTMLDivElement>(null)
-  // The file picked last, or restored at launch. The pane scrolls to it once its diff loads.
-  const revealRef = useRef<string | null>(selection?.path ?? null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // The file picked last. The pane scrolls to it once its diff loads. A restored scroll position takes its place, so nothing is revealed at launch.
+  const revealRef = useRef<string | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
   // Both sections load on every refresh. The file rows need their +/- counts, and the empty-selection pane shows them all.
   const [all, setAll] = useState<{ staged: Working; unstaged: Working } | null>(null)
   // Context level of each widened file, keyed by levelKey. Kept across refreshes and read by the loaders.
-  const [extra, setExtra] = useState<Record<string, number>>({})
+  const [extra, setExtra] = useState<Record<string, number>>(() => loadSession().places[repo]?.widened ?? {})
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
   const context = useContextLines()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
   const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, '.changes-view-toggle button')
+  const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
+  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, selection ? `${selection.staged}:${selection.path}` : 'all', selection ? diff !== null : all !== null)
   const errorRef = useRef(onError)
   errorRef.current = onError
   const extraRef = useRef(extra)
@@ -82,13 +84,14 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const stats = useMemo(() => countStats(all), [all])
   const List = view === 'tree' ? Tree : Group
 
-  // A different repo starts with no widened files.
-  useEffect(() => setExtra({}), [repo])
-
-  // Remembers the open file per repo, so a reload returns to it.
+  // Remembers the open file per repo, so a reload returns to it. The closed folders and the widened files are kept the same way.
   useEffect(() => {
     savePlace(repo, { file: selection?.path, staged: selection?.staged })
   }, [repo, selection])
+
+  useEffect(() => {
+    savePlace(repo, { collapsed: [...collapsed], widened: extra })
+  }, [repo, collapsed, extra])
 
   // A selection survives a status change only while its file is still in the section it names. Otherwise it moves to the other section or clears.
   useEffect(() => {
@@ -200,9 +203,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // Empty text drops the draft, so clearing the box is how a draft is discarded.
   const editMessage = (text: string) => {
-    if (text) drafts.set(repo, text)
-    else drafts.delete(repo)
-    rerender((count) => count + 1)
+    messageRef.current = text
+    setMessage(text)
+    savePlace(repo, { draft: text || undefined })
   }
 
   const canCommit = staged.length > 0 && message.trim().length > 0
@@ -213,7 +216,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     void act(async () => {
       await api.commitChanges(repo, message, false)
       // A draft typed while the commit ran was not committed, so it stays.
-      if (drafts.get(repo) === message) editMessage('')
+      if (messageRef.current === message) editMessage('')
       setSelection(null)
     }).finally(() => setPending(null))
   }
@@ -253,7 +256,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
             <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
           </div>
-          <div className="file-scroll">
+          <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
             <List
               title="Staged"
               changes={staged}
@@ -316,7 +319,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       )}
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
-        <div className="diff-pane" ref={paneRef}>
+        <div className="diff-pane" ref={paneRef} onScroll={onDiffScroll}>
           {!selection && status.changes.length === 0 && <p className="hint">Working tree clean</p>}
           {!selection && all && status.changes.length > 0 && (
             <>
@@ -327,6 +330,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                   moves={all.staged.moves}
                   stage={{ staged: true, disabled: !!pending, onToggle: togglePath }}
                   onExpand={(file) => expandFile('staged', file)}
+                  persist={{ id: `${repo}|changes-staged`, key: 'all' }}
                 />
               )}
               <h2 className="diff-section">Unstaged <span className="count">{all.unstaged.files.length}</span></h2>
@@ -336,6 +340,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                   moves={all.unstaged.moves}
                   stage={{ staged: false, disabled: !!pending, onToggle: togglePath }}
                   onExpand={(file) => expandFile('unstaged', file)}
+                  persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
                 />
               )}
             </>
@@ -346,6 +351,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               moves={diff.moves}
               stage={{ staged: selection.staged, disabled: !!pending, onToggle: togglePath }}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
+              persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
             />
           )}
         </div>
