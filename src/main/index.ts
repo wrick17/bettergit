@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
 import path from 'node:path'
+import { statSync } from 'node:fs'
 import { loadConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
 import { BackgroundFetcher, type FetchReport } from './background'
+import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withRepoLock } from './repo-lock'
 import { commitDiff, compare, detectMoves, workingDiff } from './git/diff'
 import { readHistory, commitDetails, searchHistory } from './git/history'
 import { readStatus } from './git/status'
@@ -82,6 +84,7 @@ async function buildTree(): Promise<TreeNode[]> {
     const scanned = await scanFolder(source)
     nodes.push(scanned ?? { kind: 'folder', path: source, name: path.basename(source), children: [] })
   }
+  registerRepoLockPaths(nodes.flatMap(flattenRepos).map((repo) => repo.path))
   return nodes
 }
 
@@ -93,23 +96,37 @@ function assertKnownRepo(repoPath: string) {
   return resolved
 }
 
-// Git writes to one repo collide on its index lock, so a second write is rejected while one is running.
-const writing = new Set<string>()
+// Validate both the selected path and its destination before opening or locking a repo.
+function assertKnownWriteRepo(repoPath: string): string {
+  const resolved = assertKnownRepo(repoPath)
+  const canonical = canonicalRepoPath(resolved)
+  const trusted = config.sources.some((source) => {
+    try {
+      const root = canonicalRepoPath(source)
+      return canonical === root || canonical.startsWith(root + path.sep)
+    } catch {
+      return false
+    }
+  })
+  const marker = statSync(path.join(canonical, '.git'), { throwIfNoEntry: false })
+  if (!trusted || !(marker?.isDirectory() || marker?.isFile())) {
+    throw new Error(`Not a repository in the sidebar: ${repoPath}`)
+  }
+  return canonical
+}
 
+// Git writes to one repo collide on its index lock, so a write is refused while another one holds the repo.
 function handleWrite(channel: string, handler: (...args: any[]) => unknown) {
   ipcMain.handle(channel, async (event, repoPath: string, ...args: unknown[]) => {
-    const repo = assertKnownRepo(repoPath)
-    if (writing.has(repo)) throw new Error(`Another change is already running in ${path.basename(repo)}. Try again when it finishes.`)
-    writing.add(repo)
-    try {
-      return await handler(event, repoPath, ...args)
-    } finally {
-      writing.delete(repo)
-    }
+    const repo = assertKnownWriteRepo(repoPath)
+    return withRepoLock(repo, channel, (canonical) => handler(event, canonical, ...args), path.resolve(repoPath))
   })
 }
 
 function registerIpc() {
+  ipcMain.handle('repo:locks', () => repoLockSnapshot())
+  const offLocks = subscribeRepoLocks((snapshot) => sendToRenderer('repo:locks', snapshot))
+  app.once('will-quit', offLocks)
   ipcMain.handle('config:get', () => config)
   ipcMain.handle('config:update', async (_event, patch: Partial<AppConfig>) => {
     await persist({ ...config, ...patch, settings: { ...config.settings, ...(patch.settings ?? {}) } })
@@ -154,32 +171,32 @@ function registerIpc() {
     const files = await workingDiff(assertKnownRepo(repoPath), staged, context, path)
     return { files, moves: detectMoves(files) }
   })
-  handleWrite('repo:stage', (_event, repoPath: string, paths: string[]) => ops.stagePaths(assertKnownRepo(repoPath), paths))
+  handleWrite('repo:stage', (_event, repoPath: string, paths: string[]) => ops.stagePaths(repoPath, paths))
   handleWrite('repo:unstage', async (_event, repoPath: string, paths: string[]) => {
-    const repo = assertKnownRepo(repoPath)
+    const repo = repoPath
     const hasHead = (await readStatus(repo)).headHash !== null
     return ops.unstagePaths(repo, paths, hasHead)
   })
   handleWrite('repo:commit-changes', (_event, repoPath: string, message: string, amend: boolean) =>
-    ops.commit(assertKnownRepo(repoPath), message, amend))
+    ops.commit(repoPath, message, amend))
   ipcMain.handle('repo:branches', async (_event, repoPath: string) => ops.readBranches(assertKnownRepo(repoPath)))
-  handleWrite('repo:switch', (_event, repoPath: string, name: string) => ops.switchBranch(assertKnownRepo(repoPath), name))
-  handleWrite('repo:fetch', (_event, repoPath: string) => ops.fetchAll(assertKnownRepo(repoPath)))
-  handleWrite('repo:pull', (_event, repoPath: string, mode?: 'merge' | 'rebase') => ops.pull(assertKnownRepo(repoPath), mode))
+  handleWrite('repo:switch', (_event, repoPath: string, name: string) => ops.switchBranch(repoPath, name))
+  handleWrite('repo:fetch', (_event, repoPath: string) => ops.fetchAll(repoPath))
+  handleWrite('repo:pull', (_event, repoPath: string, mode?: 'merge' | 'rebase') => ops.pull(repoPath, mode))
   handleWrite('repo:pull-from', (_event, repoPath: string, remote: string, branch: string) =>
-    ops.pullFrom(assertKnownRepo(repoPath), remote, branch))
+    ops.pullFrom(repoPath, remote, branch))
   ipcMain.handle('repo:remotes', (_event, repoPath: string) => ops.readRemotes(assertKnownRepo(repoPath)))
-  handleWrite('repo:reset-upstream', (_event, repoPath: string) => ops.resetToUpstream(assertKnownRepo(repoPath)))
+  handleWrite('repo:reset-upstream', (_event, repoPath: string) => ops.resetToUpstream(repoPath))
   handleWrite('repo:checkout-detached', (_event, repoPath: string, hash: string) =>
-    ops.checkoutDetached(assertKnownRepo(repoPath), hash))
+    ops.checkoutDetached(repoPath, hash))
   handleWrite('repo:branch-from', (_event, repoPath: string, name: string, hash: string) =>
-    ops.branchFromCommit(assertKnownRepo(repoPath), name, hash))
+    ops.branchFromCommit(repoPath, name, hash))
   handleWrite('repo:tag-from', (_event, repoPath: string, name: string, hash: string) =>
-    ops.tagFromCommit(assertKnownRepo(repoPath), name, hash))
-  handleWrite('repo:cherry-pick', (_event, repoPath: string, hash: string) => ops.cherryPick(assertKnownRepo(repoPath), hash))
-  handleWrite('repo:revert', (_event, repoPath: string, hash: string) => ops.revertCommit(assertKnownRepo(repoPath), hash))
+    ops.tagFromCommit(repoPath, name, hash))
+  handleWrite('repo:cherry-pick', (_event, repoPath: string, hash: string) => ops.cherryPick(repoPath, hash))
+  handleWrite('repo:revert', (_event, repoPath: string, hash: string) => ops.revertCommit(repoPath, hash))
   handleWrite('repo:amend-message', (_event, repoPath: string, message: string, expectedHash: string) =>
-    ops.amendMessage(assertKnownRepo(repoPath), message, expectedHash))
+    ops.amendMessage(repoPath, message, expectedHash))
   ipcMain.handle('repo:merge-base', (_event, repoPath: string, a: string, b: string) =>
     ops.mergeBase(assertKnownRepo(repoPath), a, b))
   ipcMain.handle('repo:compare', async (_event, repoPath: string, from: string, to: string) => {
@@ -193,21 +210,21 @@ function registerIpc() {
     return shell.openExternal(parsed.href)
   })
   handleWrite('repo:push', async (_event, repoPath: string) => {
-    const repo = assertKnownRepo(repoPath)
+    const repo = repoPath
     const status = await readStatus(repo)
     if (!status.head) throw new Error('Push needs a branch, not a detached HEAD.')
     await ops.push(repo, status.upstream !== null, status.head)
   })
   ipcMain.handle('repo:stashes', async (_event, repoPath: string) => ops.readStashes(assertKnownRepo(repoPath)))
   handleWrite('repo:stash', (_event, repoPath: string, message: string) =>
-    ops.stashPush(assertKnownRepo(repoPath), message, true))
+    ops.stashPush(repoPath, message, true))
   handleWrite('repo:stash-action', (_event, repoPath: string, action: 'pop' | 'apply' | 'drop', ref: string) =>
-    ops.stashAction(assertKnownRepo(repoPath), action, ref))
+    ops.stashAction(repoPath, action, ref))
   handleWrite('repo:backup', (_event, repoPath: string, label: string) =>
-    ops.createBackupRef(assertKnownRepo(repoPath), label))
+    ops.createBackupRef(repoPath, label))
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>
-    ops.restoreBackup(assertKnownRepo(repoPath), ref))
-  handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(assertKnownRepo(repoPath), paths))
+    ops.restoreBackup(repoPath, ref))
+  handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
   ipcMain.handle('repo:search', (_event, repoPath: string, query: string) => searchHistory(assertKnownRepo(repoPath), query))
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
   ipcMain.handle('clone', async (_event, url: string, parent: string) => {

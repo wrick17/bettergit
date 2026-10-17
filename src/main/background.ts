@@ -2,6 +2,7 @@ import { powerMonitor } from 'electron'
 import { git } from './git/exec'
 import { fetchAll } from './git/ops'
 import { readStatus } from './git/status'
+import { canonicalRepoPath, repoLockHolder, withRepoLock } from './repo-lock'
 
 export interface FetchReport {
   fetched: string[]
@@ -47,13 +48,21 @@ export class BackgroundFetcher {
     try {
       for (const repo of await this.options.repos()) {
         try {
-          const status = await readStatus(repo)
-          if (!status.upstream && !(await hasRemote(repo))) {
-            report.skipped.push({ repo, reason: 'no remote' })
+          const canonical = canonicalRepoPath(repo)
+          // The check and claim are synchronous, including through a symlink alias.
+          if (repoLockHolder(canonical)) {
+            report.skipped.push({ repo, reason: 'busy' })
             continue
           }
-          await fetchAll(repo)
-          report.fetched.push(repo)
+          await withRepoLock(repo, 'background-fetch', async (lockedRepo) => {
+            const status = await readStatus(lockedRepo)
+            if (!status.upstream && !(await hasRemote(lockedRepo))) {
+              report.skipped.push({ repo, reason: 'no remote' })
+              return
+            }
+            await fetchAll(lockedRepo)
+            report.fetched.push(repo)
+          })
         } catch (failure) {
           report.failed.push({ repo, reason: failure instanceof Error ? failure.message : String(failure) })
         }

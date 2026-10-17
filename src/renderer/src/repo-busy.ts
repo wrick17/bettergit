@@ -1,0 +1,149 @@
+import { useSyncExternalStore } from 'react'
+
+// One write per repo at a time, which matches the main process guard. The slot lives at module level,
+// so it survives a pane remount (repo switch) and a tab unmount.
+const running = new Map<string, string>()
+const listeners = new Set<() => void>()
+
+function notify() {
+  for (const listener of listeners) listener()
+}
+
+// Holders that main reports for writes this window did not start, such as a background fetch or another window's write.
+// Their IDs match the IPC channel names, minus the 'repo:' prefix.
+export interface RepoLockSnapshot {
+  seq: number
+  holders: Record<string, string>
+  identities?: Record<string, string>
+}
+
+let remote: RepoLockSnapshot = { seq: -1, holders: {} }
+
+// A local claim wins over main's report, so a write this window started stays busy until its own finally runs.
+export function busyKey(repo: string): string | null {
+  const identity = (displayPath: string) => remote.identities?.[displayPath] ?? displayPath
+  const canonical = identity(repo)
+  for (const [displayPath, local] of running) {
+    if (identity(displayPath) === canonical) return local
+  }
+  const holder = remote.holders[canonical]
+  return holder ? holder.replace(/^repo:/, '') : null
+}
+
+// Applies a main snapshot. An older reply, such as the initial read that lands after a newer event, is dropped.
+export function applyRepoLockSnapshot(snapshot: RepoLockSnapshot): void {
+  if (snapshot.seq <= remote.seq) return
+  remote = snapshot
+  notify()
+}
+
+// Subscribes before reading the first snapshot, so no change between the two is missed. Failing to read it is reported.
+export function connectRepoLocks(bridge: {
+  snapshot: () => Promise<RepoLockSnapshot>
+  subscribe: (listener: (snapshot: RepoLockSnapshot) => void) => () => void
+}, onError: (failure: unknown) => void): () => void {
+  const off = bridge.subscribe(applyRepoLockSnapshot)
+  bridge.snapshot().then(applyRepoLockSnapshot).catch(onError)
+  return off
+}
+
+export function subscribeRepoBusy(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+export function useRepoBusy(repo: string): string | null {
+  return useSyncExternalStore(subscribeRepoBusy, () => busyKey(repo))
+}
+
+// Runs one write for a repo. A second write to the same repo returns false without calling its action.
+// The result reports only the write, so a later status reload cannot turn a finished write into a failure.
+export async function runRepoAction(
+  repo: string,
+  key: string,
+  action: () => Promise<unknown>,
+  onError: (failure: unknown) => void,
+): Promise<boolean> {
+  // Refused while this window or main holds the repo. The caller shows the reason where it can.
+  if (busyKey(repo) !== null) return false
+  running.set(repo, key)
+  notify()
+  try {
+    await action()
+    return true
+  } catch (failure) {
+    onError(failure)
+    return false
+  } finally {
+    running.delete(repo)
+    notify()
+  }
+}
+
+// The label each write shows while it runs. The keys are the operation names that callers pass to runRepoAction.
+export const REPO_WORKING_LABELS: Record<string, string> = {
+  fetch: 'Fetching…',
+  'pull-merge': 'Pulling…',
+  'pull-rebase': 'Pulling…',
+  pull: 'Pulling…',
+  push: 'Pushing…',
+  switch: 'Switching…',
+  'create-branch': 'Creating branch…',
+  reset: 'Resetting…',
+  stash: 'Stashing…',
+  pop: 'Popping stash…',
+  apply: 'Applying stash…',
+  stage: 'Staging…',
+  unstage: 'Unstaging…',
+  discard: 'Discarding…',
+  commit: 'Committing…',
+  detach: 'Checking out…',
+  branch: 'Creating branch…',
+  tag: 'Creating tag…',
+  cherry: 'Cherry-picking…',
+  revert: 'Reverting…',
+  amend: 'Amending…',
+  'background-fetch': 'Fetching…',
+  'pull-from': 'Pulling…',
+  'stash-action': 'Updating stash…',
+  'commit-changes': 'Committing…',
+  'reset-upstream': 'Resetting…',
+  'checkout-detached': 'Checking out…',
+  'branch-from': 'Creating branch…',
+  'tag-from': 'Creating tag…',
+  'cherry-pick': 'Cherry-picking…',
+  'amend-message': 'Amending…',
+  backup: 'Saving backup…',
+  restore: 'Restoring…',
+  // Saving a conflict resolution. The conflict writer uses this key.
+  resolve: 'Saving resolution…',
+  'conflict-save': 'Saving resolution…',
+}
+
+// A key can name a target after a colon, such as discard:<path>. The label depends only on the operation.
+export function workingLabel(busy: string): string {
+  return REPO_WORKING_LABELS[busy.split(':')[0]] ?? 'Working…'
+}
+
+// The reason a control gives when a write is running in its repo. Undefined when nothing runs.
+export function blockedReason(busy: string | null): string | undefined {
+  return busy === null ? undefined : `Another action is running: ${workingLabel(busy)}`
+}
+
+// A write, then a reload. A failed write goes to onError and returns false, and the reload does not run.
+// A failed reload also goes to onError, but the write still returns true, so a refresh cannot fail a finished Git write.
+export async function runRepoWrite(
+  repo: string,
+  key: string,
+  action: () => Promise<unknown>,
+  { onError, reload }: { onError: (failure: unknown) => void; reload: () => void },
+): Promise<boolean> {
+  const ok = await runRepoAction(repo, key, action, onError)
+  if (!ok) return false
+  try {
+    reload()
+  } catch (failure) {
+    onError(failure)
+  }
+  return true
+}

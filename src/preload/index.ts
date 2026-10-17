@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
+import type { RepoLockSnapshot } from '../main/repo-lock'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
@@ -12,6 +13,7 @@ const api = {
   pickFolder: () => invoke('folder:pick') as Promise<string | null>,
   addSources: (paths: string[]) => invoke('sources:add', paths),
   removeSource: (path: string) => invoke('sources:remove', path),
+  repoLocks: () => invoke('repo:locks') as Promise<RepoLockSnapshot>,
   status: (repo: string) => invoke('repo:status', repo),
   history: (repo: string, skip: number, limit: number) => invoke('repo:history', repo, skip, limit),
   searchHistory: (repo: string, query: string) => invoke('repo:search', repo, query),
@@ -50,7 +52,7 @@ const api = {
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),
   // Main-process events (file changes, background fetch reports) arrive here; returns an unsubscribe.
-  onEvent: (channel: 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action', listener: (payload: unknown) => void) => {
+  onEvent: (channel: 'repo:locks' | 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action', listener: (payload: unknown) => void) => {
     const handler = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channel, handler)
     return () => { ipcRenderer.removeListener(channel, handler) }
