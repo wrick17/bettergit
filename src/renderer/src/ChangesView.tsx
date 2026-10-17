@@ -70,7 +70,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
   const context = useContextLines()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
-  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, '.changes-view-toggle button')
+  // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
+  // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
+  const clean = status.changes.length === 0
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
   const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
   const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, selection ? `${selection.staged}:${selection.path}` : 'all', selection ? diff !== null : all !== null)
   const errorRef = useRef(onError)

@@ -38,9 +38,11 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   // The titlebar band's element. The repo toolbar is portalled into it.
   const [titlebar, setTitlebar] = useState<HTMLElement | null>(null)
+  // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
+  const [repoClean, setRepoClean] = useState(false)
   const { size: sidebarWidth, handle: sidebarHandle } = useResizable('bettergit.sidebarWidth', 264, 200, 420)
 
-  const sidebarFold = useFoldHold<HTMLElement>(useFolded('sidebar'), '[role="treeitem"][tabindex="0"]')
+  const sidebarFold = useFoldHold<HTMLElement>(useFolded('sidebar') && !repoClean, '[role="treeitem"][tabindex="0"]')
 
   const refreshTree = useCallback(async () => setTree(await api.getTree()), [])
   const reportError = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))
@@ -145,6 +147,11 @@ export function App() {
   const repos = useMemo(() => flatten(tree), [tree])
   const repo = repos.find((node) => node.path === selected) ?? null
 
+  // Clean state belongs to the open repo, so it resets when no repo is open.
+  useEffect(() => {
+    if (!repo) setRepoClean(false)
+  }, [repo])
+
   const update = async (patch: Partial<AppConfig>) => {
     setConfig(await api.updateConfig(patch))
   }
@@ -239,6 +246,7 @@ export function App() {
             revision={revision}
             onChanged={() => setRevision((value) => value + 1)}
             onError={reportError}
+            onCleanChange={setRepoClean}
           />
         )}
       </main>
@@ -284,7 +292,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError }: {
+function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
   titlebar: HTMLElement | null
   repo: RepoNode
   tab: 'changes' | 'history'
@@ -298,6 +306,7 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
   revision: number
   onChanged: () => void
   onError: (error: unknown) => void
+  onCleanChange: (clean: boolean) => void
 }) {
   const [status, setStatus] = useState<RepoStatus | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
@@ -314,6 +323,11 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
   useEffect(() => {
     load().catch(onError)
   }, [load, revision])
+
+  // Only a loaded status counts, so switching repos keeps the last answer until the new status arrives.
+  useEffect(() => {
+    if (status) onCleanChange(tab === 'changes' && status.changes.length === 0)
+  }, [status, tab, onCleanChange])
 
   // Resolves to whether the action succeeded, so dialogs can stay open on failure.
   const run = async (label: string, action: () => Promise<unknown>) => {
