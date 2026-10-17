@@ -45,7 +45,6 @@ export function App() {
   // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
   const [repoClean, setRepoClean] = useState(false)
   const { size: sidebarWidth, handle: sidebarHandle } = useResizable('bettergit.sidebarWidth', 264, 200, 420)
-
   const sidebarFold = useFoldHold<HTMLElement>(useFolded('sidebar') && !repoClean, '[role="treeitem"][tabindex="0"]')
 
   const refreshTree = useCallback(async () => setTree(await api.getTree()), [])

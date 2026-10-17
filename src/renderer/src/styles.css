@@ -422,8 +422,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-pane > .hint { padding: 20px 20px; }
 /* One toolbar height for the sticky toolbar and the offset that keeps file headers below it. */
 .diff { position: relative; --diff-toolbar-height: 40px; padding: 0 0 32px; font: 13px/22px var(--font-code); }
-/* No z-index: the arrows must paint under the sticky file headers, which sit in their own stacking contexts. */
-.move-arrows { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+/* Above the lines, whose backgrounds would hide a connector, and below the sticky file headers (z 2). */
+.move-arrows { position: absolute; top: 0; left: 0; z-index: 1; overflow: visible; pointer-events: none; }
 /* Above the file headers (z 2), below popovers (z 40) and dialogs (z 50). Near-opaque like the headers (--content), so diff text barely shows through. */
 .diff-toolbar {
   position: sticky; top: 0; z-index: 3; background: var(--content); border-radius: var(--panel-radius) var(--panel-radius) 0 0;
@@ -471,6 +471,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .line.del { background: var(--del-bg); box-shadow: inset 2px 0 0 var(--del); }
 .line.note { color: var(--text-3); font-style: italic; }
 .line.moved { background: var(--move-bg); box-shadow: inset 2px 0 0 var(--move); }
+/* The lane left of the line numbers. Unified move connectors run down it, so they never cross code. */
+.lane { flex: none; width: 28px; }
 .gutter { flex: none; width: 50px; padding-right: 12px; text-align: right; color: var(--text-3); user-select: none; font-variant-numeric: tabular-nums; }
 .sign { flex: none; width: 18px; text-align: center; color: var(--text-3); user-select: none; }
 .line.add .sign { color: var(--add); }
@@ -484,10 +486,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--move-bg); color: var(--move); box-shadow: inset 0 0 0 0.5px var(--move);
   font: 500 12px/18px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Unified labels start right of the connector lane. */
+.lane-note { margin-left: 36px; max-width: calc(100% - 44px); }
 /* Split view: the channel between the two columns is where the move arrows travel. */
 .split-row { display: grid; grid-template-columns: 1fr 1fr; column-gap: 36px; align-items: stretch; }
 .split-cell { display: flex; min-width: 0; min-height: 22px; overflow: hidden; white-space: pre; }
-.split-cell.empty { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hover) 6px 7px); }
+/* Fixed attachment: every empty cell samples one viewport origin, so stripes line up across rows whatever their height. */
+.split-cell.empty { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hover) 6px 7px) fixed; }
 .split-cell.add { background: var(--add-bg); }
 .split-cell.del { background: var(--del-bg); }
 .split-cell.moved { background: var(--move-bg); }

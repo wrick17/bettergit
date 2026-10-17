@@ -8,11 +8,11 @@ import { CommitStat } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
 import { Icon } from './Icons'
 import { ActionMenu } from './OverflowBar'
-import { useContextLines } from './prefs'
+import { useContextLines, useIgnoreWhitespace } from './prefs'
 import { useRepoBusy } from './repo-busy'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { loadSession, savePlace, useScrollMemory } from './session'
+import { loadSession, savePlace, savedView, saveView, useScrollMemory } from './session'
 
 const api = window.bettergit
 const PAGE = 300
@@ -40,7 +40,16 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
   const [detail, setDetail] = useState<{ hash: string; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
-  const [compare, setCompare] = useState<{ label: string; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
+  // The compare the user asked for: the commit, and the ref it compares with. Its diff is fetched with the whitespace option on screen.
+  const [target, setTarget] = useState<{ hash: string; label: string; ref: string; quiet?: boolean } | null>(null)
+  // The last fetched compare, with the option it was fetched with. It is shown only while that option and target are current.
+  const [loaded, setLoaded] = useState<{ hash: string; label: string; ref: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
+  // The compare that was open for the commit at launch. It is read once, and returns when that commit's detail shows.
+  const [savedCompare] = useState(() => {
+    const saved = selected ? savedView<{ label: string; ref: string } | null>(`${repo}|compare`, selected, null) : null
+    return saved && selected ? { hash: selected, ...saved } : null
+  })
+  const restoredCompare = useRef(false)
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // The write running in this repo, from any surface. The commit actions wait for it.
@@ -51,6 +60,9 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [webBase, setWebBase] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
+  const ignoreWhitespace = useIgnoreWhitespace()
+  // Shown only for the target and option on screen. While a new fetch runs, the commit's own diff is shown.
+  const compare = loaded && target && loaded.hash === target.hash && loaded.ref === target.ref && loaded.ignoreWhitespace === ignoreWhitespace ? loaded : null
   const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
   const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
   // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
@@ -93,7 +105,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       return
     }
     let stale = false
-    api.commit(repo, selected, context).then((next) => {
+    api.commit(repo, selected, context, ignoreWhitespace).then((next) => {
       // Tagged with its hash, so a reply that lands after the selection moved is never shown.
       if (!stale) setDetail({ hash: selected, ...next })
     }).catch((failure: unknown) => {
@@ -103,7 +115,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       onError(failure)
     })
     return () => { stale = true }
-  }, [repo, selected, context, onError])
+  }, [repo, selected, context, ignoreWhitespace, onError])
 
   // Remembers the open commit and the search per repo, so a reload returns to them.
   useEffect(() => {
@@ -121,14 +133,17 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       if (stale) return
       setUpstream(status.upstream)
       setWebBase(remoteWebBase(remotes))
-    }).catch(onError)
+    }).catch((failure: unknown) => {
+      if (!stale) onError(failure)
+    })
     return () => { stale = true }
   }, [repo, revision, onError])
 
   // A compare, prompt, or notice belongs to the commit it was started from. Moving to another commit clears it.
   useEffect(() => {
     selectedRef.current = selected
-    setCompare(null)
+    setTarget(null)
+    setLoaded(null)
     setPrompt(null)
     setNotice(null)
     // A right-click selects its commit and opens the menu for it, so the menu survives only for the selected commit.
@@ -157,12 +172,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }, [menuOpen])
 
   const compareWith = (label: string, ref: string) => {
-    const hash = selected
-    if (!hash) return
-    api.compare(repo, hash, ref).then((result: { files: DiffFile[]; moves: MovedBlock[] }) => {
-      // A slow result must not land on a commit the user has already left.
-      if (selectedRef.current === hash) setCompare({ label, ...result })
-    }).catch(onError)
+    if (selected) setTarget({ hash: selected, label, ref })
   }
 
   const rows = useMemo(() => layoutGraph(commits), [commits])
@@ -177,6 +187,33 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const onListScroll = useScrollMemory(list.pane, `${repo}|history-list`, 'list', rows.length > 0)
   const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', current !== null)
 
+  // The compare that was open comes back once its commit shows. A ref that no longer resolves opens the commit without it.
+  useEffect(() => {
+    if (restoredCompare.current || !savedCompare || !current || selected !== savedCompare.hash) return
+    restoredCompare.current = true
+    setTarget({ ...savedCompare, quiet: true })
+  }, [savedCompare, current, selected])
+
+  // Fetches the target with the option on screen. A new target or option cancels the older fetch, so its reply cannot land.
+  // Toggling the option refetches the same target, so the diff is never left unfiltered under a pressed option.
+  useEffect(() => {
+    if (!target) return
+    let stale = false
+    api.compare(repo, target.hash, target.ref, ignoreWhitespace).then((result: { files: DiffFile[]; moves: MovedBlock[] }) => {
+      if (!stale) setLoaded({ hash: target.hash, label: target.label, ref: target.ref, ignoreWhitespace, ...result })
+    }).catch((failure: unknown) => {
+      if (stale) return
+      // A restored compare that no longer resolves is dropped without a message. A requested one reports its error.
+      setTarget(null)
+      if (!target.quiet) onError(failure)
+    })
+    return () => { stale = true }
+  }, [repo, target, ignoreWhitespace, onError])
+
+  // The compare that is requested is saved with its commit, so a reload asks for it again.
+  useEffect(() => {
+    saveView(`${repo}|compare`, selected ?? '', target && target.hash === selected ? { label: target.label, ref: target.ref } : null)
+  }, [repo, selected, target])
   // The heading already shows the subject, so the body under it leaves the subject out.
   const body = current ? bodyBelow(current.details.body, picked?.subject ?? '') : ''
   // A repo with no commits gets its own message in place of the selection hint.
@@ -352,7 +389,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <span>
                       Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats at left are for this comparison.
                     </span>
-                    <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
+                    <button className="ghost" onClick={() => setTarget(null)}>Exit comparison</button>
                   </div>
                 )}
                 <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} />

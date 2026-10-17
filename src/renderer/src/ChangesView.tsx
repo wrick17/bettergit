@@ -5,13 +5,14 @@ import { DiffView } from './DiffView'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
-import { CONTEXT_OPTIONS, useContextLines } from './prefs'
+import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savePlace, useScrollMemory } from './session'
+import { swapFile } from './widen'
 import { ConflictView } from './ConflictView'
-import type { Choice, ConflictDocument, ConflictSave } from '../../shared/conflict'
+import type { Choice, ConflictDocument, ConflictFingerprint, ConflictSave } from '../../shared/conflict'
 
 const api = window.bettergit
 
@@ -80,6 +81,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
   const context = useContextLines()
+  const ignoreWhitespace = useIgnoreWhitespace()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
   // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
   // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
@@ -91,6 +93,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   errorRef.current = onError
   const extraRef = useRef(extra)
   extraRef.current = extra
+  // The repo on screen, so a reply for a repo the pane has left is dropped.
+  const repoRef = useRef(repo)
+  repoRef.current = repo
 
   const staged = useMemo(() => status.changes.filter((change) => change.staged), [status])
   const unstaged = useMemo(() => status.changes.filter((change) => change.unstaged && !change.conflicted), [status])
@@ -99,6 +104,17 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
   const stats = useMemo(() => countStats(all), [all])
   const List = view === 'tree' ? Tree : Group
+
+  // A widen belongs to this load and source file, even if the same path is selected again later.
+  // Loaders publish here before setState so replies in one React batch see the newest file.
+  const request = useMemo(() => ({}), [repo, revision, status, selection, conflictSelected, context, ignoreWhitespace])
+  const snapshot = { request, diff, all }
+  const currentRequest = useRef<typeof snapshot | null>(snapshot)
+  currentRequest.current = snapshot
+  useEffect(() => {
+    currentRequest.current = snapshot
+    return () => { currentRequest.current = null }
+  }, [request])
 
   // Remembers the open file per repo, so a reload returns to it. The closed folders and the widened files are kept the same way.
   useEffect(() => {
@@ -122,15 +138,19 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   useEffect(() => {
     let stale = false
-    Promise.all([api.working(repo, true, context), api.working(repo, false, context)]).then(async ([stagedDiff, unstagedDiff]: Working[]) => {
+    Promise.all([api.working(repo, true, context, undefined, ignoreWhitespace), api.working(repo, false, context, undefined, ignoreWhitespace)]).then(async ([stagedDiff, unstagedDiff]: Working[]) => {
       const [nextStaged, nextUnstaged] = await Promise.all([
         widen(repo, stagedDiff, true, extraRef.current),
         widen(repo, unstagedDiff, false, extraRef.current),
       ])
-      if (!stale) setAll({ staged: nextStaged, unstaged: nextUnstaged })
-    }).catch((failure: unknown) => errorRef.current(failure))
+      if (!stale) {
+        const next = { staged: nextStaged, unstaged: nextUnstaged }
+        if (currentRequest.current) currentRequest.current.all = next
+        setAll(next)
+      }
+    }).catch((failure: unknown) => { if (!stale) errorRef.current(failure) })
     return () => { stale = true }
-  }, [repo, revision, context])
+  }, [repo, status, revision, context, ignoreWhitespace])
 
   useEffect(() => {
     if (!selection || conflictSelected) {
@@ -138,14 +158,17 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       return
     }
     let stale = false
-    api.working(repo, selection.staged, context)
+    api.working(repo, selection.staged, context, undefined, ignoreWhitespace)
       .then((next: Working) => widen(repo, next, selection.staged, extraRef.current))
       .then((next) => {
-        if (!stale) setDiff(next)
+        if (!stale) {
+          if (currentRequest.current) currentRequest.current.diff = next
+          setDiff(next)
+        }
       })
-      .catch((failure: unknown) => errorRef.current(failure))
+      .catch((failure: unknown) => { if (!stale) errorRef.current(failure) })
     return () => { stale = true }
-  }, [repo, selection, conflictSelected, revision, context])
+  }, [repo, status, selection, conflictSelected, revision, context, ignoreWhitespace])
 
   // The resolver loads the file and its stage IDs together. A reload that finds the same fingerprint keeps the choices.
   useEffect(() => {
@@ -235,13 +258,26 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     const key = levelKey(section === 'staged', path)
     const current = extra[key] ?? context
     const next = CONTEXT_OPTIONS.find((level) => level > current) ?? current
-    api.working(repo, section === 'staged', next, path).then((fresh: Working) => {
+    const currentSource = () => {
+      const latest = currentRequest.current
+      const working = inSelection ? latest?.diff : latest?.all?.[section]
+      return latest?.request === request && working?.files.includes(file) ? latest : null
+    }
+    api.working(repo, section === 'staged', next, path, ignoreWhitespace).then((fresh: Working) => {
+      const latest = currentSource()
       const replacement = fresh.files[0]
-      if (!replacement) return
+      const working = inSelection ? latest?.diff : latest?.all?.[section]
+      if (!latest || !replacement || !working) return
+      const widened = replaceFile(working, path, replacement)
       setExtra((prev) => ({ ...prev, [key]: next }))
-      if (inSelection) setDiff((prev) => prev && replaceFile(prev, path, replacement))
-      else setAll((prev) => prev && { ...prev, [section]: replaceFile(prev[section], path, replacement) })
-    }).catch((failure: unknown) => errorRef.current(failure))
+      if (inSelection) {
+        latest.diff = widened
+        setDiff(widened)
+      } else if (latest.all) {
+        latest.all = { ...latest.all, [section]: widened }
+        setAll(latest.all)
+      }
+    }).catch((failure: unknown) => { if (currentSource()) errorRef.current(failure) })
   }
 
   // Empty text drops the draft, so clearing the box is how a draft is discarded.
@@ -273,7 +309,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     for (const [key, level] of Object.entries(levels)) {
       if (!key.startsWith(prefix)) continue
       const path = key.slice(prefix.length)
-      const fresh: Working = await api.working(repoPath, isStaged, level, path)
+      const fresh: Working = await api.working(repoPath, isStaged, level, path, ignoreWhitespace)
       if (fresh.files[0]) next = replaceFile(next, path, fresh.files[0])
     }
     return next
@@ -288,6 +324,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           ref={list.pane}
           {...list.paneHandlers}
           onClick={(event) => {
+            // The strip is not a row, so a click on it keeps the selection.
             if (!(event.target as HTMLElement).closest('li, h3, .commit-box, .changes-view-toggle, .tree-row, .fold-strip')) setSelection(null)
           }}
         >
@@ -379,7 +416,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           {!selection && all && status.changes.length > 0 && (
             <>
               <h2 className="diff-section">Staged <span className="count">{all.staged.files.length}</span></h2>
-              {all.staged.files.length > 0 && (
+              {/* With the whitespace option on, a section whose changes are all hidden still mounts its DiffView, so the toolbar stays usable. */}
+              {(all.staged.files.length > 0 || (ignoreWhitespace && staged.length > 0)) && (
                 <DiffView
                   files={all.staged.files}
                   moves={all.staged.moves}
@@ -389,7 +427,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 />
               )}
               <h2 className="diff-section">Unstaged <span className="count">{all.unstaged.files.length}</span></h2>
-              {all.unstaged.files.length > 0 && (
+              {(all.unstaged.files.length > 0 || (ignoreWhitespace && unstaged.length > 0)) && (
                 <DiffView
                   files={all.unstaged.files}
                   moves={all.unstaged.moves}
@@ -404,7 +442,6 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             ? <ConflictView path={selection.path} model={conflict.model} choices={conflict.choices} onChoose={chooseConflict} onSave={saveConflictFile} saving={busy === 'resolve'} />
             : <p className="hint">Loading conflict…</p>)}
           {selection && !conflictSelected && diff && (
-
             <DiffView
               files={diff.files}
               moves={diff.moves}
@@ -421,7 +458,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
 // Two loads describe the same file and merge state when their fingerprints match. An unsupported file never matches.
 function sameModel(a: ConflictDocument, b: ConflictDocument): boolean {
-  return a.supported && b.supported && a.fingerprint.working === b.fingerprint.working && a.fingerprint.stages === b.fingerprint.stages
+  return a.supported && b.supported && sameFingerprint(a.fingerprint, b.fingerprint)
+}
+
+function sameFingerprint(a: ConflictFingerprint, b: ConflictFingerprint): boolean {
+  return a.working === b.working && a.stages === b.stages
 }
 
 // The file open last time, if it is still in the changes. A file that is gone opens with no selection.
@@ -440,8 +481,10 @@ function levelKey(staged: boolean, path: string): string {
   return `${staged ? 's' : 'u'}:${path}`
 }
 
+// Moves are re-anchored in the widened file, so their connectors stay drawn.
 function replaceFile(working: Working, path: string, next: DiffFile): Working {
-  return { ...working, files: working.files.map((file) => (pathOf(file) === path ? next : file)) }
+  const index = working.files.findIndex((file) => pathOf(file) === path)
+  return index < 0 ? working : swapFile(working, index, next)
 }
 
 // Added and removed line counts for every file, keyed by section and path, so each row can show them.

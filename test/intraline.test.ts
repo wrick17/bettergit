@@ -71,3 +71,33 @@ test('emphasis splits coloured segments without losing text or colour, even acro
   expect(pieces.filter((piece) => piece.changed)).toEqual([{ text: 'b', light: '#1', changed: true }])
   expect(pieces.find((piece) => piece.text === 'x')).toEqual({ text: 'x', light: '#2', changed: false })
 })
+
+// Renders the real row components, so a cell that drops its `changed` prop fails here even though the helpers pass.
+// Runs in a child process: DiffView reads localStorage and window when it loads, and session.test.ts stubs them in this process.
+const RENDER_CHECK = `
+Object.assign(globalThis, {
+  localStorage: { getItem: () => null, setItem: () => undefined },
+  window: { addEventListener: () => undefined, setTimeout, clearTimeout },
+})
+const { createElement } = await import('react')
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { SplitCell, UnifiedLine } = await import('./src/renderer/src/DiffView')
+const { intralineSpans } = await import('./src/renderer/src/intraline')
+const lines = [
+  { type: 'del', text: 'const total = count + 1', oldNo: 1, newNo: null },
+  { type: 'add', text: 'const total = amount + 1', oldNo: null, newNo: 1 },
+]
+const spans = intralineSpans(lines)
+const intraCount = (html) => (html.match(/class="intra"/g) ?? []).length
+console.log(JSON.stringify({
+  split: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0) }))),
+  unified: intraCount(renderToStaticMarkup(createElement(UnifiedLine, { line: lines[1], changed: spans.get(1) }))),
+  splitMoved: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0), label: 'moved' }))),
+}))
+`
+
+test('split and unified rows render the changed words, and a moved label drops them', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.stderr.toString()).toBe('')
+  expect(JSON.parse(child.stdout.toString())).toEqual({ split: 1, unified: 1, splitMoved: 0 })
+})
