@@ -100,12 +100,89 @@ export async function readBranches(repo: string): Promise<Branch[]> {
   })
 }
 
-export async function switchBranch(repo: string, name: string): Promise<void> {
-  await git(repo, ['switch', name])
+function assertSelection(selection: BranchSelection): void {
+  if (!selection || typeof selection.fullRef !== 'string' || typeof selection.hash !== 'string'
+    || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(selection.hash)) {
+    throw new Error('Choose a branch from the refreshed list.')
+  }
 }
 
-export async function createBranch(repo: string, name: string, start?: string): Promise<void> {
-  await git(repo, ['switch', '-c', name, ...(start ? [start] : [])])
+function selectedBranch(branches: Branch[], selection: BranchSelection): Branch {
+  assertSelection(selection)
+  const branch = branches.find((entry) => entry.fullRef === selection.fullRef)
+  if (!branch || branch.hash !== selection.hash) {
+    throw new Error('Selected branch disappeared or changed. Choices were refreshed; select it again.')
+  }
+  return branch
+}
+
+async function switchLocal(repo: string, branch: Branch): Promise<void> {
+  // Git switch expects a local name. Refuse names that Git's revision parser would resolve differently.
+  const resolved = await git(repo, ['rev-parse', '--symbolic-full-name', '--verify', '--end-of-options', branch.name]).catch(() => '')
+  if (resolved.trim() !== branch.fullRef) throw new Error(`Ambiguous branch name: ${branch.name}`)
+  await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--', branch.name])
+}
+
+// A remote ref can be mapped by more than one configured remote/refspec. Never let Git guess the source.
+async function trackingName(repo: string, fullRef: string): Promise<string> {
+  const mappings: { name: string; source: string }[] = []
+  const match = (pattern: string, value: string): string | null => {
+    const parts = pattern.split('*')
+    if (parts.length === 1) return pattern === value ? '' : null
+    if (parts.length !== 2 || !value.startsWith(parts[0]) || !value.endsWith(parts[1])
+      || value.length < parts[0].length + parts[1].length) return null
+    return value.slice(parts[0].length, value.length - parts[1].length)
+  }
+  for (const remote of (await git(repo, ['remote'])).split('\n').filter(Boolean)) {
+    const specs = (await git(repo, ['config', '--get-all', `remote.${remote}.fetch`]).catch(() => '')).trim().split('\n')
+    for (const spec of specs) {
+      const [source, destination, extra] = spec.replace(/^\+/, '').split(':')
+      if (!destination || extra) continue
+      const wildcard = match(destination, fullRef)
+      if (wildcard === null) continue
+      const mapped = source.replace('*', wildcard)
+      if (!mapped.startsWith('refs/heads/') || mapped.includes('*')
+        || specs.some((excluded) => excluded.startsWith('^') && match(excluded.slice(1), mapped) !== null)) continue
+      mappings.push({ name: remote, source: mapped })
+    }
+  }
+  if (mappings.length !== 1) throw new Error('Ambiguous or unsupported remote fetch mapping. Select a local branch instead.')
+  return mappings[0].source.slice('refs/heads/'.length)
+}
+
+async function assertNewBranch(repo: string, name: string, branches: Branch[]): Promise<void> {
+  await assertBranchName(repo, name)
+  const fullRef = `refs/heads/${name}`
+  const collision = branches.find((branch) => !branch.remote && (branch.fullRef === fullRef
+    || branch.fullRef.startsWith(fullRef + '/') || fullRef.startsWith(branch.fullRef + '/')))
+  if (collision) throw new Error(`Branch already exists or name conflicts with ${collision.name}. Choose another name.`)
+}
+
+export async function switchBranch(repo: string, selection: BranchSelection): Promise<void> {
+  const branches = await readBranches(repo)
+  const branch = selectedBranch(branches, selection)
+  if (!branch.remote) return switchLocal(repo, branch)
+  const name = await trackingName(repo, branch.fullRef)
+  const tracking = branches.filter((entry) => !entry.remote && entry.upstreamRef === branch.fullRef)
+  if (tracking.length > 1) throw new Error(`Multiple local branches track ${branch.name}: ${tracking.map((entry) => entry.name).join(', ')}. Select a local branch explicitly.`)
+  if (tracking.length === 1) return switchLocal(repo, tracking[0])
+  await assertNewBranch(repo, name, branches)
+  await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', name, branch.fullRef, '--'])
+}
+
+export async function createBranch(repo: string, name: string, base: BranchSelection): Promise<void> {
+  assertSelection(base)
+  const branches = await readBranches(repo)
+  await assertNewBranch(repo, name, branches)
+  if (base.fullRef === 'HEAD') {
+    const head = (await git(repo, ['rev-parse', '--verify', 'HEAD']).catch(() => '')).trim()
+    if (!head) throw new Error('Create a commit first, or choose another base branch.')
+    if (head !== base.hash) throw new Error('Current HEAD changed. Choices were refreshed; select the base again.')
+  } else {
+    selectedBranch(branches, base)
+  }
+  // Pin independent creation to the displayed commit and suppress branch.autoSetupMerge.
+  await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--no-track', '-c', name, base.hash, '--'])
 }
 
 export async function deleteBranch(repo: string, name: string, force = false): Promise<void> {
@@ -271,7 +348,9 @@ async function assertRemote(repo: string, remote: string): Promise<void> {
 }
 
 async function assertBranchName(repo: string, name: string): Promise<void> {
-  if (!(await gitOk(repo, ['check-ref-format', '--branch', name]))) throw new Error(`Invalid branch name: ${name}`)
+  if (typeof name !== 'string' || name === '@' || name.startsWith('-')
+    || !(await gitOk(repo, ['check-ref-format', `refs/heads/${name}`]))
+    || !(await gitOk(repo, ['check-ref-format', '--branch', name]))) throw new Error(`Invalid branch name: ${name}`)
 }
 
 export async function blame(repo: string, path: string): Promise<{ hash: string; author: string; line: string }[]> {

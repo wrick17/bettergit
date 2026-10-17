@@ -183,7 +183,9 @@ function registerIpc() {
   handleWrite('repo:commit-changes', (_event, repoPath: string, message: string, amend: boolean) =>
     ops.commit(repoPath, message, amend))
   ipcMain.handle('repo:branches', async (_event, repoPath: string) => ops.readBranches(assertKnownRepo(repoPath)))
-  handleWrite('repo:switch', (_event, repoPath: string, name: string) => ops.switchBranch(repoPath, name))
+  handleWrite('repo:switch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.switchBranch(repoPath, selection))
+  handleWrite('repo:create-branch', (_event, repoPath: string, name: string, base: ops.BranchSelection) =>
+    ops.createBranch(repoPath, name, base))
   handleWrite('repo:fetch', (_event, repoPath: string) => ops.fetchAll(repoPath))
   handleWrite('repo:pull', (_event, repoPath: string, mode?: 'merge' | 'rebase') => ops.pull(repoPath, mode))
   handleWrite('repo:pull-from', (_event, repoPath: string, remote: string, branch: string) =>

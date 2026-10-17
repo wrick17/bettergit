@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
@@ -9,7 +9,7 @@ import { commitDiff, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
-import { readBranches, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
+import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -237,4 +237,258 @@ describe('dirty counter', () => {
       cleanup(dir)
     }
   })
+})
+
+describe('branch picker operations with real Git', () => {
+  const repos: string[] = []
+  afterAll(() => repos.forEach(cleanup))
+  const sha = async (dir: string, ref = 'HEAD') => (await git(dir, ['rev-parse', ref])).trim()
+  const select = async (dir: string, fullRef: string) => {
+    const branch = (await readBranches(dir)).find((entry) => entry.fullRef === fullRef)
+    expect(branch).toBeDefined()
+    return { fullRef, hash: branch!.hash }
+  }
+  const fixture = async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-branches-'))
+    repos.push(dir)
+    await git(dir, ['init', '-q', '-b', 'main'])
+    await git(dir, ['config', 'user.name', 'Branch Test'])
+    await git(dir, ['config', 'user.email', 'branch@example.com'])
+    writeFileSync(path.join(dir, 'file.txt'), 'base\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-qm', 'base'])
+    const base = await sha(dir)
+    await git(dir, ['switch', '-q', '-c', 'local-base'])
+    writeFileSync(path.join(dir, 'file.txt'), 'topic\n')
+    writeFileSync(path.join(dir, 'new.txt'), 'tracked on topic\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-qm', 'topic'])
+    const tip = await sha(dir)
+    await git(dir, ['switch', '-q', 'main'])
+    await git(dir, ['remote', 'add', 'origin', dir])
+    await git(dir, ['update-ref', 'refs/remotes/origin/topic', tip])
+    return { dir, base, tip }
+  }
+
+  test('keeps full identities and upstreams, skips symbolic remote aliases and keeps literal /HEAD names', async () => {
+    const { dir, tip } = await fixture()
+    await git(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/topic'])
+    await git(dir, ['update-ref', 'refs/remotes/origin/review/HEAD', tip])
+    await git(dir, ['branch', 'review/HEAD'])
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    const branches = await readBranches(dir)
+    expect(branches.find((entry) => entry.current)).toMatchObject({ name: 'topic', fullRef: 'refs/heads/topic', upstreamRef: 'refs/remotes/origin/topic' })
+    expect(branches.some((entry) => entry.fullRef === 'refs/remotes/origin/HEAD')).toBe(false)
+    expect(branches.filter((entry) => entry.name.endsWith('/HEAD'))).toHaveLength(2)
+  })
+
+  test('creates tracking branches, then reuses a renamed ahead tracker without changing its tip or config', async () => {
+    const { dir, tip } = await fixture()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await switchBranch(dir, remote)
+    expect(await sha(dir)).toBe(tip)
+    expect((await git(dir, ['config', 'branch.topic.remote'])).trim()).toBe('origin')
+    await git(dir, ['branch', '-m', 'my-topic'])
+    await git(dir, ['commit', '--allow-empty', '-qm', 'local only'])
+    const ahead = await sha(dir)
+    const config = await git(dir, ['config', '--get-regexp', '^branch\\.my-topic\\.'])
+    await git(dir, ['switch', 'main'])
+    await switchBranch(dir, remote)
+    expect((await readStatus(dir)).head).toBe('my-topic')
+    expect(await sha(dir)).toBe(ahead)
+    expect(await git(dir, ['config', '--get-regexp', '^branch\\.my-topic\\.'])).toBe(config)
+  })
+
+  test('refuses multiple trackers and names the local choices', async () => {
+    const { dir } = await fixture()
+    await git(dir, ['branch', '--track=direct', 'one', 'refs/remotes/origin/topic'])
+    await git(dir, ['branch', '--track=direct', 'two', 'refs/remotes/origin/topic'])
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('one, two')
+    expect((await readStatus(dir)).head).toBe('main')
+  })
+
+  test('refuses existing names and ref-directory collisions without changing upstreams', async () => {
+    const { dir, base } = await fixture()
+    await git(dir, ['branch', 'topic'])
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await expect(switchBranch(dir, remote)).rejects.toThrow('Branch already exists')
+    await expect(createBranch(dir, 'topic', remote)).rejects.toThrow('Branch already exists')
+    await expect(createBranch(dir, 'topic/child', remote)).rejects.toThrow('name conflicts')
+    expect(await sha(dir, 'refs/heads/topic')).toBe(base)
+    expect((await readBranches(dir)).find((entry) => entry.name === 'topic')!.upstreamRef).toBeNull()
+    await git(dir, ['branch', 'nested/child'])
+    await expect(createBranch(dir, 'nested', remote)).rejects.toThrow('name conflicts')
+  })
+
+  test('two remotes with the same suffix stay explicit and a local collision never retargets tracking', async () => {
+    const { dir, base, tip } = await fixture()
+    await git(dir, ['remote', 'add', 'upstream', dir])
+    await git(dir, ['update-ref', 'refs/remotes/upstream/topic', base])
+    const origin = await select(dir, 'refs/remotes/origin/topic')
+    const upstream = await select(dir, 'refs/remotes/upstream/topic')
+    await switchBranch(dir, origin)
+    expect(await sha(dir)).toBe(tip)
+    await git(dir, ['switch', 'main'])
+    await expect(switchBranch(dir, upstream)).rejects.toThrow('Branch already exists')
+    await git(dir, ['branch', '-m', 'topic', 'origin-topic'])
+    await switchBranch(dir, upstream)
+    expect(await sha(dir)).toBe(base)
+    expect((await readBranches(dir)).find((entry) => entry.current)!.upstreamRef).toBe(upstream.fullRef)
+  })
+
+  test('rejects ambiguous remote mappings before creating or attaching any branch', async () => {
+    const { dir } = await fixture()
+    await git(dir, ['remote', 'add', 'alias', dir])
+    await git(dir, ['config', 'remote.alias.fetch', '+refs/heads/*:refs/remotes/origin/*'])
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('Ambiguous or unsupported')
+    expect((await readBranches(dir)).some((entry) => entry.fullRef === 'refs/heads/topic')).toBe(false)
+  })
+
+  test('rejects literal invalid names including previous-checkout expansion at both creation boundaries', async () => {
+    const { dir, base } = await fixture()
+    const start = await select(dir, 'refs/heads/main')
+    for (const name of ['@{-1}', '@', '-', '--force', 'topic~1', 'main...local-base', 'HEAD', 'bad name']) {
+      await expect(createBranch(dir, name, start)).rejects.toThrow('Invalid branch name')
+      await expect(branchFromCommit(dir, name, base)).rejects.toThrow('Invalid branch name')
+    }
+    await branchFromCommit(dir, 'commit-action', base)
+    expect((await readStatus(dir)).head).toBe('main')
+  })
+
+  test('independent creation from local, remote and current HEAD bases never configures an upstream', async () => {
+    const { dir, base, tip } = await fixture()
+    await git(dir, ['config', 'branch.autoSetupMerge', 'always'])
+    const choices = [
+      ['from-local', await select(dir, 'refs/heads/local-base'), tip],
+      ['from-remote', await select(dir, 'refs/remotes/origin/topic'), tip],
+      ['from-current', { fullRef: 'HEAD', hash: base }, base],
+    ] as const
+    for (const [name, start, expected] of choices) {
+      await git(dir, ['switch', 'main'])
+      await createBranch(dir, name, start)
+      expect(await sha(dir)).toBe(expected)
+      expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name, upstreamRef: null })
+    }
+  })
+
+  test('refuses moved or disappeared selected refs, changed HEAD and revision expressions', async () => {
+    const { dir, base } = await fixture()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await git(dir, ['update-ref', remote.fullRef, base])
+    await expect(switchBranch(dir, remote)).rejects.toThrow('disappeared or changed')
+    await expect(createBranch(dir, 'stale', remote)).rejects.toThrow('disappeared or changed')
+    const current = { fullRef: 'HEAD', hash: base }
+    await git(dir, ['switch', 'local-base'])
+    await expect(createBranch(dir, 'stale-head', current)).rejects.toThrow('HEAD changed')
+    await git(dir, ['update-ref', '-d', remote.fullRef])
+    await expect(switchBranch(dir, remote)).rejects.toThrow('disappeared or changed')
+    await expect(switchBranch(dir, { fullRef: 'HEAD~1', hash: base })).rejects.toThrow('disappeared or changed')
+  })
+
+  test('preserves staged, unstaged and untracked work on checkout refusal without leaving a new branch', async () => {
+    for (const dirty of ['staged', 'unstaged', 'untracked']) {
+      const { dir, base } = await fixture()
+      const file = dirty === 'untracked' ? 'new.txt' : 'file.txt'
+      writeFileSync(path.join(dir, file), 'precious draft\n')
+      if (dirty === 'staged') await git(dir, ['add', file])
+      const before = await git(dir, ['status', '--porcelain=v1'])
+      const remote = await select(dir, 'refs/remotes/origin/topic')
+      await expect(createBranch(dir, 'new-branch', remote)).rejects.toThrow(/overwritten/)
+      await expect(switchBranch(dir, remote)).rejects.toThrow(/overwritten/)
+      expect(await git(dir, ['status', '--porcelain=v1'])).toBe(before)
+      expect(readFileSync(path.join(dir, file), 'utf8')).toBe('precious draft\n')
+      expect(await sha(dir)).toBe(base)
+      expect((await readBranches(dir)).some((entry) => ['new-branch', 'topic'].includes(entry.name))).toBe(false)
+    }
+  })
+
+  for (const checkout of ['local', 'tracking', 'create'] as const) {
+    test(`ignored files survive ${checkout} checkout refusal without changing HEAD, status, index or refs`, async () => {
+      const { dir } = await fixture()
+      await git(dir, ['switch', 'local-base'])
+      writeFileSync(path.join(dir, '.env'), 'FIXTURE_MODE=tracked-destination\n')
+      await git(dir, ['add', '.env'])
+      await git(dir, ['commit', '-qm', 'track dummy fixture configuration'])
+      const destination = await sha(dir)
+      await git(dir, ['update-ref', 'refs/remotes/origin/topic', destination])
+      await git(dir, ['switch', 'main'])
+      const exclude = path.join(dir, '.git/info/exclude')
+      writeFileSync(exclude, readFileSync(exclude, 'utf8') + '\n.env\n')
+      const ignored = path.join(dir, '.env')
+      writeFileSync(ignored, 'FIXTURE_MODE=ignored-local\n')
+      writeFileSync(path.join(dir, 'staged.txt'), 'unrelated staged fixture content\n')
+      await git(dir, ['add', 'staged.txt'])
+      expect((await git(dir, ['check-ignore', '.env'])).trim()).toBe('.env')
+      const status = await git(dir, ['status', '--porcelain=v1'])
+      expect(status).toContain('A  staged.txt')
+      const head = await sha(dir)
+      const branches = await readBranches(dir)
+      const index = path.join(dir, '.git/index')
+      const indexBytes = readFileSync(index)
+      const ignoredBytes = readFileSync(ignored)
+      const selection = await select(dir, checkout === 'local' ? 'refs/heads/local-base' : 'refs/remotes/origin/topic')
+      const action = () => checkout === 'create'
+        ? createBranch(dir, 'ignored-copy', selection)
+        : switchBranch(dir, selection)
+      await expect(action()).rejects.toMatchObject({
+        code: 1, stderr: expect.stringContaining('.env'), message: expect.stringContaining('would be overwritten'),
+      })
+      expect(readFileSync(ignored)).toEqual(ignoredBytes)
+      expect(readFileSync(index)).toEqual(indexBytes)
+      expect(await sha(dir)).toBe(head)
+      expect(await git(dir, ['status', '--porcelain=v1'])).toBe(status)
+      expect(await readBranches(dir)).toEqual(branches)
+
+      // Removing only the dummy ignored collision lets the same checkout proceed with the staged work intact.
+      unlinkSync(ignored)
+      await action()
+      expect(await sha(dir)).toBe(destination)
+      expect(readFileSync(ignored, 'utf8')).toBe('FIXTURE_MODE=tracked-destination\n')
+      expect(await git(dir, ['status', '--porcelain=v1'])).toBe(status)
+      expect((await readBranches(dir)).find((branch) => branch.current)).toMatchObject({
+        name: checkout === 'local' ? 'local-base' : checkout === 'tracking' ? 'topic' : 'ignored-copy',
+        upstreamRef: checkout === 'tracking' ? 'refs/remotes/origin/topic' : null,
+      })
+    })
+  }
+
+  test('safe dirty switching succeeds and a branch checked out elsewhere retains Git refusal', async () => {
+    const { dir } = await fixture()
+    writeFileSync(path.join(dir, 'unrelated.txt'), 'keep\n')
+    await switchBranch(dir, await select(dir, 'refs/heads/local-base'))
+    expect(readFileSync(path.join(dir, 'unrelated.txt'), 'utf8')).toBe('keep\n')
+    await git(dir, ['switch', 'main'])
+    const linked = path.join(dir, 'linked')
+    await git(dir, ['worktree', 'add', '-q', linked, 'local-base'])
+    await expect(switchBranch(dir, await select(dir, 'refs/heads/local-base'))).rejects.toThrow(/already (used|checked out)/)
+    expect((await readStatus(dir)).head).toBe('main')
+  })
+  test('an unborn current base refuses creation but an explicit fetched base works', async () => {
+    const { dir: source, tip } = await fixture()
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-unborn-'))
+    repos.push(dir)
+    await git(dir, ['init', '-q', '-b', 'unborn'])
+    await git(dir, ['remote', 'add', 'origin', source])
+    await git(dir, ['fetch', '-q', 'origin', 'refs/heads/local-base:refs/remotes/origin/topic'])
+    await expect(createBranch(dir, 'no-commit', { fullRef: 'HEAD', hash: '0'.repeat(40) })).rejects.toThrow('Create a commit first')
+    await createBranch(dir, 'from-fetched', await select(dir, 'refs/remotes/origin/topic'))
+    expect(await sha(dir)).toBe(tip)
+    expect((await readBranches(dir)).find((entry) => entry.current)!.upstreamRef).toBeNull()
+  })
+
+  test('external index locks are retained and a failed branch write releases the application lock', async () => {
+    const { withRepoLock, repoLockHolder } = await import('../src/main/repo-lock')
+    const { dir } = await fixture()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    const lock = path.join(dir, '.git/index.lock')
+    writeFileSync(lock, 'external lock owner')
+    await expect(withRepoLock(dir, 'repo:create-branch', () => createBranch(dir, 'after-lock', remote))).rejects.toThrow('index.lock')
+    expect(repoLockHolder(dir)).toBeNull()
+    expect(readFileSync(lock, 'utf8')).toBe('external lock owner')
+    expect((await readBranches(dir)).some((entry) => entry.name === 'after-lock')).toBe(false)
+    unlinkSync(lock)
+    await withRepoLock(dir, 'repo:create-branch', () => createBranch(dir, 'after-lock', remote))
+    expect((await readStatus(dir)).head).toBe('after-lock')
+  })
+
 })
