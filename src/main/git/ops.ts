@@ -195,7 +195,10 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
     }
     const items = await listed.get(including)!
     // Identical directives share their condition and file. A directive that is not listed counts as applying.
-    for (let j = 0; j + 1 < items.length; j += 2) if (items[j] === origin && items[j + 1] === entry) return items[j + 2] === `file:${file}`
+    // A file's own entries follow its self include either way, but an applied self include recurses until the read fails.
+    for (let j = 0; j + 1 < items.length; j += 2) {
+      if (items[j] === origin && items[j + 1] === entry) return file !== including && items[j + 2] === `file:${file}`
+    }
     return true
   }
   // Once any hasconfig:remote.*.url include applies, Git fails on remote.*.url in a file it reached through includeIf.
@@ -213,6 +216,8 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
     const entries = ((await read([...args, '-z', '--show-origin', '--get-regexp', '^include(if\\..*)?\\.path$'])) ?? '').split('\0')
     for (let j = 0; j + 1 < entries.length; j += 2) {
       const [origin, entry] = [entries[j], entries[j + 1]]
+      // Git cannot fail on includes in a file it never reads, so such a file's upstream keys are only checked as deep as Git would read.
+      if (inert && (depth === 10 || !entry.includes('\n'))) continue
       // Git prints a key without a value with no newline, and fails on such an include.
       if (!entry.includes('\n')) throw unchecked('an include path has no value')
       // Git fails on an 11th nested include. One whose file is missing would be skipped, but is refused here too.

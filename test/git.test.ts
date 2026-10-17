@@ -569,6 +569,48 @@ describe('branch picker operations with real Git', () => {
     expect(await git(dir, ['config', '--includes', '--list'])).toContain('extra.example.invalid')
   })
 
+  test('an inactive gitdir include of its own file or of a file Git would fail on does not block creation', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    write('harmless.config', '[core]\n\tabbrev = 12\n')
+    // Git never reads a file behind a gitdir include for another repository, even this config file itself.
+    await git(dir, ['config', `includeIf.gitdir:${dir}-other/.git.path`, 'config'])
+    await git(dir, ['config', 'remote.extra.url', 'https://extra.example.invalid/repo.git'])
+    await git(dir, ['config', 'includeIf.hasconfig:remote.*.url:**.path', 'harmless.config'])
+    expect(await git(dir, ['config', '--includes', '--list'])).toContain('extra.example.invalid')
+    await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+    await git(dir, ['switch', 'main'])
+    await branchFromCommit(dir, 'from-commit', tip)
+    expect(await sha(dir, 'refs/heads/from-commit')).toBe(tip)
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'topic', upstreamRef: 'refs/remotes/origin/topic' })
+    expect((await git(dir, ['config', 'core.abbrev'])).trim()).toBe('12')
+    expect(await git(dir, ['config', '--includes', '--list'])).toContain('extra.example.invalid')
+    // A valueless include in such a file is never read either.
+    write('valueless.config', '[include]\n\tpath\n')
+    await git(dir, ['config', `includeIf.gitdir:${dir}-elsewhere/.git.path`, 'valueless.config'])
+    await git(dir, ['config', '--includes', '--list'])
+    await branchFromCommit(dir, 'valueless-free', base)
+    expect(await sha(dir, 'refs/heads/valueless-free')).toBe(base)
+    // A self include that applies to this repository once the new branch is checked out makes Git fail, so it is refused.
+    write('later.config', `[includeIf "gitdir:${gitDir}"]\n\tpath = later.config\n`)
+    await git(dir, ['config', 'includeIf.onbranch:refused*.path', 'later.config'])
+    await git(dir, ['update-ref', 'refs/remotes/origin/refused', tip])
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(gitDir, 'config'), 'utf8'),
+    ]
+    const before = await snapshot()
+    await expect(createBranch(dir, 'refused', { fullRef: 'HEAD', hash: base })).rejects.toThrow('Could not read')
+    await expect(branchFromCommit(dir, 'refused', base)).rejects.toThrow('Could not read')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/refused'))).rejects.toThrow('Could not read')
+    expect(await snapshot()).toEqual(before)
+    await git(dir, ['switch', '-q', '-c', 'refused-native'])
+    await expect(git(dir, ['config', '--includes', '--list'])).rejects.toThrow('maximum include depth')
+  })
+
   const invalidIncludes: Record<string, Record<string, string>> = {
     // Each pass of this self-include grows its path until Git fails on an 11th nested include.
     loop: { 'loop.config': '[include]\n\tpath = ./loop.config\n' },
