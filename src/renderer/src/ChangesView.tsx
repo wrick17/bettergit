@@ -52,12 +52,14 @@ interface SectionProps {
 
 const VIEW_KEY = 'bettergit.changesView'
 
+// Draft edits per repo. Module level, so a commit from an unmounted pane still sees edits made after a remount.
+const draftEdits = new Map<string, number>()
+
 export function ChangesView({ repo, status, revision, listOpen, detailOpen, onChanged, onError }: Props) {
   const [selection, setSelection] = useState<Selection | null>(() => savedSelection(repo, status))
   const busy = useRepoBusy(repo)
   // The draft is kept in the session, so a reload keeps what was typed.
   const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
-  const messageRef = useRef(message)
   const paneRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   // The file picked last. The pane scrolls to it once its diff loads. A restored scroll position takes its place, so nothing is revealed at launch.
@@ -206,7 +208,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // Empty text drops the draft, so clearing the box is how a draft is discarded.
   const editMessage = (text: string) => {
-    messageRef.current = text
+    draftEdits.set(repo, (draftEdits.get(repo) ?? 0) + 1)
     setMessage(text)
     savePlace(repo, { draft: text || undefined })
   }
@@ -218,10 +220,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   const commit = () => {
     if (busy || !canCommit) return
+    const edit = draftEdits.get(repo)
     void write('commit', async () => {
       await api.commitChanges(repo, message, false)
-      // A draft typed while the commit ran was not committed, so it stays.
-      if (messageRef.current === message) editMessage('')
+      // A draft typed while the commit ran was not committed, so it stays, even if it was typed in a remounted pane.
+      if (draftEdits.get(repo) === edit) editMessage('')
       setSelection(null)
     })
   }
