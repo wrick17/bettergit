@@ -65,6 +65,8 @@ export function intralineSpans(lines: DiffLine[]): Map<number, Span[]> {
     const dels: number[] = []
     const adds: number[] = []
     while (i < lines.length && lines[i].type === 'del') dels.push(i++)
+    // git prints "\ No newline at end of file" right after an old last line that lacks one, before the added lines.
+    while (i < lines.length && lines[i].type === 'note') i++
     while (i < lines.length && lines[i].type === 'add') adds.push(i++)
     for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
       const pair = changedSpans(lines[dels[k]].text, lines[adds[k]].text)

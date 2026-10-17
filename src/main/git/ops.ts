@@ -172,8 +172,8 @@ async function assertNewBranch(repo: string, name: string, branches: Branch[]): 
 // and a new branch with that name silently inherits them, even with --no-track.
 // Include conditions such as onbranch and hasconfig can change once the new branch is checked out, and Git cannot
 // evaluate them for that state ahead of time. So every reachable include file is read on its own and checked too,
-// whatever its condition. An include that Git would fail on once it applies is refused as well, since the switch
-// would already have written the branch and HEAD by then.
+// whatever its condition, except behind a gitdir include that does not apply to this repository. An include that Git
+// would fail on once it applies is refused as well, since the switch would already have written the branch and HEAD by then.
 async function assertNoUpstreamConfig(repo: string, name: string): Promise<void> {
   const unchecked = (reason: string) => new Error(`Could not read the Git config to check upstream settings for ${name}: ${reason}`)
   // A silent exit 1 is an absent key, no match or a missing include file. Git also exits 1 for a file it cannot
@@ -207,7 +207,7 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
   let conditionalUrl = false
   while (sources.length) {
     const { args, depth, conditional, inert } = sources.pop()!
-    for (const key of [`branch.${name}.remote`, `branch.${name}.merge`]) {
+    for (const key of inert ? [] : [`branch.${name}.remote`, `branch.${name}.merge`]) {
       if ((await read([...args, '--get-all', key])) !== null) {
         throw new Error(`Branch ${name} could inherit upstream settings (${key}) from the Git config. Choose another name, or remove those settings first.`)
       }
@@ -216,7 +216,7 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
     const entries = ((await read([...args, '-z', '--show-origin', '--get-regexp', '^include(if\\..*)?\\.path$'])) ?? '').split('\0')
     for (let j = 0; j + 1 < entries.length; j += 2) {
       const [origin, entry] = [entries[j], entries[j + 1]]
-      // Git cannot fail on includes in a file it never reads, so such a file's upstream keys are only checked as deep as Git would read.
+      // Nothing in a file Git never reads is checked. Its includes are still opened up to Git's depth, so an unreadable one fails closed.
       if (inert && (depth === 10 || !entry.includes('\n'))) continue
       // Git prints a key without a value with no newline, and fails on such an include.
       if (!entry.includes('\n')) throw unchecked('an include path has no value')
@@ -235,7 +235,6 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
       const including = origin.slice('file:'.length)
       const file = path.isAbsolute(value) ? value : including.slice(0, including.lastIndexOf('/') + 1) + value
       const viaIncludeIf = conditional || entry.startsWith('includeif.')
-      // Upstream keys are still checked behind an inactive gitdir include, as everywhere else.
       const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && origin.startsWith('file:') && !(await gitdirApplies(origin, entry, file)))
       // The same path at the same depth and kind of edge leads to the same checks. Otherwise it can hit the depth limit
       // or the remote URL rule, so it is read again.

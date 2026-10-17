@@ -21,29 +21,34 @@ Object.assign(globalThis, {
 })
 const react = require('react')
 react.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
+// Records the real parser's calls without replacing it; installed after the React patch so DiffView sees both.
+const parser = (await import('bun:test')).spyOn(await import('./src/renderer/src/MarkdownLine'), 'markdownHunk')
 const { renderToStaticMarkup } = await import('react-dom/server')
 const { DiffView } = await import('./src/renderer/src/DiffView')
 const prefs = await import('./src/renderer/src/prefs')
 const props = JSON.parse(process.env.MARKDOWN_PROPS)
 props.persist = { id: 'markdown-files', key: 'commit' }
+if (process.env.MARKDOWN_CONFLICT === 'true') props.conflict = { row: () => undefined, controls: () => null, splitRows: () => [] }
 const render = () => renderToStaticMarkup(react.createElement(DiffView, props))
 const html = render()
+const parsed = parser.mock.calls.map(([lines]) => lines.map(line => line.text))
 const otherView = render()
 if (process.env.MARKDOWN_RESET === 'true') prefs.setFormatMarkdown(false)
-console.log(JSON.stringify({ html, otherView, reset: render(), stored }))
+console.log(JSON.stringify({ html, otherView, reset: render(), stored, parsed }))
 `
 
-function render(files: DiffFile[], layout: 'unified' | 'split' = 'unified', formatted = true, moves: MovedBlock[] = [], storage: Record<string, string> = {}) {
+function render(files: DiffFile[], layout: 'unified' | 'split' = 'unified', formatted = true, moves: MovedBlock[] = [], storage: Record<string, string> = {}, conflict = false) {
   const child = Bun.spawnSync([process.execPath, '-e', RENDER], {
     cwd: `${import.meta.dir}/..`, stderr: 'pipe',
     env: {
       ...process.env, MARKDOWN_PROPS: JSON.stringify({ files, moves, stage: { staged: false, disabled: true } }),
       MARKDOWN_STORAGE: JSON.stringify({ 'bettergit.diffLayout': layout, 'bettergit.formatMarkdown': String(formatted), ...storage }),
-      MARKDOWN_RESET: 'true',
+      MARKDOWN_RESET: 'true', MARKDOWN_CONFLICT: String(conflict),
     },
   })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
-  return JSON.parse(child.stdout.toString()) as { html: string; otherView: string; reset: string; stored: Record<string, string> }
+  // `parsed` lists the source lines of each markdownHunk call made by the first render.
+  return JSON.parse(child.stdout.toString()) as { html: string; otherView: string; reset: string; stored: Record<string, string>; parsed: string[][] }
 }
 
 for (const [name, source, tag] of [['paragraph', 'first\rsecond', 'p'], ['headings', '# first\r# second', 'h1']] as const) {
@@ -497,6 +502,28 @@ test('formatting keeps collapse persistence and restores raw content across both
   expect(reset).not.toContain('<h1')
   expect(stored['bettergit.formatMarkdown']).toBe('false')
   expect(render(files, 'unified', false, [], stored).html).toContain('aria-label="Format Markdown" aria-pressed="false"')
+})
+
+test('formatting parses only open Markdown files; expanding builds the plan, raw and conflict views never parse', () => {
+  const hidden = Array.from({ length: 401 }, (_, index) => line(`# Hidden ${index}`, 'add', index + 1))
+  const files = [file('read.md', [line('# Visible')]), file('closed.md', hidden), file('remembered.md', [line('# Saved closed')])]
+  const session = (value: Record<string, boolean>) => ({ 'bettergit.session': JSON.stringify({ views: { 'markdown-files': { key: 'commit', value } } }) })
+  const collapsed = render(files, 'unified', true, [], session({ 'remembered.md': false }))
+  expect(collapsed.html).toContain('401 changed lines hidden')
+  expect(collapsed.parsed).toEqual([['# Visible']])
+  const opened = session({ 'closed.md': true, 'remembered.md': true })
+  const expanded = render(files, 'unified', true, [], opened)
+  expect(expanded.parsed).toEqual([['# Visible'], hidden.map(entry => entry.text), ['# Saved closed']])
+  const closed = expanded.html.split('data-path="closed.md"')[1].split('</section>')[0]
+  expect((closed.match(/<h1[ >]/g) ?? []).length).toBe(401)
+  expect((closed.match(/data-source-row=/g) ?? []).length).toBe(401)
+  expect(closed).toContain('Hidden 400')
+  expect(closed).toContain('data-source-row="1:0:400" data-source-side="new"')
+  for (const control of [render(files, 'unified', false, [], opened), render(files, 'unified', true, [], opened, true)]) {
+    expect(control.parsed).toEqual([])
+    expect(control.html).toContain('<code># Hidden 400</code>')
+    expect(control.html).not.toContain('<h1')
+  }
 })
 
 test('unsafe HTML, SVG, URL schemes and image destinations produce only inert text with no resource attributes', () => {

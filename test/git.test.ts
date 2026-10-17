@@ -677,6 +677,37 @@ describe('branch picker operations with real Git', () => {
     await expect(git(dir, ['config', '--includes', '--list'])).rejects.toThrow('maximum include depth')
   })
 
+  test('upstream settings behind a gitdir include for another repository do not block creation unless the file is also on an applying path', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const upstream = (name: string) => `[branch "${name}"]\n\tremote = origin\n\tmerge = refs/heads/unrelated\n`
+    writeFileSync(path.join(gitDir, 'other-upstream.config'), ['independent', 'from-commit', 'topic', 'later-topic', 'mine'].map(upstream).join(''))
+    await git(dir, ['config', `includeIf.gitdir:${dir}-other/.git.path`, 'other-upstream.config'])
+    await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+    await git(dir, ['switch', 'main'])
+    await branchFromCommit(dir, 'from-commit', tip)
+    expect((await readBranches(dir)).find((entry) => entry.name === 'from-commit')).toMatchObject({ hash: tip, upstreamRef: null })
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'topic', upstreamRef: 'refs/remotes/origin/topic' })
+    expect(await git(dir, ['config', '--get-all', 'branch.topic.merge'])).toBe('refs/heads/topic\n')
+    // The same file still blocks a name once it is reached through a path that applies after the switch, or already does.
+    await git(dir, ['config', 'includeIf.onbranch:later-*.path', 'other-upstream.config'])
+    await git(dir, ['update-ref', 'refs/remotes/origin/later-topic', tip])
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(gitDir, 'config'), 'utf8'),
+    ]
+    const before = await snapshot()
+    await expect(createBranch(dir, 'later-topic', { fullRef: 'HEAD', hash: tip })).rejects.toThrow('upstream settings')
+    await expect(branchFromCommit(dir, 'later-topic', base)).rejects.toThrow('upstream settings')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/later-topic'))).rejects.toThrow('upstream settings')
+    expect(await snapshot()).toEqual(before)
+    await git(dir, ['config', `includeIf.gitdir:${gitDir}.path`, 'other-upstream.config'])
+    await expect(branchFromCommit(dir, 'mine', base)).rejects.toThrow('upstream settings')
+    expect((await readBranches(dir)).some((entry) => entry.name === 'mine')).toBe(false)
+  })
+
   const invalidIncludes: Record<string, Record<string, string>> = {
     // Each pass of this self-include grows its path until Git fails on an 11th nested include.
     loop: { 'loop.config': '[include]\n\tpath = ./loop.config\n' },

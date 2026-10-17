@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from '../src/main/git/conflict'
@@ -83,6 +83,16 @@ async function resolve(repo: string, choices: Choice[], file = 'doc.txt') {
 
 const text = (repo: string, file = 'doc.txt') => readFileSync(path.join(repo, file)).toString('utf8')
 const stagesOf = (repo: string, file = 'doc.txt') => git(repo, ['ls-files', '-u', '--', file]).split('\n').filter(Boolean)
+// BetterGit's temporary file beside this repository's doc.txt. Failures injected into the shared fs methods fire only
+// for it, and every other path runs the real method, so filesystem work elsewhere at the same time never takes them.
+const isTemp = (repo: string, file: unknown) =>
+  path.dirname(String(file)) === realpathSync(repo) && /^\.doc\.txt\.bettergit-.+\.tmp$/.test(path.basename(String(file)))
+// An inert merge driver that records each run beside the repository and leaves the conflict unmerged.
+const CANARY = 'echo ran >> ../driver-runs; false'
+const driverRuns = (repo: string) => {
+  const runs = path.join(repo, '..', 'driver-runs')
+  return existsSync(runs) ? readFileSync(runs, 'utf8') : ''
+}
 
 describe('conflict resolution on real Git merges', () => {
   test('a normal-style conflict loads as one supported block with both fingerprints', async () => {
@@ -237,18 +247,31 @@ describe('conflict resolution on real Git merges', () => {
       const before = text(repo)
       const stages = stagesOf(repo)
       const failure = new Error(`injected ${operation} failure`)
+      const [realWrite, realRename] = [fs.writeFile.bind(fs), fs.rename.bind(fs)]
       const injected = operation === 'writeFile'
-        ? spyOn(fs, 'writeFile').mockImplementationOnce(async (file) => {
+        ? spyOn(fs, 'writeFile').mockImplementation(async (file, bytes, options) => {
+          if (!isTemp(repo, file)) return realWrite(file, bytes, options)
           writeFileSync(String(file), 'partial write')
           throw failure
         })
-        : spyOn(fs, 'rename').mockRejectedValueOnce(failure)
+        : spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+          if (!isTemp(repo, from)) return realRename(from, to)
+          throw failure
+        })
+      // Other filesystem work while the failure is armed, as from a test file running at the same time, starts first.
+      const other = path.join(path.dirname(repo), 'other.txt')
+      writeFileSync(`${other}.new`, 'other\n')
       try {
-        await expect(saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: ['current'] }))
-          .rejects.toThrow(failure.message)
+        const [unrelated, saved] = await Promise.allSettled([
+          operation === 'writeFile' ? fs.writeFile(other, 'other\n') : fs.rename(`${other}.new`, other),
+          saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: ['current'] }),
+        ])
+        expect(unrelated.status).toBe('fulfilled')
+        expect(saved.status === 'rejected' && saved.reason).toBe(failure)
       } finally {
         injected.mockRestore()
       }
+      expect(readFileSync(other, 'utf8')).toBe('other\n')
       expect(text(repo)).toBe(before)
       expect(stagesOf(repo)).toEqual(stages)
       expect(readdirSync(repo).filter((name) => name.includes('.bettergit-'))).toEqual([])
@@ -260,8 +283,9 @@ describe('conflict resolution on real Git merges', () => {
       const repo = conflictRepo({ base: 'old\n', ours: 'mine\n', theirs: 'yours\n' })
       const model = await loaded(repo)
       const originalWrite = fs.writeFile.bind(fs)
-      const injected = spyOn(fs, 'writeFile').mockImplementationOnce(async (file, bytes, options) => {
+      const injected = spyOn(fs, 'writeFile').mockImplementation(async (file, bytes, options) => {
         await originalWrite(file, bytes, options)
+        if (!isTemp(repo, file)) return
         if (change === 'working') writeFileSync(path.join(repo, 'doc.txt'), 'external edit\n')
         else {
           const blob = git(repo, ['hash-object', '-w', '--stdin'], Buffer.from('other\n'))
@@ -289,9 +313,9 @@ describe('conflict resolution on real Git merges', () => {
     const before = text(repo)
     const stages = stagesOf(repo)
     const originalChmod = fs.chmod.bind(fs)
-    const injected = spyOn(fs, 'chmod').mockImplementationOnce(async (temp, mode) => {
+    const injected = spyOn(fs, 'chmod').mockImplementation(async (temp, mode) => {
       await originalChmod(temp, mode)
-      chmodSync(file, 0o755)
+      if (isTemp(repo, temp)) chmodSync(file, 0o755)
     })
     try {
       await expect(saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: ['current'] }))
@@ -410,23 +434,56 @@ describe('conflict resolution on real Git merges', () => {
     expect(stagesOf(repo)).toEqual(stages)
   })
 
-  for (const selection of ['attribute', 'default'] as const) {
-    test(`a custom merge driver selected by ${selection} cannot appear clean or clear the unmerged index`, async () => {
+  // Git runs a merge driver configured under the selected name before its built-in drivers, even for set, text, and
+  // unspecified, the word check-attr also prints for an absent attribute.
+  for (const [selection, name] of [
+    ['attribute', 'fixture'], ['default', 'fixture'], ['attribute', 'set'], ['attribute', 'text'], ['attribute', 'unspecified'], ['default', 'set'],
+  ] as const) {
+    test(`a custom merge driver named ${name} selected by ${selection} cannot appear clean, reset, or clear the unmerged index`, async () => {
       const repo = conflictRepo({
         base: 'old\n', ours: 'mine\n', theirs: 'yours\n',
-        plain: selection === 'attribute' ? { '.gitattributes': 'doc.txt merge=fixture\n' } : {},
-        config: { 'merge.fixture.driver': 'false', ...(selection === 'default' ? { 'merge.default': 'fixture' } : {}) },
+        plain: { 'notes.txt': 'plain\n', ...(selection === 'attribute' ? { '.gitattributes': `doc.txt merge=${name}\n` } : {}) },
+        config: { [`merge.${name}.driver`]: CANARY, ...(selection === 'default' ? { 'merge.default': name } : {}) },
       })
-      const before = text(repo)
+      const files = () => ['doc.txt', 'notes.txt', '.git/index', '.git/config'].map((file) => readFileSync(path.join(repo, file)))
+      const before = files()
       const stages = stagesOf(repo)
-      expect(before).toBe('mine\n')
+      expect(text(repo)).toBe('mine\n')
       expect(stages).toHaveLength(3)
-      expect(await loadConflict(repo, 'doc.txt')).toMatchObject({ supported: false, message: expect.stringContaining('merge driver') })
+      expect(driverRuns(repo)).toBe('ran\n')
+      expect(await loadConflict(repo, 'doc.txt')).toMatchObject({ supported: false, message: expect.stringContaining('merge driver'), reset: { available: false } })
+      await expect(resetConflict(repo, 'doc.txt', { fingerprint: { working: '0'.repeat(64), stages: '0'.repeat(64) } })).rejects.toThrow('merge driver')
       await expect(stagePaths(repo, ['doc.txt'])).rejects.toThrow('merge driver')
-      expect(text(repo)).toBe(before)
+      expect(files()).toEqual(before)
       expect(stagesOf(repo)).toEqual(stages)
+      expect(driverRuns(repo)).toBe('ran\n')
     })
   }
+
+  // check-attr prints set for a bare merge attribute and unspecified for an absent one, the same words as merge=set and
+  // merge=unspecified, so a driver configured under either word refuses both, though Git runs its text driver for the
+  // bare and absent ones. Without such a driver, or when neither the attribute nor merge.default names one, the file
+  // stays supported.
+  test("set, text, and unspecified keep Git's text merge and reset unless a driver of that name could run", async () => {
+    for (const [attributes, driver, supported] of [
+      ['doc.txt merge\n', 'set', false], [null, 'unspecified', false],
+      ['doc.txt merge=set\n', null, true], ['doc.txt merge=unspecified\n', null, true], [null, 'text', true], [null, null, true],
+    ] as const) {
+      const repo = conflictRepo({
+        base: 'old\n', ours: 'mine\n', theirs: 'yours\n',
+        plain: attributes ? { '.gitattributes': attributes } : {},
+        config: driver ? { [`merge.${driver}.driver`]: CANARY } : {},
+      })
+      const before = text(repo)
+      expect(before).toContain('<<<<<<< HEAD\n')
+      const model = await loadConflict(repo, 'doc.txt')
+      expect(model.supported).toBe(supported)
+      expect(model.reset.available).toBe(supported)
+      if (!supported) await expect(stagePaths(repo, ['doc.txt'])).rejects.toThrow('merge driver')
+      expect(text(repo)).toBe(before)
+      expect(driverRuns(repo)).toBe('')
+    }
+  }, 60_000)
 
   test('marker-looking text in an ordinary file is staged as written', async () => {
     const repo = conflictRepo({
@@ -542,9 +599,9 @@ describe('reset resolution on real Git merges', () => {
   test('an edit during the temporary write is caught before rename, and a failed rename cleans up', async () => {
     const repo = conflictRepo(sides)
     const realChmod = fs.chmod.bind(fs)
-    const edit = spyOn(fs, 'chmod').mockImplementationOnce(async (file, mode) => {
+    const edit = spyOn(fs, 'chmod').mockImplementation(async (file, mode) => {
       await realChmod(file, mode)
-      writeFileSync(path.join(repo, 'doc.txt'), 'external edit\n')
+      if (isTemp(repo, file)) writeFileSync(path.join(repo, 'doc.txt'), 'external edit\n')
     })
     try {
       await expect(resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })).rejects.toThrow('before resetting')
@@ -553,7 +610,11 @@ describe('reset resolution on real Git merges', () => {
     }
     expect(text(repo)).toBe('external edit\n')
     expect(temps(repo)).toEqual([])
-    const rename = spyOn(fs, 'rename').mockRejectedValueOnce(new Error('injected rename failure'))
+    const realRename = fs.rename.bind(fs)
+    const rename = spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!isTemp(repo, from)) return realRename(from, to)
+      throw new Error('injected rename failure')
+    })
     try {
       await expect(resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })).rejects.toThrow('injected rename failure')
     } finally {
