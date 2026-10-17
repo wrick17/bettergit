@@ -389,12 +389,9 @@ function bodyBelow(message: string, subject: string) {
   return message.startsWith(subject) && (rest === '' || rest.startsWith('\n')) ? rest.trim() : message
 }
 
-// Short dates keep the subject readable in a narrow list. The year shows only for commits from other years.
+// Compact DD/MM keeps the subject readable in a narrow list. The full local timestamp is in the tooltip.
 function formatListDate(seconds: number) {
-  const date = new Date(seconds * 1000)
-  const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  if (date.getFullYear() !== new Date().getFullYear()) options.year = 'numeric'
-  return date.toLocaleDateString(undefined, options)
+  return new Date(seconds * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })
 }
 
 // Adds and removes across a diff, with its file count, for the compare bar.
@@ -441,7 +438,7 @@ function CommitRow({ row, graphWidth, active, isHead, onSelect, onMenu }: {
         {isHead && <span className="ref head">HEAD</span>}
         <span className="subject">{commit.subject}</span>
       </span>
-      <span className="commit-meta date">{formatListDate(commit.date)}</span>
+      <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
       <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
     </li>
   )
