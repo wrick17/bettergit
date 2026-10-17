@@ -7,6 +7,7 @@ import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines } from './prefs'
 import { useResizable } from './Splitter'
+import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { loadSession, savePlace } from './session'
 
 const api = window.bettergit
@@ -69,6 +70,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
   const context = useContextLines()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, '.changes-view-toggle button')
   const errorRef = useRef(onError)
   errorRef.current = onError
   const extraRef = useRef(extra)
@@ -230,15 +232,23 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   return (
-    <div className="changes" style={{ gridTemplateColumns: listOpen && detailOpen ? `${listWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="changes" style={{ gridTemplateColumns: listOpen && detailOpen ? `${list.collapsed ? STRIP_WIDTH : listWidth}px ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
       {/* Clicking empty space in the list clears the file selection, so the right pane shows every change again. */}
       {listOpen && (
         <div
-          className="file-list"
+          className={`file-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
+          ref={list.pane}
+          {...list.paneHandlers}
           onClick={(event) => {
-            if (!(event.target as HTMLElement).closest('li, h3, .commit-box, .changes-view-toggle, .tree-row')) setSelection(null)
+            if (!(event.target as HTMLElement).closest('li, h3, .commit-box, .changes-view-toggle, .tree-row, .fold-strip')) setSelection(null)
           }}
         >
+          {list.folded && (
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show file list" onClick={list.activate}>
+              <Icon name="chevron" />
+              <span className="fold-label">{selection ? splitPath(selection.path).name : `${staged.length} staged · ${unstaged.length} unstaged`}</span>
+            </button>
+          )}
           <div className="changes-view-toggle">
             <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
             <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
@@ -304,7 +314,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           </div>
         </div>
       )}
-      {listOpen && detailOpen && <div className="splitter" {...listHandle} />}
+      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
         <div className="diff-pane" ref={paneRef}>
           {!selection && status.changes.length === 0 && <p className="hint">Working tree clean</p>}

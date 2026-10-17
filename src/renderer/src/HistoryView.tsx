@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { layoutGraph, type GraphRow } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
@@ -10,6 +10,7 @@ import { Icon } from './Icons'
 import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
 import { useResizable } from './Splitter'
+import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { loadSession, savePlace } from './session'
 
 const api = window.bettergit
@@ -50,6 +51,11 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const context = useContextLines()
   const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
   const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
+  // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, 'ul.commits')
+  const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen, '.commit-info button:not(.fold-strip)')
+  const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : `min(${historyWidth}px, 35%)`
+  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : `min(${detailWidth}px, 40%)`
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
@@ -224,9 +230,24 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   return (
-    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `min(${historyWidth}px, 35%) 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div
+      className="history"
+      style={{
+        gridTemplateColumns: listOpen && detailOpen ? `${listTrack} ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+      } as CSSProperties}
+    >
       {listOpen && (
-        <div className="history-list">
+        <div
+          className={`history-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
+          ref={list.pane}
+          {...list.paneHandlers}
+        >
+          {list.folded && (
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" onClick={list.activate}>
+              <Icon name="chevron" />
+              <span className="fold-label">{picked ? <><code>{picked.hash.slice(0, 7)}</code> {picked.subject}</> : 'Commits'}</span>
+            </button>
+          )}
           <div className="search">
             <Icon name="search" />
             <input
@@ -264,16 +285,29 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
           {!rows.length && !empty && <p className="hint">No commits to show.</p>}
         </div>
       )}
-      {listOpen && detailOpen && <div className="splitter" {...historyHandle} />}
+      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />}
       {detailOpen && (
-        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `min(${detailWidth}px, 40%) 9px minmax(0, 1fr)` } : undefined}>
+        <div
+          className={`commit-detail${selected && current ? ' has-commit' : ''}`}
+          style={selected && current ? { gridTemplateColumns: `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` } as CSSProperties : undefined}
+        >
           {!selected && (empty
             ? <p className="hint">This repository has no commits yet.</p>
             : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}
           {selected && !current && <p className="hint">Loading…</p>}
           {selected && current && (
             <>
-              <div className="commit-info">
+              <div
+                className={`commit-info${details.folded ? ' folded' : ''}${details.held ? ' held' : ''}`}
+                ref={details.pane}
+                {...details.paneHandlers}
+              >
+                {details.folded && (
+                  <button ref={details.strip} type="button" className="fold-strip" aria-label="Show commit details" onClick={details.activate}>
+                    <Icon name="chevron" />
+                    <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {current.files.length} files</span>
+                  </button>
+                )}
                 <header className="commit-head">
                   {picked && (
                     <div className="commit-title">
@@ -299,7 +333,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
                 }} />
               </div>
-              <div className="splitter" aria-label="Commit details width" {...detailHandle} />
+              <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />
               <div className="diff-pane" ref={diffRef}>
                 {compare && totals && (
                   <div className="compare-bar">

@@ -1,4 +1,5 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { GUTTER } from './fold'
 
 // A resizable column width, remembered between launches. Spread `handle` onto a divider element:
 // drag it, double-click to restore the default, or use the arrow keys (Shift for bigger steps).
@@ -15,7 +16,7 @@ export function useResizable(key: string, initial: number, min: number, max: num
     localStorage.setItem(key, String(latest.current))
   }
   const paint = (grid: HTMLElement, px: number) => {
-    grid.style.gridTemplateColumns = `${px}px 9px minmax(0, 1fr)`
+    grid.style.gridTemplateColumns = `${px}px ${GUTTER}px minmax(0, 1fr)`
   }
 
   const handle = {
@@ -29,6 +30,8 @@ export function useResizable(key: string, initial: number, min: number, max: num
       const grid = event.currentTarget.parentElement
       if (!grid) return
       event.currentTarget.setPointerCapture(event.pointerId)
+      // The grid's column transition would trail the pointer, so it is off until release.
+      grid.dataset.resizing = ''
       drag.current = { x: event.clientX, size: latest.current, px: latest.current, frame: 0, grid }
     },
     onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
@@ -46,6 +49,7 @@ export function useResizable(key: string, initial: number, min: number, max: num
       if (!d) return
       drag.current = null
       cancelAnimationFrame(d.frame)
+      delete d.grid.dataset.resizing
       paint(d.grid, d.px)
       commit(d.px)
     },
