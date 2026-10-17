@@ -1,4 +1,9 @@
-import { git, gitOk } from './exec'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { conflictBlocks, parseConflicts } from '../../shared/conflict'
+import { assertSupportedConflictFormat } from './conflict'
+import { git, gitOk, gitRaw } from './exec'
+
 
 export interface Branch {
   name: string
@@ -20,8 +25,39 @@ export interface Worktree {
   locked: boolean
 }
 
+// Staging a file that still holds conflict markers would commit the markers. Only unmerged paths are checked, so text
+// that looks like a marker in a resolved or ordinary file is staged as written.
 export async function stagePaths(repo: string, paths: string[]): Promise<void> {
-  if (paths.length) await git(repo, ['add', '--', ...paths])
+  if (!paths.length) return
+  for (const file of await unmergedPaths(repo, paths)) {
+    await assertSupportedConflictFormat(repo, file)
+    if (await hasUnresolvedMarkers(path.join(repo, file))) {
+      throw new Error(`${file} still has conflict markers. Resolve the conflict before staging it.`)
+    }
+  }
+  await git(repo, ['add', '--', ...paths])
+}
+
+// The unmerged paths that git add would touch for these pathspecs. Git applies the same pathspec rules to both.
+async function unmergedPaths(repo: string, paths: string[]): Promise<string[]> {
+  const listed = await gitRaw(repo, ['ls-files', '-u', '-z', '--', ...paths])
+  if (listed.code !== 0) throw new Error(listed.stderr || 'Git could not list the conflicts.')
+  const files = listed.stdout.toString('utf8').split('\0').flatMap((record) => {
+    const tab = record.indexOf('\t')
+    return tab < 0 ? [] : [record.slice(tab + 1)]
+  })
+  return [...new Set(files)]
+}
+
+// A file counts as unresolved when its text parses into conflict blocks, or holds a marker that cannot be parsed.
+// Binary files are not checked here, and the resolver reports them as unsupported.
+async function hasUnresolvedMarkers(file: string): Promise<boolean> {
+  const info = await fs.lstat(file).catch(() => null)
+  if (!info?.isFile()) return false
+  const bytes = await fs.readFile(file)
+  if (bytes.includes(0)) return false
+  const parsed = parseConflicts(new TextDecoder('utf-8').decode(bytes))
+  return parsed.ok ? conflictBlocks(parsed.parts).length > 0 : true
 }
 
 export async function unstagePaths(repo: string, paths: string[], hasHead: boolean): Promise<void> {
