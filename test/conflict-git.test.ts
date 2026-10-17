@@ -211,6 +211,23 @@ describe('conflict resolution on real Git merges', () => {
     expect(text(repo)).toBe('x\nyours\nend')
   })
 
+  // Git writes the same markers whether or not a side ends with a newline, so only the side's stage can tell.
+  test('a side chosen at the end of the file is saved and previewed exactly as its stage, and nothing is staged', async () => {
+    for (const ending of ['', '\n']) {
+      for (const [choice, stage] of [['current', 2], ['incoming', 3]] as const) {
+        const repo = conflictRepo({ base: 'prefix\nbase\n', ours: `prefix\ncurrent${ending}`, theirs: `prefix\nincoming${ending}` })
+        const stages = stagesOf(repo)
+        const model = await loaded(repo)
+        const preview = await previewConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: [choice] })
+        await saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: [choice] })
+        const expected = execFileSync('git', ['cat-file', 'blob', `:${stage}:doc.txt`], { cwd: repo })
+        expect(readFileSync(path.join(repo, 'doc.txt'))).toEqual(expected)
+        expect(preview.text).toBe(expected.toString('utf8'))
+        expect(stagesOf(repo)).toEqual(stages)
+      }
+    }
+  }, 60_000)
+
   test('stale working bytes are refused, and the hand edit is kept', async () => {
     const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' })
     const model = await loaded(repo)
