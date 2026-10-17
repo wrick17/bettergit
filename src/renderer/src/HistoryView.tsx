@@ -356,7 +356,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {current.files.length} files</span>
                   </button>
                 )}
-                <header className="commit-head">
+                <header className="commit-head" tabIndex={-1}>
                   {picked && (
                     <div className="commit-title">
                       <h2 className="commit-subject">{picked.subject}</h2>

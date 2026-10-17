@@ -41,6 +41,15 @@ test('a pane with nothing to focus releases the keyboard hold', async () => {
   expect(await openFromStrip(() => null)).toEqual([false])
 })
 
+// An empty commit lists no files, so its details have no control. The header, marked tabindex="-1", takes focus instead.
+test('opening commit details from the strip with no control focuses the header and keeps the pane open', async () => {
+  let focused = false
+  const header = { focus: () => { focused = true } }
+  const released = await openFromStrip((selector) => (selector.includes('[tabindex="-1"]') ? header : null))
+  expect(focused).toBe(true)
+  expect(released).toEqual([])
+})
+
 // Runs the real divider hook in memory on a stub grid. getComputedStyle reports the first track as laid out on screen.
 async function dragDivider(stored: number, shown: string, args: number[], dx: number | null) {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/Splitter.tsx', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['react'] })
