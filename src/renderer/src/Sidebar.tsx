@@ -98,12 +98,6 @@ export function Sidebar(props: SidebarProps) {
       <div className="sidebar-head">
         <span className="sidebar-title">Repositories</span>
         <div className="sidebar-tools">
-          <IconButton
-            icon="eye"
-            label="Show hidden repositories"
-            active={showHidden}
-            onClick={() => setShowHidden((value) => !value)}
-          />
           <div className="add-anchor" ref={addRef}>
             <button
               ref={addTrigger}
@@ -124,6 +118,12 @@ export function Sidebar(props: SidebarProps) {
               </div>
             )}
           </div>
+          <IconButton
+            icon="eye"
+            label="Show hidden repositories"
+            active={showHidden}
+            onClick={() => setShowHidden((value) => !value)}
+          />
           <IconButton icon="settings" label="Settings" onClick={props.onSettings} />
         </div>
       </div>
