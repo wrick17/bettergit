@@ -397,6 +397,198 @@ describe('branch picker operations with real Git', () => {
     }
   })
 
+  test('new branch names with leftover upstream settings are refused without touching the settings', async () => {
+    const { dir, base } = await fixture()
+    for (const name of ['orphan-topic', 'topic']) {
+      await git(dir, ['config', `branch.${name}.remote`, 'origin'])
+      await git(dir, ['config', `branch.${name}.merge`, 'refs/heads/topic'])
+    }
+    await expect(createBranch(dir, 'orphan-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('upstream settings')
+    await expect(branchFromCommit(dir, 'orphan-topic', base)).rejects.toThrow('upstream settings')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('upstream settings')
+    expect((await readStatus(dir)).head).toBe('main')
+    expect((await readBranches(dir)).some((entry) => !entry.remote && ['orphan-topic', 'topic'].includes(entry.name))).toBe(false)
+    expect((await git(dir, ['config', '--get-regexp', '^branch\\.(orphan-topic|topic)\\.'])).trim().split('\n')).toEqual([
+      'branch.orphan-topic.remote origin', 'branch.orphan-topic.merge refs/heads/topic',
+      'branch.topic.remote origin', 'branch.topic.merge refs/heads/topic',
+    ])
+  })
+
+  test('upstream settings that only apply once the new branch is checked out are refused before creating it', async () => {
+    const { dir, base } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    const upstream = (name: string) => `[branch "${name}"]\n\tremote = origin\n\tmerge = refs/heads/topic\n`
+    write('orphan.config', upstream('orphan-topic'))
+    write('topic.config', '[includeIf "onbranch:topic"]\n\tpath = topic-mid.config\n')
+    write('topic-mid.config', `[includeIf "gitdir:${gitDir}"]\n\tpath = topic-upstream.config\n`)
+    write('topic-upstream.config', upstream('topic'))
+    write('plain.config', '[core]\n\tabbrev = 12\n')
+    await git(dir, ['config', 'includeIf.onbranch:orphan-*.path', 'orphan.config'])
+    await git(dir, ['config', 'includeIf.onbranch:topic.path', 'topic.config'])
+    await git(dir, ['config', 'includeIf.onbranch:plain.path', 'plain.config'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirty\n')
+    await git(dir, ['add', 'file.txt'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirtier\n')
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(gitDir, 'config'), 'utf8'), readFileSync(path.join(dir, 'file.txt'), 'utf8'),
+    ]
+    const before = await snapshot()
+    await expect(createBranch(dir, 'orphan-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('upstream settings')
+    await expect(branchFromCommit(dir, 'orphan-topic', base)).rejects.toThrow('upstream settings')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('upstream settings')
+    expect(await snapshot()).toEqual(before)
+    await createBranch(dir, 'plain', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'plain', upstreamRef: null })
+    // An onbranch include that cannot be read fails closed instead of counting as absent.
+    write('broken.config', '[branch "broken\n')
+    await git(dir, ['config', 'includeIf.onbranch:broken-*.path', 'broken.config'])
+    await expect(createBranch(dir, 'broken-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('Could not read')
+    expect((await readStatus(dir)).head).toBe('plain')
+  })
+
+  test('upstream settings behind a nested condition that needs the whole repository config are refused before creating it', async () => {
+    const { dir, base } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    // hasconfig only sees the remote URLs in .git/config when Git reads the whole repository config.
+    write('context.config', `[includeIf "hasconfig:remote.*.url:${dir}"]\n\tpath = context-upstream.config\n`)
+    write('context-upstream.config', ['topic', 'context-topic'].map((name) => `[branch "${name}"]\n\tremote = origin\n\tmerge = refs/heads/topic\n`).join(''))
+    await git(dir, ['config', 'includeIf.onbranch:*topic.path', 'context.config'])
+    // Git ignores a missing include file, so it does not block other names.
+    await git(dir, ['config', 'includeIf.gitdir:/nowhere/.path', 'missing.config'])
+    // Git allows a remote URL alongside a hasconfig include when only plain include.path reaches it.
+    write('plain-url.config', '[remote "plain"]\n\turl = https://plain.example.invalid/repo.git\n')
+    await git(dir, ['config', 'include.path', 'plain-url.config'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirty\n')
+    await git(dir, ['add', 'file.txt'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirtier\n')
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(dir, 'file.txt'), 'utf8'),
+      ...['config', 'context.config', 'context-upstream.config'].map((file) => readFileSync(path.join(gitDir, file), 'utf8')),
+    ]
+    const before = await snapshot()
+    await expect(createBranch(dir, 'context-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('upstream settings')
+    await expect(branchFromCommit(dir, 'context-topic', base)).rejects.toThrow('upstream settings')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('upstream settings')
+    expect(await snapshot()).toEqual(before)
+    await createBranch(dir, 'context-free', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'context-free', upstreamRef: null })
+    // Git exits 1 with only a warning for an include file it cannot open, which must not count as absent.
+    write('locked.config', '')
+    chmodSync(path.join(gitDir, 'locked.config'), 0o000)
+    await git(dir, ['config', '--add', 'includeIf.gitdir:/nowhere/.path', 'locked.config'])
+    await expect(createBranch(dir, 'locked', { fullRef: 'HEAD', hash: base })).rejects.toThrow('Could not read')
+    expect((await readStatus(dir)).head).toBe('context-free')
+  })
+
+  test('include paths are read as Git opens them, through symlinked folders and literal names', async () => {
+    const { dir, base } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const external = mkdtempSync(path.join(tmpdir(), 'bettergit-include-'))
+    repos.push(external)
+    mkdirSync(path.join(external, 'child'))
+    symlinkSync(path.join(external, 'child'), path.join(gitDir, 'link'))
+    const upstream = (name: string) => `[branch "${name}"]\n\tremote = origin\n\tmerge = refs/heads/topic\n`
+    // The kernel follows link before applying .., so Git reads the external file, not .git/upstream.config.
+    writeFileSync(path.join(external, 'upstream.config'), upstream('symlink-topic') + upstream('topic'))
+    // Git does not apply :(optional) to include paths, so this names a file literally.
+    writeFileSync(path.join(gitDir, ':(optional)literal.config'), upstream('literal-topic'))
+    await git(dir, ['config', 'includeIf.onbranch:*topic.path', 'link/../upstream.config'])
+    await git(dir, ['config', '--add', 'includeIf.onbranch:*topic.path', ':(optional)literal.config'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirty\n')
+    await git(dir, ['add', 'file.txt'])
+    writeFileSync(path.join(dir, 'file.txt'), 'dirtier\n')
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(dir, 'file.txt'), 'utf8'),
+      ...[path.join(gitDir, 'config'), path.join(external, 'upstream.config'), path.join(gitDir, ':(optional)literal.config')]
+        .map((file) => readFileSync(file, 'utf8')),
+    ]
+    const before = await snapshot()
+    await expect(createBranch(dir, 'symlink-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('upstream settings')
+    await expect(branchFromCommit(dir, 'symlink-topic', base)).rejects.toThrow('upstream settings')
+    await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('upstream settings')
+    await expect(createBranch(dir, 'literal-topic', { fullRef: 'HEAD', hash: base })).rejects.toThrow('upstream settings')
+    expect(await snapshot()).toEqual(before)
+    await createBranch(dir, 'symlink-free', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'symlink-free', upstreamRef: null })
+  })
+
+  test('a remote URL behind a gitdir include for another repository does not block creation beside a hasconfig include', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    write('harmless.config', '[core]\n\tabbrev = 12\n')
+    write('other-urls.config', '[remote "other"]\n\turl = https://other.example.invalid/repo.git\n')
+    await git(dir, ['config', 'includeIf.hasconfig:remote.*.url:**.path', 'harmless.config'])
+    await git(dir, ['config', `includeIf.gitdir:${dir}-other/.git.path`, 'other-urls.config'])
+    await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+    await git(dir, ['switch', 'main'])
+    await branchFromCommit(dir, 'from-commit', tip)
+    expect(await sha(dir, 'refs/heads/from-commit')).toBe(tip)
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'topic', upstreamRef: 'refs/remotes/origin/topic' })
+    // Git reads the config without error and applies the hasconfig include, but not the other repository's URL.
+    expect((await git(dir, ['config', 'core.abbrev'])).trim()).toBe('12')
+    expect(await git(dir, ['config', '--includes', '--list'])).not.toContain('other.example.invalid')
+    // A gitdir include for this repository still counts once a hasconfig include applies after the switch.
+    await git(dir, ['config', '--unset', 'includeIf.hasconfig:remote.*.url:**.path'])
+    write('later.config', '[includeIf "hasconfig:remote.*.url:**"]\n\tpath = harmless.config\n')
+    await git(dir, ['config', 'includeIf.onbranch:refused*.path', 'later.config'])
+    await git(dir, ['config', `includeIf.gitdir:${gitDir}.path`, 'other-urls.config'])
+    expect(await git(dir, ['config', '--includes', '--list'])).toContain('other.example.invalid')
+    await expect(createBranch(dir, 'refused', { fullRef: 'HEAD', hash: base })).rejects.toThrow('Could not read')
+    expect((await readBranches(dir)).some((entry) => entry.name === 'refused')).toBe(false)
+    // Git itself writes that branch and then fails on its config.
+    await git(dir, ['switch', '-q', '-c', 'refused-native'])
+    await expect(git(dir, ['config', '--includes', '--list'])).rejects.toThrow('remote URLs cannot be configured')
+  })
+
+  const invalidIncludes: Record<string, Record<string, string>> = {
+    // Each pass of this self-include grows its path until Git fails on an 11th nested include.
+    loop: { 'loop.config': '[include]\n\tpath = ./loop.config\n' },
+    // Git fails on an include with no value.
+    valueless: { 'valueless.config': '[include]\n\tpath\n' },
+    // Once a hasconfig include applies, Git fails on a remote URL in any file it reached through includeIf.
+    'remote-url': {
+      'remote-url.config': '[includeIf "hasconfig:remote.*.url:**"]\n\tpath = urls.config\n',
+      'urls.config': '[remote "extra"]\n\turl = https://extra.example.invalid/repo.git\n',
+    },
+  }
+  for (const [name, files] of Object.entries(invalidIncludes)) {
+    test(`a ${name} include that Git would fail on after the switch is refused before writing the branch`, async () => {
+      const { dir, base } = await fixture()
+      const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+      const write = (file: string, content: string) => writeFileSync(path.join(gitDir, file), content)
+      for (const [file, content] of Object.entries(files)) write(file, content)
+      await git(dir, ['config', `includeIf.onbranch:${name}.path`, `${name}.config`])
+      writeFileSync(path.join(dir, 'file.txt'), 'dirty\n')
+      await git(dir, ['add', 'file.txt'])
+      writeFileSync(path.join(dir, 'file.txt'), 'dirtier\n')
+      const snapshot = async () => [
+        await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+        await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(dir, 'file.txt'), 'utf8'),
+        ...['config', ...Object.keys(files)].map((file) => readFileSync(path.join(gitDir, file), 'utf8')),
+      ]
+      const before = await snapshot()
+      await expect(createBranch(dir, name, { fullRef: 'HEAD', hash: base })).rejects.toThrow('Could not read')
+      await expect(branchFromCommit(dir, name, base)).rejects.toThrow('Could not read')
+      await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))).rejects.toThrow('Could not read')
+      expect(await snapshot()).toEqual(before)
+      // Pointing the same include at a valid chain of exactly 10 nested includes, Git's limit, lets the same creation through.
+      for (let level = 1; level < 10; level++) write(`deep${level}.config`, `[include]\n\tpath = deep${level + 1}.config\n`)
+      write('deep10.config', '[core]\n\tabbrev = 12\n')
+      await git(dir, ['config', `includeIf.onbranch:${name}.path`, 'deep1.config'])
+      await createBranch(dir, name, { fullRef: 'HEAD', hash: base })
+      expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name, upstreamRef: null })
+      expect((await git(dir, ['config', 'core.abbrev'])).trim()).toBe('12')
+    })
+  }
+
   test('refuses moved or disappeared selected refs, changed HEAD and revision expressions', async () => {
     const { dir, base } = await fixture()
     const remote = await select(dir, 'refs/remotes/origin/topic')

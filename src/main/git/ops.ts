@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
-import { git, gitOk, gitRaw } from './exec'
+import { GitError, git, gitOk, gitRaw } from './exec'
 import { readStatus } from './status'
 
 export interface Branch {
@@ -165,6 +165,80 @@ async function assertNewBranch(repo: string, name: string, branches: Branch[]): 
   const collision = branches.find((branch) => !branch.remote && (branch.fullRef === fullRef
     || branch.fullRef.startsWith(fullRef + '/') || fullRef.startsWith(branch.fullRef + '/')))
   if (collision) throw new Error(`Branch already exists or name conflicts with ${collision.name}. Choose another name.`)
+  await assertNoUpstreamConfig(repo, name)
+}
+
+// Git keeps branch.<name>.remote/merge after a branch ref vanishes (unborn or externally deleted)
+// and a new branch with that name silently inherits them, even with --no-track.
+// Include conditions such as onbranch and hasconfig can change once the new branch is checked out, and Git cannot
+// evaluate them for that state ahead of time. So every reachable include file is read on its own and checked too,
+// whatever its condition. An include that Git would fail on once it applies is refused as well, since the switch
+// would already have written the branch and HEAD by then.
+async function assertNoUpstreamConfig(repo: string, name: string): Promise<void> {
+  const unchecked = (reason: string) => new Error(`Could not read the Git config to check upstream settings for ${name}: ${reason}`)
+  // A silent exit 1 is an absent key, no match or a missing include file. Git also exits 1 for a file it cannot
+  // open, but with a warning, so that and anything else fails closed.
+  const read = (args: string[]) => git(repo, ['config', ...args]).catch((error) => {
+    if (error instanceof GitError && error.code === 1 && !error.stderr) return null
+    throw unchecked(error.message)
+  })
+  // Start from the files Git always reads, without their includes, so depth counts nesting exactly as Git does.
+  const sources = [{ args: ['--no-includes'], depth: 0, conditional: false, inert: false }]
+  const seen = new Set<string>()
+  // A gitdir condition does not depend on the branch, so Git's answer for the including file now also holds after the switch.
+  const included = new Map<string, Promise<string[]>>()
+  const gitdirApplies = (including: string, file: string) => {
+    if (!included.has(including)) {
+      included.set(including, read(['--file', including, '--includes', '-z', '--show-origin', '--name-only', '--list'])
+        .then((output) => (output ?? '').split('\0')))
+    }
+    return included.get(including)!.then((origins) => origins.includes(`file:${file}`))
+  }
+  // Once any hasconfig:remote.*.url include applies, Git fails on remote.*.url in a file it reached through includeIf.
+  // Files behind a gitdir include that does not apply to this repository are never read by Git, so they count for neither.
+  let hasconfig = false
+  let conditionalUrl = false
+  while (sources.length) {
+    const { args, depth, conditional, inert } = sources.pop()!
+    for (const key of [`branch.${name}.remote`, `branch.${name}.merge`]) {
+      if ((await read([...args, '--get-all', key])) !== null) {
+        throw new Error(`Branch ${name} could inherit upstream settings (${key}) from the Git config. Choose another name, or remove those settings first.`)
+      }
+    }
+    if (conditional && !inert && (await read([...args, '--name-only', '--get-regexp', '^remote\\..*\\.url$'])) !== null) conditionalUrl = true
+    const entries = ((await read([...args, '-z', '--show-origin', '--get-regexp', '^include(if\\..*)?\\.path$'])) ?? '').split('\0')
+    for (let j = 0; j + 1 < entries.length; j += 2) {
+      const [origin, entry] = [entries[j], entries[j + 1]]
+      // Git prints a key without a value with no newline, and fails on such an include.
+      if (!entry.includes('\n')) throw unchecked('an include path has no value')
+      // Git fails on an 11th nested include. One whose file is missing would be skipped, but is refused here too.
+      if (depth === 10) throw unchecked('includes are nested more than 10 deep')
+      hasconfig ||= !inert && entry.startsWith('includeif.hasconfig:remote.*.url:')
+      const raw = entry.slice(entry.indexOf('\n') + 1)
+      // Git expands ~ and %(prefix)/ in include paths but, unlike --type=path, keeps :(optional) as part of the name.
+      const value = raw.startsWith(':(optional)') ? raw
+        : (await read(['--file', '/dev/null', '--type=path', '-z', '--default', raw, '--get', 'include.path']))!.slice(0, -1)
+      // Git fails on relative includes that do not come from a file.
+      if (!path.isAbsolute(value) && !origin.startsWith('file:')) throw unchecked('a relative include path is not in a config file')
+      // Like Git, append a relative path to the including file's folder as written and let the kernel resolve it.
+      // Normalizing link/.. here would read a different file from the one Git opens. Relative local config origins
+      // and later --file reads both start from the worktree top level, which canonical repo paths are.
+      const including = origin.slice('file:'.length)
+      const file = path.isAbsolute(value) ? value : including.slice(0, including.lastIndexOf('/') + 1) + value
+      const viaIncludeIf = conditional || entry.startsWith('includeif.')
+      // Upstream keys are still checked behind an inactive gitdir include, as everywhere else.
+      const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && origin.startsWith('file:') && !(await gitdirApplies(including, file)))
+      // The same path at the same depth and kind of edge leads to the same checks. Otherwise it can hit the depth limit
+      // or the remote URL rule, so it is read again.
+      const visit = `${depth + 1}\0${viaIncludeIf}\0${childInert}\0${file}`
+      if (!seen.has(visit)) {
+        seen.add(visit)
+        sources.push({ args: ['--file', file, '--no-includes'], depth: depth + 1, conditional: viaIncludeIf, inert: childInert })
+      }
+    }
+    // Other conditions are not evaluated, so any other hasconfig include and includeIf edge count, as they could apply after the switch.
+    if (hasconfig && conditionalUrl) throw unchecked('a remote URL is set in a file reached through includeIf, which Git refuses once a hasconfig:remote.*.url include applies')
+  }
 }
 
 export async function switchBranch(repo: string, selection: BranchSelection): Promise<void> {
@@ -318,6 +392,8 @@ export async function checkoutDetached(repo: string, hash: string): Promise<void
 
 export async function branchFromCommit(repo: string, name: string, hash: string): Promise<void> {
   await assertBranchName(repo, name)
+  // An existing name is left to Git's own "already exists" refusal.
+  if (!(await gitOk(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]))) await assertNoUpstreamConfig(repo, name)
   await git(repo, ['branch', name, await resolveCommit(repo, hash)])
 }
 
