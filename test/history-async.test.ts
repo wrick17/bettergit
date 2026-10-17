@@ -228,13 +228,244 @@ assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
 assert.deepEqual(savedCompare(), { key: 'A', value: null })
 unmount()
 console.log('compare selection and restore cases passed')
+
+// A whitespace toggle refetches the commit. Until that reply, hunks fetched with the other option are not shown;
+// the heading and the diff toolbar stay. A reply for an option already left is dropped.
+const { setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
+const diffView = () => find(tree, (p) => Array.isArray(p.files) && p.persist)
+const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)?.files.map((file) => file.path)
+const reply = (hash, option, label) => {
+  const call = calls.commit.find((c) => !c.done && c.args[1] === hash && c.args[3] === option)
+  call.done = true
+  call.resolve({ files: files(label), moves: [], details: { body: 'subject ' + hash } })
+  return flush()
+}
+await mount({ places: { '/repo': { commit: 'A' } } })
+await reply('A', false, 'shown')
+for (const [option, label] of [[true, 'hidden'], [false, 'shown-again']]) {
+  setIgnoreWhitespace(option); render(); await flush()
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] }, 'old hunks shown under the toggled option')
+  assert.equal(diffView().emptyHint, 'Loading…')
+  assert.deepEqual(stat(), [])
+  await reply('A', option, label)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [label + '.ts'] })
+  assert.equal(diffView().emptyHint, undefined)
+}
+setIgnoreWhitespace(true); render(); await flush()
+setIgnoreWhitespace(false); render(); await flush()
+await reply('A', true, 'obsolete')
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['shown-again.ts'] }, 'obsolete reply shown')
+// With a compare open, the fallback to the commit's own diff also waits for the option it was fetched with.
+compareBase()
+await answer(calls.mergeBase, 'H', () => 'BASE-A')
+await answer(calls.compare, 'A', () => ({ files: files('vs-shown'), moves: [] }))
+assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-shown.ts'] })
+setIgnoreWhitespace(true); render(); await flush()
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] })
+await reply('A', true, 'hidden-own')
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden-own.ts'] })
+await answer(calls.compare, 'A', () => ({ files: files('vs-hidden'), moves: [] }))
+assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-hidden.ts'] })
+// Moving to another commit still unmounts the diff until that commit's reply.
+find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+render()
+assert.equal(diffView(), undefined)
+await reply('B', true, 'b-hidden')
+assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-hidden.ts'] })
+setIgnoreWhitespace(false)
+unmount()
+console.log('whitespace toggle cases passed')
+
+// A scrolled diff keeps its place through a whitespace reload. The pane below models the browser: its height follows the
+// files on screen once a frame lays them out, a shorter pane clamps scrollTop, and a clamp fires a scroll event.
+{
+  const frames = new Map()
+  let nextFrame = 1
+  globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  const scrollEvent = (pane) => find(tree, (p) => p.className === 'diff-pane')?.onScroll?.({ currentTarget: pane })
+  const makePane = () => {
+    let top = 0
+    const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [], scrollTo() {} }
+    Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
+    return pane
+  }
+  const layout = (pane) => {
+    pane.scrollHeight = (diffView()?.files.length ?? 0) > 0 ? 3000 : 40
+    const before = pane.scrollTop
+    pane.scrollTop = before
+    if (pane.scrollTop !== before) scrollEvent(pane)
+  }
+  const frame = (pane) => { layout(pane); const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
+  const savedTop = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return JSON.parse(stored.get('bettergit.session')).views['/repo|history-diff']
+  }
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await reply('A', false, 'tall')
+  const ref = find(tree, (p) => p.className === 'diff-pane').ref
+  const pane = makePane()
+  ref.current = pane
+  render(); frame(pane); frame(pane)
+  pane.scrollTop = 900; scrollEvent(pane)
+  // The reload shows no hunks, so the pane clamps to the top until the reply with the new option lays out.
+  setIgnoreWhitespace(true); render(); await flush()
+  frame(pane)
+  assert.equal(pane.scrollTop, 0)
+  await reply('A', true, 'tall-hidden')
+  frame(pane); frame(pane)
+  assert.equal(pane.scrollTop, 900, 'scroll position lost across a whitespace reload')
+  assert.deepEqual(await savedTop(), { key: 'A', value: 900 }, 'the clamp to the top was saved')
+  // Leaving the commit while its reload is pending does not carry the old position to the next commit's pane.
+  setIgnoreWhitespace(false); render(); await flush()
+  frame(pane)
+  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  render()
+  const next = makePane()
+  ref.current = next
+  await reply('B', false, 'b-tall')
+  frame(next); frame(next); frame(next)
+  assert.equal(next.scrollTop, 0, 'old commit position restored into the next commit')
+  setIgnoreWhitespace(false)
+  unmount()
+
+  // With a comparison open, the commit's own short diff may reply first. It does not take the comparison's position:
+  // the pane keeps waiting, saves nothing from the short diff, and returns to 900 when the tall comparison lays out.
+  const short = (hash, option) => {
+    const call = calls.commit.find((c) => !c.done && c.args[1] === hash && c.args[3] === option)
+    call.done = true
+    call.resolve({ files: [], moves: [], details: { body: 'subject ' + hash } })
+    return flush()
+  }
+  const compared = (hash, option, label) => {
+    const call = calls.compare.find((c) => !c.done && c.args[1] === hash && c.args[3] === option)
+    call.done = true
+    call.resolve({ files: files(label), moves: [] })
+    return flush()
+  }
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await short('A', false)
+  const comparePane = makePane()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = comparePane
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await compared('A', false, 'vs-tall')
+  frame(comparePane); frame(comparePane)
+  comparePane.scrollTop = 900; scrollEvent(comparePane)
+  assert.deepEqual(await savedTop(), { key: 'A', value: 900 })
+  setIgnoreWhitespace(true); render(); await flush()
+  frame(comparePane)
+  assert.equal(comparePane.scrollTop, 0)
+  await short('A', true)
+  frame(comparePane); frame(comparePane); frame(comparePane)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] })
+  assert.equal(comparePane.scrollTop, 0)
+  await compared('A', true, 'vs-tall-hidden')
+  frame(comparePane); frame(comparePane)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-tall-hidden.ts'] })
+  assert.equal(comparePane.scrollTop, 900, 'the commit fallback consumed the comparison position')
+  assert.deepEqual(await savedTop(), { key: 'A', value: 900 }, 'the fallback position was saved')
+  // Leaving the commit while its comparison wait is pending drops the wait: an obsolete comparison reply changes nothing,
+  // and the next commit pane is not moved to the old position.
+  setIgnoreWhitespace(false); render(); await flush()
+  frame(comparePane)
+  await short('A', false)
+  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  render()
+  const nextPane = makePane()
+  await compared('A', false, 'vs-obsolete')
+  await reply('B', false, 'b-tall')
+  find(tree, (p) => p.className === 'diff-pane').ref.current = nextPane
+  render(); frame(nextPane); frame(nextPane); frame(nextPane)
+  assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-tall.ts'] })
+  assert.equal(nextPane.scrollTop, 0, 'comparison position restored into the next commit')
+  setIgnoreWhitespace(false)
+  unmount()
+
+  // Leaving a comparison can keep scrollTop and fire no scroll event. The commit's own diff then owns the position,
+  // so a whitespace reload returns to it.
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await reply('A', false, 'tall')
+  const exitPane = makePane()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = exitPane
+  render(); frame(exitPane); frame(exitPane)
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await compared('A', false, 'vs-tall')
+  frame(exitPane); frame(exitPane)
+  exitPane.scrollTop = 900; scrollEvent(exitPane)
+  find(tree, (p) => p.children === 'Exit comparison').onClick()
+  render(); await flush(); frame(exitPane); frame(exitPane)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['tall.ts'] })
+  assert.equal(exitPane.scrollTop, 900)
+  setIgnoreWhitespace(true); render(); await flush()
+  frame(exitPane)
+  assert.equal(exitPane.scrollTop, 0)
+  await reply('A', true, 'tall-hidden')
+  frame(exitPane); frame(exitPane)
+  assert.equal(exitPane.scrollTop, 900, 'the position was kept for the comparison after leaving it')
+  assert.deepEqual(await savedTop(), { key: 'A', value: 900 })
+  setIgnoreWhitespace(false)
+  unmount()
+
+  // Entering a comparison can do the same. The comparison then owns the position it opened at, so the commit's short
+  // fallback during a whitespace reload does not take it.
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await reply('A', false, 'tall')
+  const enterPane = makePane()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = enterPane
+  render(); frame(enterPane); frame(enterPane)
+  enterPane.scrollTop = 900; scrollEvent(enterPane)
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await compared('A', false, 'vs-tall')
+  frame(enterPane); frame(enterPane)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-tall.ts'] })
+  assert.equal(enterPane.scrollTop, 900)
+  setIgnoreWhitespace(true); render(); await flush()
+  frame(enterPane)
+  await short('A', true)
+  frame(enterPane); frame(enterPane); frame(enterPane)
+  assert.equal(enterPane.scrollTop, 0)
+  await compared('A', true, 'vs-tall-hidden')
+  frame(enterPane); frame(enterPane)
+  assert.equal(enterPane.scrollTop, 900, 'the position was kept for the commit after entering the comparison')
+  assert.deepEqual(await savedTop(), { key: 'A', value: 900 })
+  setIgnoreWhitespace(false)
+  unmount()
+
+  // A restored comparison that fails during a whitespace reload ends the wait. The commit's own diff keeps the place it
+  // shows at, and that place is saved, so a reload does not move the commit to the comparison's position.
+  await mount({ places: { '/repo': { commit: 'A' } }, views: { '/repo|compare': saved } })
+  await reply('A', false, 'tall')
+  const failPane = makePane()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = failPane
+  render(); frame(failPane); frame(failPane)
+  await compared('A', false, 'vs-tall')
+  frame(failPane); frame(failPane)
+  failPane.scrollTop = 900; scrollEvent(failPane)
+  setIgnoreWhitespace(true); render(); await flush()
+  frame(failPane)
+  const failing = calls.compare.find((c) => !c.done && c.args[1] === 'A' && c.args[3] === true)
+  failing.done = true; failing.reject(new Error('ref gone')); await flush()
+  await reply('A', true, 'tall-hidden')
+  frame(failPane); frame(failPane)
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['tall-hidden.ts'] })
+  assert.equal(failPane.scrollTop, 0)
+  assert.deepEqual(await savedTop(), { key: 'A', value: 0 }, 'the failed comparison position was kept for the commit')
+  setIgnoreWhitespace(false)
+  unmount()
+}
+console.log('whitespace scroll cases passed')
 `
 
-test('History compares only the selected commit and restores a saved compare', () => {
+test('History compares only the selected commit, restores a saved compare, and shows a diff only for the whitespace option it was fetched with', () => {
   const child = Bun.spawnSync([process.execPath, '-e', COMPARE], {
     cwd: `${import.meta.dir}/..`,
     stderr: 'pipe',
   })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   expect(child.stdout.toString()).toContain('compare selection and restore cases passed')
+  expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
+  expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
 })
