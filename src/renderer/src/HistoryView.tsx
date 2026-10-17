@@ -137,6 +137,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // A compare, prompt, or notice belongs to the commit it was started from. Moving to another commit clears it.
   useEffect(() => {
     selectedRef.current = selected
+    // The launch compare is spent once the selection leaves its commit, even before that commit's detail arrived.
+    if (selected !== savedCompare?.hash) restoredCompare.current = true
     setTarget(null)
     setLoaded(null)
     setPrompt(null)

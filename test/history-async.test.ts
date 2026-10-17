@@ -137,6 +137,17 @@ render(); await flush()
 assert.deepEqual(savedCompare(), { key: 'A', value: null })
 assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
 unmount()
+// A startup restore is spent once the user leaves its commit, even before that commit's detail arrived.
+await mount({ places: { '/repo': { commit: 'A' } }, views: { '/repo|compare': saved } })
+find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+render(); await detail('B')
+assert.deepEqual(savedCompare(), { key: 'B', value: null })
+find(tree, (p) => p.row?.commit.hash === 'A').onSelect()
+render(); await detail('A')
+assert.equal(calls.compare.length, 0, 'spent startup restore reopened its compare')
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
+assert.deepEqual(savedCompare(), { key: 'A', value: null })
+unmount()
 console.log('compare selection and restore cases passed')
 `
 
