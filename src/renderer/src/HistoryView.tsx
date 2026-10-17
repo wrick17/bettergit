@@ -60,13 +60,13 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const context = useContextLines()
   // Shown only for the target on screen. While a new fetch runs, the commit's own diff is shown.
   const compare = loaded && target && target.hash === selected && loaded.hash === target.hash && loaded.ref === target.ref ? loaded : null
-  const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
-  const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
+  const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
+  const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
   // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
   const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, 'ul.commits')
   const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen, '.commit-info button:not(.fold-strip)')
-  const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : `min(${historyWidth}px, 35%)`
-  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : `min(${detailWidth}px, 40%)`
+  const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : historyWidth
+  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : detailWidth
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
@@ -356,7 +356,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {current.files.length} files</span>
                   </button>
                 )}
-                <header className="commit-head">
+                <header className="commit-head" tabIndex={-1}>
                   {picked && (
                     <div className="commit-title">
                       <h2 className="commit-subject">{picked.subject}</h2>
