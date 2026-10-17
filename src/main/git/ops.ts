@@ -272,10 +272,11 @@ export async function switchBranch(repo: string, selection: BranchSelection): Pr
   const branches = await readBranches(repo)
   const branch = selectedBranch(branches, selection)
   if (!branch.remote) return switchLocal(repo, branch)
-  const { name, remote } = await trackingName(repo, branch.fullRef)
+  // Git already resolved an existing tracker's upstream, so only a new branch needs a mapping derived here.
   const tracking = branches.filter((entry) => !entry.remote && entry.upstreamRef === branch.fullRef)
   if (tracking.length > 1) throw new Error(`Multiple local branches track ${branch.name}: ${tracking.map((entry) => entry.name).join(', ')}. Select a local branch explicitly.`)
   if (tracking.length === 1) return switchLocal(repo, tracking[0])
+  const { name, remote } = await trackingName(repo, branch.fullRef)
   await assertNewBranch(repo, name, branches, remote)
   await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', name, branch.fullRef, '--'])
 }
