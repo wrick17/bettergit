@@ -281,6 +281,25 @@ describe('conflict resolution on real Git merges', () => {
     })
   }
 
+  test('an oversized stage leaves combine unavailable without reading the blob or merging', async () => {
+    const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' })
+    const big = git(repo, ['hash-object', '-w', '--stdin'], Buffer.from(`old\n${'x'.repeat(2 * 1024 * 1024)}\n`))
+    git(repo, ['update-index', '--index-info'], Buffer.from(`100644 ${big} 1\tdoc.txt\n`))
+    const trace = path.join(path.dirname(repo), 'git-trace.log')
+    process.env.GIT_TRACE = trace
+    let model: ConflictDocument
+    try {
+      model = await loadConflict(repo, 'doc.txt')
+    } finally {
+      delete process.env.GIT_TRACE
+    }
+    expect(model.supported && model.combine).toEqual([{ state: 'unavailable', reason: expect.stringContaining('could not be read') }])
+    const traced = readFileSync(trace, 'utf8')
+    expect(traced).toContain("cat-file '--batch-check")
+    expect(traced).not.toContain(`cat-file blob ${big}`)
+    expect(traced).not.toContain('merge-file')
+  }, 60_000)
+
   test('paths outside the unmerged list and paths that escape the repository are refused', async () => {
     const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n', plain: { 'notes.txt': 'plain\n' } })
     const model = await loaded(repo)

@@ -157,17 +157,32 @@ async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-// The three stage sides as bytes, ours, base, theirs. Null when git lacks a side or a side is not text.
+// The three stage sides as bytes, ours, base, theirs. Sizes come first, in one call, so an oversized blob is never
+// read. Throws a refusal when git lacks a side, or a side is too large or not text.
+async function readStageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer]> {
+  const unreadable = new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
+  const shas = [2, 1, 3].map((stage) => stages.get(stage)?.sha)
+  if (shas.some((sha) => !sha)) throw unreadable
+  const sizes = await gitRaw(repo, ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], Buffer.from(`${shas.join('\n')}\n`))
+  const listed = sizes.stdout.toString('utf8').trim().split('\n')
+  if (sizes.code !== 0 || listed.length !== 3 || listed.some((line) => !/^blob \d+$/.test(line))) throw unreadable
+  if (listed.some((line) => Number(line.slice(5)) > MAX_BYTES)) throw new ConflictRefusal(TOO_LARGE)
+  const blobs = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', 'blob', sha!])))
+  if (blobs.some((blob) => blob.code !== 0 || blob.stdout.length > MAX_BYTES)) throw unreadable
+  if (blobs.some((blob) => decodeText(blob.stdout) === null)) {
+    throw new ConflictRefusal('A version of this file in Git is not UTF-8 text, so it cannot be reset here.')
+  }
+  return [blobs[0].stdout, blobs[1].stdout, blobs[2].stdout]
+}
+
+// The same sides for combining, or null when they cannot be read within the limits.
 async function stageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer] | null> {
-  const ours = stages.get(2)?.sha
-  const base = stages.get(1)?.sha
-  const theirs = stages.get(3)?.sha
-  if (!ours || !base || !theirs) return null
-  const blobs = await Promise.all([ours, base, theirs].map((sha) => gitRaw(repo, ['cat-file', 'blob', sha])))
-  if (blobs.some((blob) => blob.code !== 0)) return null
-  const [oursBytes, baseBytes, theirsBytes] = blobs.map((blob) => blob.stdout)
-  if (decodeText(oursBytes) === null || decodeText(baseBytes) === null || decodeText(theirsBytes) === null) return null
-  return [oursBytes, baseBytes, theirsBytes]
+  try {
+    return await readStageSides(repo, stages)
+  } catch (error) {
+    if (error instanceof ConflictRefusal) return null
+    throw error
+  }
 }
 
 // git's 3-way merge of the stage sides in one marker style. Null when git's answer cannot be read as conflict blocks.
