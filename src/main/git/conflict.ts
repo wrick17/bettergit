@@ -6,7 +6,7 @@ import {
   applyChoices, BASE_REASON_TEXT, conflictBlocks, DEFAULT_MARKER_SIZE, fromMergeOutput, matchBasesAcrossRuns, MAX_CONFLICT_BLOCKS, parseConflicts,
   splitTokens, toMergeInput,
   type BaseReason, type Combine, type ConflictBlock, type ConflictDocument, type ConflictFingerprint, type ConflictPreview,
-  type ConflictSave, type ConflictSaved, type StageBlock,
+  type ConflictReset, type ConflictResetResult, type ConflictResetState, type ConflictSave, type ConflictSaved, type Part, type StageBlock,
 } from '../../shared/conflict'
 import { gitRaw } from './exec'
 
@@ -18,6 +18,7 @@ const MERGE_CONFLICTS_MAX = 127
 const STYLES = ['--diff3', '--zdiff3'] as const
 const REGULAR_MODES = new Set(['100644', '100755'])
 const STALE = 'The file changed after it was loaded. Reload the conflict before saving.'
+const STALE_RESET = 'The file changed after it was loaded. Reload the conflict before resetting.'
 const TOO_MANY_CONFLICTS = `This file has more than ${MAX_CONFLICT_BLOCKS} conflicts. Resolve it outside BetterGit.`
 const TOO_LARGE = 'This file is too large to resolve here.'
 
@@ -59,6 +60,8 @@ interface StageEntry {
 }
 
 interface Snapshot {
+  // The checked path relative to the repository, as git lists it.
+  relPath: string
   file: string
   mode: number
   fingerprint: ConflictFingerprint
@@ -145,7 +148,7 @@ async function readSnapshot(repo: string, relPath: unknown): Promise<Snapshot> {
       ? 'This file contains NUL bytes, so it is not text. Resolve it outside BetterGit.'
       : 'This file is not valid UTF-8 text, so it cannot be resolved here.')
   }
-  return { file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
+  return { relPath: checked, file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
 }
 
 async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
@@ -157,33 +160,55 @@ async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-// The three stage sides as bytes, ours, base, theirs. Null when git lacks a side or a side is not text.
-async function stageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer] | null> {
-  const ours = stages.get(2)?.sha
-  const base = stages.get(1)?.sha
-  const theirs = stages.get(3)?.sha
-  if (!ours || !base || !theirs) return null
-  const blobs = await Promise.all([ours, base, theirs].map((sha) => gitRaw(repo, ['cat-file', 'blob', sha])))
-  if (blobs.some((blob) => blob.code !== 0)) return null
-  const [oursBytes, baseBytes, theirsBytes] = blobs.map((blob) => blob.stdout)
-  if (decodeText(oursBytes) === null || decodeText(baseBytes) === null || decodeText(theirsBytes) === null) return null
-  return [oursBytes, baseBytes, theirsBytes]
+// The three stage sides as bytes, ours, base, theirs. Sizes come first, in one call, so an oversized blob is never
+// read. Throws a refusal when git lacks a side, or a side is too large or not text.
+async function readStageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer]> {
+  const unreadable = new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
+  const shas = [2, 1, 3].map((stage) => stages.get(stage)?.sha)
+  if (shas.some((sha) => !sha)) throw unreadable
+  const sizes = await gitRaw(repo, ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], Buffer.from(`${shas.join('\n')}\n`))
+  const listed = sizes.stdout.toString('utf8').trim().split('\n')
+  if (sizes.code !== 0 || listed.length !== 3 || listed.some((line) => !/^blob \d+$/.test(line))) throw unreadable
+  if (listed.some((line) => Number(line.slice(5)) > MAX_BYTES)) throw new ConflictRefusal(TOO_LARGE)
+  const blobs = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', 'blob', sha!])))
+  if (blobs.some((blob) => blob.code !== 0 || blob.stdout.length > MAX_BYTES)) throw unreadable
+  if (blobs.some((blob) => decodeText(blob.stdout) === null)) {
+    throw new ConflictRefusal('A version of this file in Git is not UTF-8 text, so it cannot be reset here.')
+  }
+  return [blobs[0].stdout, blobs[1].stdout, blobs[2].stdout]
 }
 
-// git's 3-way merge of the stage sides in one marker style. Null when git's answer cannot be read as conflict blocks.
-async function mergeStages([ours, base, theirs]: [Buffer, Buffer, Buffer], style: (typeof STYLES)[number]): Promise<StageBlock[] | null> {
-  return withTempDir<StageBlock[] | null>(async (dir) => {
+// The same sides for combining, or null when they cannot be read within the limits.
+async function stageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer] | null> {
+  try {
+    return await readStageSides(repo, stages)
+  } catch (error) {
+    if (error instanceof ConflictRefusal) return null
+    throw error
+  }
+}
+
+// git's 3-way merge of the stage sides, printed with seven-character markers and the given side labels. The inputs
+// are temp files, so nothing in the repository is read or written.
+async function mergeSides([ours, base, theirs]: [Buffer, Buffer, Buffer], style: (typeof STYLES)[number], labels: [string, string, string]) {
+  return withTempDir(async (dir) => {
     await fs.writeFile(path.join(dir, 'ours'), ours)
     await fs.writeFile(path.join(dir, 'base'), base)
     await fs.writeFile(path.join(dir, 'theirs'), theirs)
-    const merged = await gitRaw(dir, ['merge-file', style, '-p', '-L', 'ours', '-L', 'base', '-L', 'theirs', 'ours', 'base', 'theirs'])
-    if (merged.code === 0) return []
-    if (merged.code < 1 || merged.code > MERGE_CONFLICTS_MAX) return null
-    const text = decodeText(merged.stdout)
-    const parsed = text === null ? null : parseConflicts(text)
-    if (parsed === null || !parsed.ok) return null
-    return conflictBlocks(parsed.parts).map((block) => ({ current: block.current, base: block.fileBase, incoming: block.incoming }))
+    return gitRaw(dir, ['merge-file', style, '-p', `--marker-size=${DEFAULT_MARKER_SIZE}`,
+      '-L', labels[0], '-L', labels[1], '-L', labels[2], 'ours', 'base', 'theirs'])
   })
+}
+
+// git's 3-way merge of the stage sides in one marker style. Null when git's answer cannot be read as conflict blocks.
+async function mergeStages(sides: [Buffer, Buffer, Buffer], style: (typeof STYLES)[number]): Promise<StageBlock[] | null> {
+  const merged = await mergeSides(sides, style, ['ours', 'base', 'theirs'])
+  if (merged.code === 0) return []
+  if (merged.code < 1 || merged.code > MERGE_CONFLICTS_MAX) return null
+  const text = decodeText(merged.stdout)
+  const parsed = text === null ? null : parseConflicts(text)
+  if (parsed === null || !parsed.ok) return null
+  return conflictBlocks(parsed.parts).map((block) => ({ current: block.current, base: block.fileBase, incoming: block.incoming }))
 }
 
 // One run per marker style, so a file written in any style can find its base. Null when git's stages cannot be read.
@@ -240,17 +265,83 @@ async function combineStates(repo: string, snapshot: Snapshot, blocks: ConflictB
   return states
 }
 
+// Reset writes git's raw stage text, so it refuses any path whose checkout would convert those bytes. The attributes
+// are checked first, so a configured filter command never runs. Then git's own checkout conversion of every stage must
+// equal its raw bytes, which catches line-ending conversion from autocrlf, eol, or core.eol.
+// shortcut: stages with no newline do not reveal CRLF conversion, so their recreated markers end in LF. Git normalizes
+// them again on add. Upgrade if such files need checkout-exact markers.
+async function assertRawCheckout(repo: string, snapshot: Snapshot, sides: [Buffer, Buffer, Buffer]): Promise<void> {
+  const listed = await gitRaw(repo, ['check-attr', '-z', 'filter', 'ident', 'working-tree-encoding', '--', snapshot.relPath])
+  if (listed.code !== 0) throw new ConflictRefusal('Git could not read the checkout attributes. Reload the conflict.')
+  const fields = listed.stdout.toString('utf8').split('\0')
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const [name, value] = [fields[index + 1], fields[index + 2]]
+    if (fields[index] !== snapshot.relPath) continue
+    if (value !== 'unspecified' && value !== 'unset') {
+      throw new ConflictRefusal(`This file uses the ${name} attribute, so Git changes it on checkout. Reset it outside BetterGit.`)
+    }
+    // check-attr prints the same word for filter=unset or filter=unspecified as for an inactive filter, and git runs a
+    // driver configured under that name. The two cannot be told apart, so any such driver refuses before it can run.
+    if (name === 'filter') {
+      const drivers = await gitRaw(repo, ['config', '--get-regexp', `^filter\\.${value}\\.(smudge|process)$`])
+      if (drivers.code === 0) {
+        throw new ConflictRefusal(`Git has a filter driver named ${value}, which may change this file on checkout. Reset it outside BetterGit.`)
+      }
+      if (drivers.code !== 1) throw new ConflictRefusal('Git could not read the filter configuration. Reload the conflict.')
+    }
+  }
+  const shas = [2, 1, 3].map((stage) => snapshot.stages.get(stage)!.sha)
+  const converted = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', '--filters', `--path=${snapshot.relPath}`, sha])))
+  if (converted.some((result) => result.code !== 0)) throw new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
+  if (converted.some((result, index) => !result.stdout.equals(sides[index]))) {
+    throw new ConflictRefusal('Git converts this file on checkout, such as its line endings, so it cannot be reset here.')
+  }
+}
+
+// The whole file recreated from git's index stages as canonical diff3 conflicts, with its parsed parts. It does not
+// recover old branch labels or a file written in another style. Anything git cannot recreate safely is refused.
+async function reconstruct(repo: string, snapshot: Snapshot): Promise<{ bytes: Buffer; parts: Part[]; blocks: ConflictBlock[] }> {
+  if (!snapshot.stages.has(1)) {
+    throw new ConflictRefusal('Git has no common base for this conflict, so it cannot be recreated. Resolve it outside BetterGit.')
+  }
+  const sides = await readStageSides(repo, snapshot.stages)
+  await assertRawCheckout(repo, snapshot, sides)
+  const merged = await mergeSides(sides, '--diff3', ['Current', 'Base', 'Incoming'])
+  if (merged.code === 0) throw new ConflictRefusal('Git merges these versions without a conflict, so there is no conflict to recreate.')
+  if (merged.code < 1 || merged.code > MERGE_CONFLICTS_MAX) throw new ConflictRefusal('Git could not recreate this conflict.')
+  if (merged.stdout.length > MAX_BYTES) throw new ConflictRefusal(TOO_LARGE)
+  const text = decodeText(merged.stdout)
+  const parsed = text === null ? null : parseConflicts(text)
+  if (parsed === null || !parsed.ok) throw new ConflictRefusal('Git recreated a conflict that BetterGit cannot read.')
+  const blocks = conflictBlocks(parsed.parts)
+  if (blocks.length === 0) throw new ConflictRefusal('Git merges these versions without a conflict, so there is no conflict to recreate.')
+  if (blocks.length > MAX_CONFLICT_BLOCKS) throw new ConflictRefusal(TOO_MANY_CONFLICTS)
+  return { bytes: merged.stdout, parts: parsed.parts, blocks }
+}
+
+// Reset is offered only when the recreation would succeed now, whatever the working markers look like.
+async function resetState(repo: string, snapshot: Snapshot): Promise<ConflictResetState> {
+  try {
+    await reconstruct(repo, snapshot)
+    return { available: true, fingerprint: snapshot.fingerprint }
+  } catch (error) {
+    if (error instanceof ConflictRefusal) return { available: false, reason: error.message }
+    throw error
+  }
+}
+
 // What the UI shows for one file: its parts with combine states, or the reason it cannot be resolved here.
 export async function loadConflict(repo: string, relPath: string): Promise<ConflictDocument> {
   try {
     const snapshot = await readSnapshot(repo, relPath)
+    const reset = await resetState(repo, snapshot)
     const parsed = parseConflicts(snapshot.text)
-    if (!parsed.ok) return { supported: false, message: parsed.failure.message }
+    if (!parsed.ok) return { supported: false, message: parsed.failure.message, reset }
     const blocks = conflictBlocks(parsed.parts)
-    if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS }
-    return { supported: true, fingerprint: snapshot.fingerprint, parts: parsed.parts, combine: await combineStates(repo, snapshot, blocks) }
+    if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS, reset }
+    return { supported: true, fingerprint: snapshot.fingerprint, parts: parsed.parts, combine: await combineStates(repo, snapshot, blocks), reset }
   } catch (error) {
-    if (error instanceof ConflictRefusal) return { supported: false, message: error.message }
+    if (error instanceof ConflictRefusal) return { supported: false, message: error.message, reset: { available: false, reason: error.message } }
     throw error
   }
 }
@@ -276,21 +367,43 @@ export async function previewConflict(repo: string, relPath: string, save: Confl
   return { text, unresolved }
 }
 
-// Writes the resolution to a temp file beside the original, checks the file and its stages once more, then renames
-// the temp file over the original. Nothing is staged, and nothing is retried.
-export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
-  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
-  const bytes = Buffer.from(text, 'utf8')
+// Writes bytes to a temp file beside the original, checks the file, its stages, place and mode once more, then renames
+// the temp file over the original. Nothing is staged, and nothing is retried. `recheck` adds a caller's own last check.
+async function replaceWorkingFile(repo: string, snapshot: Snapshot, bytes: Buffer, stale: string, recheck?: (again: Snapshot) => Promise<void>) {
   const temp = path.join(path.dirname(snapshot.file), `.${path.basename(snapshot.file)}.bettergit-${randomUUID()}.tmp`)
   try {
     await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 })
     await fs.chmod(temp, snapshot.mode)
-    const again = await readSnapshot(repo, relPath)
-    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint)) throw new ConflictRefusal(STALE)
+    const again = await readSnapshot(repo, snapshot.relPath)
+    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint) || again.file !== snapshot.file || again.mode !== snapshot.mode) {
+      throw new ConflictRefusal(stale)
+    }
+    await recheck?.(again)
     await fs.rename(temp, snapshot.file)
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => {})
     throw error
   }
+}
+
+export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
+  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
+  const bytes = Buffer.from(text, 'utf8')
+  await replaceWorkingFile(repo, snapshot, bytes, STALE)
   return { fingerprint: { working: digest(bytes), stages: snapshot.fingerprint.stages }, unresolved }
+}
+
+// Replaces the whole working file with the conflicts recreated from git's index stages. The index is only read, so the
+// file stays unmerged. The returned document is built before the write, and returned only after the rename.
+export async function resetConflict(repo: string, relPath: string, request: ConflictReset): Promise<ConflictResetResult> {
+  const snapshot = await readSnapshot(repo, relPath)
+  if (!sameFingerprint(snapshot.fingerprint, request.fingerprint)) throw new ConflictRefusal(STALE_RESET)
+  const { bytes, parts, blocks } = await reconstruct(repo, snapshot)
+  const combine = await combineStates(repo, snapshot, blocks)
+  const fingerprint = { working: digest(bytes), stages: snapshot.fingerprint.stages }
+  // The stages are unchanged, so recreating from the fresh snapshot rechecks the attributes and conversion that could have.
+  await replaceWorkingFile(repo, snapshot, bytes, STALE_RESET, async (again) => {
+    if (!(await reconstruct(repo, again)).bytes.equals(bytes)) throw new ConflictRefusal(STALE_RESET)
+  })
+  return { supported: true, fingerprint, parts, combine, reset: { available: true, fingerprint } }
 }

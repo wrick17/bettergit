@@ -241,7 +241,7 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
     expect(busy.busyKey(selected)).toBeNull()
     expect(itemsFor(selected).find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: undefined })
   }
-  for (const [holder, label] of [['repo:conflict-save', 'Saving resolution…'], ['repo:create-branch', 'Creating branch…'], ['repo:branch-from', 'Creating branch…']]) {
+  for (const [holder, label] of [['repo:conflict-save', 'Saving resolution…'], ['repo:conflict-reset', 'Resetting resolution…'], ['repo:create-branch', 'Creating branch…'], ['repo:branch-from', 'Creating branch…']]) {
     busy.applyRepoLockSnapshot({ seq: ++seq, holders: { [repo]: holder }, identities })
     expect(busy.workingLabel(busy.busyKey(alias)!)).toBe(label)
     expect(itemsFor(alias).find((item) => item.key === 'fetch')!.blocked).toBe(`Another action is running: ${label}`)

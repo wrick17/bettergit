@@ -357,3 +357,4 @@ test('old Changes loads and widens cannot replace a newer load error', () => che
 test('a base reload invalidates old file widens before React renders the replacement', () => check('batched'))
 test('status changes invalidate pending base loads and start current staged, working and selected loads', () => check('status-loads'))
 test('a widen requested under the current revision remains valid after its base reload fails', () => check('retained'))
+test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

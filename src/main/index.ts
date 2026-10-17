@@ -13,8 +13,8 @@ import { readHistory, commitDetails, searchHistory } from './git/history'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
-import { loadConflict, previewConflict, saveConflict } from './git/conflict'
-import { parseConflictSave } from '../shared/conflict'
+import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
+import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -238,6 +238,8 @@ function registerIpc() {
     previewConflict(assertKnownRepo(repoPath), filePath, parseConflictSave(save)))
   handleWrite('repo:conflict-save', (_event, repoPath: string, filePath: string, save: unknown) =>
     saveConflict(repoPath, filePath, parseConflictSave(save)))
+  handleWrite('repo:conflict-reset', (_event, repoPath: string, filePath: string, request: unknown) =>
+    resetConflict(repoPath, filePath, parseConflictReset(request)))
   // Launching an editor does not write Git state, so it stays available while the repo is busy.
   ipcMain.handle('repo:open-in-editor', (_event, repoPath: string, filePath?: string) => {
     const repo = assertKnownWriteRepo(repoPath)

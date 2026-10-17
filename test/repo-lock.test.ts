@@ -86,6 +86,7 @@ test('a refusal names the running action in words, and the holder ID stays for l
   expect(repoLockHolder(lockPath('/lock-d'))).toBe('repo:push')
   expect(describeOperation('background-fetch')).toBe('Fetching in the background')
   expect(new RepoBusyError(lockPath('/lock-resolution'), 'repo:conflict-save').message).toBe('Another action is running in lock-resolution: Saving resolution. Try again when it finishes.')
+  expect(describeOperation('repo:conflict-reset')).toBe('Resetting resolution')
   expect(describeOperation('repo:unknown')).toBe('Another Git action')
 
   hold.resolve()
@@ -177,6 +178,7 @@ test('the IPC bridge publishes claims before work, releases failures, and cleans
   expect(staged).toBe(true)
   expect(errors).toEqual([])
   expect(busy.workingLabel('conflict-save')).toBe('Saving resolution…')
+  expect(busy.workingLabel('conflict-reset')).toBe('Resetting resolution…')
   expect(await api.repoLocks()).toEqual(repoLockSnapshot())
 
   off()
@@ -249,6 +251,7 @@ test('discovered aliases share foreground, conflict-save, background and rendere
   })
   let stageHold: ReturnType<typeof deferred> | null = null
   let resolutionHold: ReturnType<typeof deferred> | null = null
+  let resetHold: ReturnType<typeof deferred> | null = null
   const written: string[] = []
   let branchHold: ReturnType<typeof deferred> | null = null
   const branchCalls: unknown[][] = []
@@ -264,7 +267,8 @@ test('discovered aliases share foreground, conflict-save, background and rendere
       createBranch: (...args: unknown[]) => { branchCalls.push(args); return branchHold?.promise },
       switchBranch: (...args: unknown[]) => { branchCalls.push(args); return branchHold?.promise },
     },
-    './git/conflict': { saveConflict: (canonical: string) => { written.push(canonical); return resolutionHold?.promise } },
+    './git/conflict': { saveConflict: (canonical: string) => { written.push(canonical); return resolutionHold?.promise },
+      resetConflict: (canonical: string) => { written.push(canonical); return resetHold?.promise } },
     '../shared/conflict': conflict,
   }, '\nconfig = testConfig; registerIpc()', {
     testConfig: configModule.normalizeConfig({ sources: [source, alias], groups: [{ id: 'selected', name: 'Selected', repos: [alias] }] }),
@@ -305,8 +309,9 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     const writeChannels = [
       'stage', 'unstage', 'commit-changes', 'switch', 'create-branch', 'fetch', 'pull', 'pull-from', 'reset-upstream',
       'checkout-detached', 'branch-from', 'tag-from', 'cherry-pick', 'revert', 'amend-message', 'push',
-      'stash', 'stash-action', 'backup', 'restore', 'discard', 'conflict-save',
+      'stash', 'stash-action', 'backup', 'restore', 'discard', 'conflict-save', 'conflict-reset',
     ]
+    expect(writeChannels).toHaveLength(23)
     await withRepoLock(repo, 'repo:push', async () => {
       expect(busy.busyKey(alias)).toBe('push')
       for (const channel of writeChannels) {
@@ -350,9 +355,23 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     resolutionHold.reject(new Error('save failed'))
     await expect(resolution).rejects.toThrow('save failed')
     expect(repoLockHolder(alias)).toBeNull()
+
+    // A conflict-reset takes the same canonical lock, refuses a request with anything but the fingerprint, and releases on failure.
+    const fingerprint = { working: 'a'.repeat(64), stages: 'b'.repeat(64) }
+    await expect(Promise.resolve(handlers.get('repo:conflict-reset')!({}, alias, 'file.txt', { fingerprint, text: 'replacement' })))
+      .rejects.toThrow('unexpected fields')
+    expect(repoLockHolder(repo)).toBeNull()
+    resetHold = deferred()
+    const reset = handlers.get('repo:conflict-reset')!({}, alias, 'file.txt', { fingerprint }) as Promise<unknown>
+    expect(repoLockHolder(repo)).toBe('repo:conflict-reset')
+    expect(busy.busyKey(alias)).toBe('conflict-reset')
+    await expect(api.stage(repo, [])).rejects.toBeInstanceOf(RepoBusyError)
+    resetHold.reject(new Error('reset failed'))
+    await expect(reset).rejects.toThrow('reset failed')
+    expect(repoLockHolder(alias)).toBeNull()
     stageHold = null
     await api.stage(alias, [])
-    expect(written).toEqual([repo, repo, repo])
+    expect(written).toEqual([repo, repo, repo, repo])
 
     const selection = { fullRef: 'refs/remotes/origin/topic', hash: 'a'.repeat(40) }
     branchHold = deferred()

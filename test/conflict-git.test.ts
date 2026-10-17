@@ -1,13 +1,13 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
+import { loadConflict, previewConflict, resetConflict, saveConflict } from '../src/main/git/conflict'
 import { parseDiff, workingDiff } from '../src/main/git/diff'
 import { stagePaths } from '../src/main/git/ops'
-import type { Choice, ConflictDocument, ConflictFingerprint } from '../src/shared/conflict'
+import { conflictBlocks, type Choice, type ConflictDocument, type ConflictFingerprint } from '../src/shared/conflict'
 
 // Real Git runs here, in temp repositories that test code builds and removes. The shared checkout is never touched.
 const roots: string[] = []
@@ -286,8 +286,8 @@ describe('conflict resolution on real Git merges', () => {
     const model = await loaded(repo)
     const save = { fingerprint: model.fingerprint, choices: ['current' as Choice] }
     const notes = await loadConflict(repo, 'notes.txt')
-    expect(notes).toEqual({ supported: false, message: 'This file is not in a merge conflict.' })
-    expect((await loadConflict(repo, '../outside.txt'))).toEqual({ supported: false, message: 'The file path must be relative to the repository.' })
+    expect(notes).toEqual({ supported: false, message: 'This file is not in a merge conflict.', reset: { available: false, reason: 'This file is not in a merge conflict.' } })
+    expect((await loadConflict(repo, '../outside.txt'))).toEqual({ supported: false, message: 'The file path must be relative to the repository.', reset: { available: false, reason: 'The file path must be relative to the repository.' } })
     await expect(saveConflict(repo, 'notes.txt', save)).rejects.toThrow('not in a merge conflict')
     expect(text(repo, 'notes.txt')).toBe('plain\n')
   })
@@ -301,7 +301,7 @@ describe('conflict resolution on real Git merges', () => {
     })
     const outside = path.join(repo, '..', 'outside.txt')
     writeFileSync(outside, 'keep\n')
-    expect(await loadConflict(repo, 'doc.txt')).toEqual({ supported: false, message: 'Symbolic links and submodules are not resolved here.' })
+    expect(await loadConflict(repo, 'doc.txt')).toEqual({ supported: false, message: 'Symbolic links and submodules are not resolved here.', reset: { available: false, reason: 'Symbolic links and submodules are not resolved here.' } })
     await expect(saveConflict(repo, 'doc.txt', { fingerprint: { working: '0'.repeat(64), stages: '0'.repeat(64) } as ConflictFingerprint, choices: ['current'] }))
       .rejects.toThrow('Symbolic links')
     expect(readFileSync(outside, 'utf8')).toBe('keep\n')
@@ -314,7 +314,7 @@ describe('conflict resolution on real Git merges', () => {
     writeFileSync(outside, 'keep\n')
     rmSync(path.join(repo, 'doc.txt'))
     symlinkSync('../outside.txt', path.join(repo, 'doc.txt'))
-    expect(await loadConflict(repo, 'doc.txt')).toEqual({ supported: false, message: 'Only regular files are resolved here. Symbolic links and folders are not resolved.' })
+    expect(await loadConflict(repo, 'doc.txt')).toEqual({ supported: false, message: 'Only regular files are resolved here. Symbolic links and folders are not resolved.', reset: { available: false, reason: 'Only regular files are resolved here. Symbolic links and folders are not resolved.' } })
     await expect(saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: ['current'] })).rejects.toThrow('Only regular files')
     expect(readFileSync(outside, 'utf8')).toBe('keep\n')
   })
@@ -328,7 +328,7 @@ describe('conflict resolution on real Git merges', () => {
     symlinkSync('../outside', path.join(repo, 'escape'))
     const records = stagesOf(repo).map((line) => line.replace('\tdoc.txt', '\tescape/doc.txt')).join('\n') + '\n'
     git(repo, ['update-index', '--index-info'], Buffer.from(records))
-    expect(await loadConflict(repo, 'escape/doc.txt')).toEqual({ supported: false, message: 'This file is outside the repository.' })
+    expect(await loadConflict(repo, 'escape/doc.txt')).toEqual({ supported: false, message: 'This file is outside the repository.', reset: { available: false, reason: 'This file is outside the repository.' } })
     await expect(saveConflict(repo, 'escape/doc.txt', { fingerprint: model.fingerprint, choices: ['current'] }))
       .rejects.toThrow('outside the repository')
     expect(readFileSync(path.join(outside, 'doc.txt'), 'utf8')).toBe('keep\n')
@@ -354,10 +354,8 @@ describe('conflict resolution on real Git merges', () => {
 
   test('a delete-versus-modify conflict is unsupported with a clear reason', async () => {
     const repo = conflictRepo({ base: 'alpha\n', ours: null, theirs: 'beta\n' })
-    expect(await loadConflict(repo, 'doc.txt')).toEqual({
-      supported: false,
-      message: 'Only conflicts changed on both sides are resolved here. Delete and add conflicts need another tool.',
-    })
+    const message = 'Only conflicts changed on both sides are resolved here. Delete and add conflicts need another tool.'
+    expect(await loadConflict(repo, 'doc.txt')).toEqual({ supported: false, message, reset: { available: false, reason: message } })
   })
 
   test('stage all cannot resolve a file that still has markers, and allows it once resolved', async () => {
@@ -463,4 +461,156 @@ describe('conflict resolution on real Git merges', () => {
       }
     })
   }
+})
+
+describe('reset resolution on real Git merges', () => {
+  const sides = { base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' }
+  const RECREATED = 'top\n<<<<<<< Current\nmine\n||||||| Base\nold\n=======\nyours\n>>>>>>> Incoming\nend\n'
+  const index = (repo: string) => readFileSync(path.join(repo, '.git', 'index'))
+  const temps = (repo: string) => readdirSync(repo).filter((name) => name.includes('.bettergit-'))
+  const resetOf = async (repo: string) => {
+    const { reset } = await loadConflict(repo, 'doc.txt')
+    if (!reset.available) throw new Error(reset.reason)
+    return reset
+  }
+
+  test('after a save leaves no markers, reset recreates the conflict and changes nothing else', async () => {
+    const repo = conflictRepo({ ...sides, plain: { 'notes.txt': 'plain\n' } })
+    chmodSync(path.join(repo, 'doc.txt'), 0o755)
+    const indexBytes = index(repo)
+    const stages = stagesOf(repo)
+    await resolve(repo, ['current'])
+    const saved = await loaded(repo)
+    expect(conflictBlocks(saved.parts)).toHaveLength(0)
+    const result = await resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })
+    expect(text(repo)).toBe(RECREATED)
+    expect(result).toEqual(await loaded(repo) as typeof result)
+    expect(result.reset).toEqual({ available: true, fingerprint: result.fingerprint })
+    expect(index(repo).equals(indexBytes)).toBe(true)
+    expect(stagesOf(repo)).toEqual(stages)
+    expect(git(repo, ['diff', '--cached', '--name-status'])).toBe('U\tdoc.txt')
+    expect(text(repo, 'notes.txt')).toBe('plain\n')
+    expect(statSync(path.join(repo, 'doc.txt')).mode & 0o777).toBe(0o755)
+    expect(temps(repo)).toEqual([])
+  }, 60_000)
+
+  test('a file with broken markers can still be reset', async () => {
+    const repo = conflictRepo(sides)
+    writeFileSync(path.join(repo, 'doc.txt'), 'top\n<<<<<<< HEAD\nmine\nend\n')
+    const model = await loadConflict(repo, 'doc.txt')
+    expect(model.supported).toBe(false)
+    await resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })
+    expect(text(repo)).toBe(RECREATED)
+  }, 60_000)
+
+  test('a working or index change after load refuses the reset and keeps the file', async () => {
+    for (const change of ['working', 'index'] as const) {
+      const repo = conflictRepo(sides)
+      const { fingerprint } = await resetOf(repo)
+      if (change === 'working') writeFileSync(path.join(repo, 'doc.txt'), 'edited\n')
+      else git(repo, ['update-index', '--index-info'], Buffer.from(`100644 ${git(repo, ['hash-object', '-w', '--stdin'], Buffer.from('other\n'))} 3\tdoc.txt\n`))
+      const before = text(repo)
+      await expect(resetConflict(repo, 'doc.txt', { fingerprint })).rejects.toThrow('before resetting')
+      expect(text(repo)).toBe(before)
+    }
+  }, 60_000)
+
+  test('an edit during the temporary write is caught before rename, and a failed rename cleans up', async () => {
+    const repo = conflictRepo(sides)
+    const realChmod = fs.chmod.bind(fs)
+    const edit = spyOn(fs, 'chmod').mockImplementationOnce(async (file, mode) => {
+      await realChmod(file, mode)
+      writeFileSync(path.join(repo, 'doc.txt'), 'external edit\n')
+    })
+    try {
+      await expect(resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })).rejects.toThrow('before resetting')
+    } finally {
+      edit.mockRestore()
+    }
+    expect(text(repo)).toBe('external edit\n')
+    expect(temps(repo)).toEqual([])
+    const rename = spyOn(fs, 'rename').mockRejectedValueOnce(new Error('injected rename failure'))
+    try {
+      await expect(resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })).rejects.toThrow('injected rename failure')
+    } finally {
+      rename.mockRestore()
+    }
+    expect(text(repo)).toBe('external edit\n')
+    expect(temps(repo)).toEqual([])
+  }, 60_000)
+
+  test('reset is offered only when Git checkout would write the raw stage bytes', async () => {
+    const reasonFor = async (setup: (repo: string) => void) => {
+      const repo = conflictRepo(sides)
+      setup(repo)
+      const { reset } = await loadConflict(repo, 'doc.txt')
+      return { reset, repo }
+    }
+    for (const setup of [
+      (repo: string) => writeFileSync(path.join(repo, '.gitattributes'), '* text=auto\n'),
+      (repo: string) => git(repo, ['config', 'core.autocrlf', 'input']),
+    ]) expect((await reasonFor(setup)).reset.available).toBe(true)
+    for (const [setup, reason] of [
+      [(repo: string) => git(repo, ['config', 'core.autocrlf', 'true']), 'converts this file on checkout'],
+      [(repo: string) => writeFileSync(path.join(repo, '.gitattributes'), 'doc.txt eol=crlf\n'), 'converts this file on checkout'],
+      [(repo: string) => writeFileSync(path.join(repo, '.gitattributes'), 'doc.txt ident\n'), 'ident attribute'],
+    ] as const) expect((await reasonFor(setup)).reset).toEqual({ available: false, reason: expect.stringContaining(reason) })
+    // A filter is refused from its attribute, so its command never runs.
+    const marker = path.join(tmpdir(), `bettergit-filter-ran-${process.pid}`)
+    const { reset } = await reasonFor((repo) => {
+      git(repo, ['config', 'filter.probe.smudge', `touch '${marker}'; cat`])
+      writeFileSync(path.join(repo, '.gitattributes'), 'doc.txt filter=probe\n')
+    })
+    expect(reset).toEqual({ available: false, reason: expect.stringContaining('filter attribute') })
+    expect(spawnSync('test', ['-e', marker]).status).not.toBe(0)
+  }, 60_000)
+
+  test('an add/add conflict has no base to recreate from', async () => {
+    const repo = conflictRepo({ base: null, ours: 'mine\n', theirs: 'yours\n', plain: { 'notes.txt': 'plain\n' } })
+    const { reset } = await loadConflict(repo, 'doc.txt')
+    expect(reset).toEqual({ available: false, reason: expect.stringContaining('no common base') })
+  }, 60_000)
+
+  // check-attr prints the same word for a driver literally named unset or unspecified as for an inactive attribute.
+  test('a filter driver named unset or unspecified never runs, and inactive filters keep reset', async () => {
+    for (const name of ['unset', 'unspecified']) {
+      const repo = conflictRepo(sides)
+      const sentinel = path.join(repo, `ran-${name}`)
+      git(repo, ['config', `filter.${name}.smudge`, `touch '${sentinel}'; cat`])
+      writeFileSync(path.join(repo, '.gitattributes'), `doc.txt filter=${name}\n`)
+      const model = await loaded(repo)
+      expect(model.reset).toEqual({ available: false, reason: expect.stringContaining(`filter driver named ${name}`) })
+      await expect(resetConflict(repo, 'doc.txt', { fingerprint: model.fingerprint })).rejects.toThrow(`filter driver named ${name}`)
+      expect(existsSync(sentinel)).toBe(false)
+    }
+    for (const attributes of ['doc.txt -filter\n', null]) {
+      const repo = conflictRepo(sides)
+      const sentinel = path.join(repo, 'ran-probe')
+      git(repo, ['config', 'filter.probe.smudge', `touch '${sentinel}'; cat`])
+      if (attributes) writeFileSync(path.join(repo, '.gitattributes'), attributes)
+      expect((await loadConflict(repo, 'doc.txt')).reset.available).toBe(true)
+      expect(existsSync(sentinel)).toBe(false)
+    }
+  }, 60_000)
+
+  test('an oversized stage is refused before any blob read or merge, for reset and combine alike', async () => {
+    const repo = conflictRepo(sides)
+    const big = git(repo, ['hash-object', '-w', '--stdin'], Buffer.from(`old\n${'x'.repeat(2 * 1024 * 1024)}\n`))
+    git(repo, ['update-index', '--index-info'], Buffer.from(`100644 ${big} 1\tdoc.txt\n`))
+    const trace = path.join(path.dirname(repo), 'git-trace.log')
+    process.env.GIT_TRACE = trace
+    let model: ConflictDocument
+    try {
+      model = await loadConflict(repo, 'doc.txt')
+    } finally {
+      delete process.env.GIT_TRACE
+    }
+    expect(model.reset).toEqual({ available: false, reason: 'This file is too large to resolve here.' })
+    expect(model.supported && model.combine).toEqual([{ state: 'unavailable', reason: expect.stringContaining('could not be read') }])
+    const traced = readFileSync(trace, 'utf8')
+    // Both readers ran their size check: one for reset, one for combine.
+    expect(traced.split("cat-file '--batch-check").length - 1).toBe(2)
+    expect(traced).not.toContain(`cat-file blob ${big}`)
+    expect(traced).not.toContain('merge-file')
+  }, 60_000)
 })

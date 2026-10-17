@@ -51,10 +51,24 @@ export interface ConflictFingerprint {
   stages: string
 }
 
+// Whether the whole file can be rebuilt from Git's index stages. It does not depend on the working markers, so a file
+// with broken markers or none left can still be reset. The fingerprint is the one a reset must match.
+export type ConflictResetState =
+  | { available: true; fingerprint: ConflictFingerprint }
+  | { available: false; reason: string }
+
 // Either the reason a file cannot be resolved here, or its parts with one Combine per block, by block index.
-export type ConflictDocument =
+export type ConflictDocument = (
   | { supported: false; message: string }
   | { supported: true; fingerprint: ConflictFingerprint; parts: Part[]; combine: Combine[] }
+) & { reset: ConflictResetState }
+
+// A reset request carries only the fingerprint the user confirmed. The main process builds the text itself.
+export interface ConflictReset {
+  fingerprint: ConflictFingerprint
+}
+
+export type ConflictResetResult = Extract<ConflictDocument, { supported: true }>
 
 export interface ConflictSave {
   fingerprint: ConflictFingerprint
@@ -307,22 +321,32 @@ const DIGEST = /^[0-9a-f]{64}$/
 // Checks a save request from the renderer against the contract. Anything else is refused, so no file text can reach
 // the main process through this path. The choices are checked for shape here, and their count against the file later.
 export function parseConflictSave(input: unknown): ConflictSave {
-  const record = recordOf(input, 'fingerprint,choices')
-  const fingerprint = recordOf(record.fingerprint, 'stages,working')
-  if (typeof fingerprint.working !== 'string' || !DIGEST.test(fingerprint.working)) throw new Error('The save request has no valid working digest.')
-  if (typeof fingerprint.stages !== 'string' || !DIGEST.test(fingerprint.stages)) throw new Error('The save request has no valid stage digest.')
+  const record = recordOf(input, 'fingerprint,choices', 'save')
+  const fingerprint = fingerprintOf(record.fingerprint, 'save')
   const { choices } = record
   if (!Array.isArray(choices) || choices.length > MAX_CONFLICT_BLOCKS) throw new Error('The save request has an invalid list of choices.')
   for (const choice of choices) {
     if (choice !== null && !CHOICE_VALUES.includes(choice)) throw new Error('A choice is not one of the resolutions.')
   }
-  return { fingerprint: { working: fingerprint.working, stages: fingerprint.stages }, choices: choices as Choice[] }
+  return { fingerprint, choices: choices as Choice[] }
 }
 
-function recordOf(input: unknown, fields: string): Record<string, unknown> {
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error('The save request is not an object.')
+// A reset request is the fingerprint alone. Text, stage IDs, and paths from the renderer are refused.
+export function parseConflictReset(input: unknown): ConflictReset {
+  return { fingerprint: fingerprintOf(recordOf(input, 'fingerprint', 'reset').fingerprint, 'reset') }
+}
+
+function fingerprintOf(input: unknown, kind: string): ConflictFingerprint {
+  const fingerprint = recordOf(input, 'stages,working', kind)
+  if (typeof fingerprint.working !== 'string' || !DIGEST.test(fingerprint.working)) throw new Error(`The ${kind} request has no valid working digest.`)
+  if (typeof fingerprint.stages !== 'string' || !DIGEST.test(fingerprint.stages)) throw new Error(`The ${kind} request has no valid stage digest.`)
+  return { working: fingerprint.working, stages: fingerprint.stages }
+}
+
+function recordOf(input: unknown, fields: string, kind: string): Record<string, unknown> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error(`The ${kind} request is not an object.`)
   const record = input as Record<string, unknown>
-  if (Object.keys(record).sort().join(',') !== fields.split(',').sort().join(',')) throw new Error('The save request has unexpected fields.')
+  if (Object.keys(record).sort().join(',') !== fields.split(',').sort().join(',')) throw new Error(`The ${kind} request has unexpected fields.`)
   return record
 }
 

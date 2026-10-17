@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  applyChoices, conflictBlocks, fromMergeOutput, matchBases, matchBasesAcrossRuns, parseConflicts, parseConflictSave, splitTokens, toMergeInput,
+  applyChoices, conflictBlocks, fromMergeOutput, matchBases, matchBasesAcrossRuns, parseConflictReset, parseConflicts, parseConflictSave, splitTokens, toMergeInput,
   type ApplyResult, type Choice, type Combine, type ConflictSave, type Part, type StageBlock,
 } from '../src/shared/conflict'
 
@@ -328,5 +328,16 @@ describe('matchBasesAcrossRuns and the save contract', () => {
     expect(() => parseConflictSave({ ...request, fingerprint: { working: 'short', stages: digest } })).toThrow('working digest')
     expect(() => parseConflictSave({ ...request, choices: ['yours'] })).toThrow('not one of the resolutions')
     expect(() => parseConflictSave({ ...request, choices: 'current' })).toThrow('invalid list')
+  })
+
+  test('a reset request is the fingerprint alone, with no text, stages, or destination', () => {
+    const reset = { fingerprint: request.fingerprint }
+    expect(parseConflictReset(reset)).toEqual(reset)
+    for (const extra of [{ text: 'file text' }, { stages: ['abc'] }, { path: '/tmp/elsewhere' }, { choices: [] }]) {
+      expect(() => parseConflictReset({ ...reset, ...extra })).toThrow('The reset request has unexpected fields.')
+    }
+    expect(() => parseConflictReset({ fingerprint: { ...reset.fingerprint, sha: digest } })).toThrow('unexpected fields')
+    expect(() => parseConflictReset({ fingerprint: { working: digest, stages: 'A'.repeat(64) } })).toThrow('stage digest')
+    expect(() => parseConflictReset(null)).toThrow('not an object')
   })
 })
