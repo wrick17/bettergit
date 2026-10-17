@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
@@ -435,6 +435,35 @@ describe('conflict resolution on real Git merges', () => {
     await stagePaths(repo, ['doc.txt'])
     expect(stagesOf(repo)).toHaveLength(0)
   })
+
+  // Staging reads a file only to the loader's 2 MiB limit plus one byte. Text past the limit is refused rather than
+  // taken as resolved, and a NUL byte within the read part still marks a binary file, which stages as before.
+  for (const [name, bytes, staged] of [
+    ['text at the limit', Buffer.alloc(2 * 1024 * 1024, 65), true],
+    ['text past the limit', Buffer.alloc(2 * 1024 * 1024 + 1, 65), false],
+    ['a sparse binary past the limit', null, true],
+  ] as const) {
+    test(`staging an unmerged file holding ${name} ${staged ? 'stages it' : 'is refused without writing or staging'}`, async () => {
+      const repo = conflictRepo({ base: 'old\n', ours: 'mine\n', theirs: 'yours\n' })
+      const file = path.join(repo, 'doc.txt')
+      writeFileSync(file, bytes ?? '')
+      if (!bytes) truncateSync(file, 2 * 1024 * 1024 + 1)
+      const files = () => ['doc.txt', '.git/index', '.git/config'].map((entry) => readFileSync(path.join(repo, entry)))
+      const before = files()
+      const mode = statSync(file).mode
+      const stages = stagesOf(repo)
+      if (staged) {
+        await stagePaths(repo, ['doc.txt'])
+        expect(stagesOf(repo)).toEqual([])
+        expect(readFileSync(file)).toEqual(before[0])
+      } else {
+        await expect(stagePaths(repo, ['doc.txt'])).rejects.toThrow('doc.txt is too large to check for conflict markers')
+        expect(files()).toEqual(before)
+        expect(stagesOf(repo)).toEqual(stages)
+      }
+      expect(statSync(file).mode).toBe(mode)
+    })
+  }
 
   test('eight-character markers are refused without clearing the unmerged index or writing the file', async () => {
     const repo = conflictRepo({
