@@ -569,6 +569,7 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
   busy: string | null
 }) {
   const { name, dir } = splitPath(change.path)
+  const discardAction = !staged && change.kind !== 'untracked' && !change.conflicted ? onDiscard : undefined
   const discardKey = `discard:${change.path}`
   const counts = stats.get(`${staged ? 'staged' : 'unstaged'}:${change.path}`)
   return (
@@ -582,13 +583,25 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
           onChange={() => onToggle(change)}
         />
       </label>
-      <button className="file" onClick={() => onSelect(change)}>
-        <FileIcon name={name} />
-        <span className="path" title={change.path}>
-          <span className="path-name">{name}</span>
-          {showDir && dir && <span className="path-dir">{dir}</span>}
-        </span>
-      </button>
+      <span className={`file-with-action${discardAction ? ' has-row-action' : ''}`}>
+        <button className="file" onClick={() => onSelect(change)}>
+          <FileIcon name={name} />
+          <span className="path" title={change.path}>
+            <span className="path-name">{name}</span>
+            {showDir && dir && <span className="path-dir">{dir}</span>}
+          </span>
+        </button>
+        {discardAction && (
+          <IconButton
+            icon="trash"
+            label={busy === discardKey ? `Discarding ${change.path}…` : `Discard changes to ${change.path}`}
+            busy={busy === discardKey}
+            blocked={busy !== null && busy !== discardKey ? blockedReason(busy) : undefined}
+            className="discard"
+            onClick={() => discardAction(change)}
+          />
+        )}
+      </span>
       {counts && (counts.add > 0 || counts.del > 0) && (
         <span className="row-stat" aria-label={`${counts.add} added, ${counts.del} removed`}>
           <span className="add">+{counts.add}</span>
@@ -596,16 +609,6 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
         </span>
       )}
       <span className={`kind kind-${change.kind}`} title={change.kind}>{badge(change.kind)}</span>
-      {onDiscard && !staged && change.kind !== 'untracked' && (
-        <IconButton
-          icon="trash"
-          label={busy === discardKey ? `Discarding ${change.path}…` : `Discard changes to ${change.path}`}
-          busy={busy === discardKey}
-          blocked={busy !== null && busy !== discardKey ? blockedReason(busy) : undefined}
-          className="discard"
-          onClick={() => onDiscard(change)}
-        />
-      )}
     </>
   )
 }

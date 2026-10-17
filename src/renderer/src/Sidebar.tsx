@@ -41,7 +41,6 @@ export function Sidebar(props: SidebarProps) {
   const addTrigger = useRef<HTMLButtonElement>(null)
   const contextRef = useRef<HTMLDivElement>(null)
   const [focusPath, setFocusPath] = useState<string | null>(null)
-
   const treeRef = useRef<HTMLDivElement>(null)
   const onTreeScroll = useScrollMemory(treeRef, 'sidebar', '', props.tree.length > 0)
 
@@ -136,7 +135,8 @@ export function Sidebar(props: SidebarProps) {
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
           const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')]
-          const index = rows.indexOf(event.target as HTMLElement)
+          const item = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]')
+          const index = item ? rows.indexOf(item) : -1
           const next = rows[index + (event.key === 'ArrowDown' ? 1 : -1)]
           if (index < 0 || !next) return
           event.preventDefault()
@@ -210,7 +210,8 @@ function TreeItem(props: ItemProps) {
         tabIndex={node.path === props.tabStop ? 0 : -1}
         onFocus={(event) => { if (event.target === event.currentTarget) props.onFocusRow(node.path) }}
         onKeyDown={(event) => {
-          if (event.target !== event.currentTarget) return
+          if ((event.target as HTMLElement).closest('[role="treeitem"]') !== event.currentTarget) return
+          if (event.target !== event.currentTarget && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
           const { key } = event
           if (key === 'Enter' || key === ' ' || (key === 'ArrowRight' && collapsed) || (key === 'ArrowLeft' && !collapsed)) {
             event.preventDefault()
@@ -230,17 +231,17 @@ function TreeItem(props: ItemProps) {
           onContextMenu={(event) => props.onContext(event, node)}
         >
           <span className={`chevron${collapsed ? '' : ' open'}`}><Icon name="chevron" /></span>
-          <span className="row-icon"><FolderIcon open={!collapsed} /></span>
-          <span className="tree-label">{node.name}</span>
           {/* The hide click must not also toggle or select the row. */}
-          <span className="row-tools" onClick={(event) => event.stopPropagation()}>
+          <span className="row-icon has-row-action" onClick={(event) => event.stopPropagation()}>
+            <FolderIcon open={!collapsed} />
             <IconButton
               icon={hidden ? 'eye' : 'eyeOff'}
               label={hidden ? `Show ${node.name}` : `Hide ${node.name}`}
-              tabIndex={-1}
+              tabIndex={node.path === props.tabStop ? 0 : -1}
               onClick={() => props.onToggleHidden(node.path)}
             />
           </span>
+          <span className="tree-label">{node.name}</span>
         </div>
         {!collapsed && (
           <div role="group" className="tree-children">
@@ -261,7 +262,8 @@ function TreeItem(props: ItemProps) {
       tabIndex={node.path === props.tabStop ? 0 : -1}
       onFocus={(event) => { if (event.target === event.currentTarget) props.onFocusRow(node.path) }}
       onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return
+        if ((event.target as HTMLElement).closest('[role="treeitem"]') !== event.currentTarget) return
+        if (event.target !== event.currentTarget && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
           props.onSelect(node.path)
@@ -277,18 +279,18 @@ function TreeItem(props: ItemProps) {
         onContextMenu={(event) => props.onContext(event, node)}
       >
         <span className="chevron-spacer" />
-        <span className="row-icon"><FolderIcon repo /></span>
-        <span className="tree-label">{node.name}</span>
-        {node.branch && <span className="repo-branch" title={node.branch}>{node.branch}</span>}
-        {dirtyCount > 0 && <span className="repo-dirty" title={`${dirtyCount} uncommitted files`}>{dirtyCount}</span>}
-        <span className="row-tools" onClick={(event) => event.stopPropagation()}>
+        <span className="row-icon has-row-action" onClick={(event) => event.stopPropagation()}>
+          <FolderIcon repo />
           <IconButton
             icon={hidden ? 'eye' : 'eyeOff'}
             label={hidden ? `Show ${node.name}` : `Hide ${node.name}`}
-            tabIndex={-1}
+            tabIndex={node.path === props.tabStop ? 0 : -1}
             onClick={() => props.onToggleHidden(node.path)}
           />
         </span>
+        <span className="tree-label">{node.name}</span>
+        {node.branch && <span className="repo-branch" title={node.branch}>{node.branch}</span>}
+        {dirtyCount > 0 && <span className="repo-dirty" title={`${dirtyCount} uncommitted files`}>{dirtyCount}</span>}
       </div>
     </div>
   )
