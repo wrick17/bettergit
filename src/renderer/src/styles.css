@@ -373,6 +373,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   opacity: 0; pointer-events: none; transition: opacity 120ms var(--ease);
 }
 .has-row-action :is(.file-icon, .folder-icon) { transition: opacity 120ms var(--ease); }
+/* A blocked row action still hides at rest; its 0.4 dim would otherwise overlap the leading icon. */
+.has-row-action > .icon-button.blocked:not(.busy) { opacity: 0; }
 :is(.tree-row:hover, .tree-row:focus-within, .group li:hover, .group li:focus-within, [role='treeitem']:focus > .tree-row) > .has-row-action > .icon-button,
 .has-row-action > .icon-button.busy { opacity: 1; pointer-events: auto; }
 :is(.tree-row:hover, .tree-row:focus-within, .group li:hover, .group li:focus-within, [role='treeitem']:focus > .tree-row) > .has-row-action :is(.file-icon, .folder-icon),
