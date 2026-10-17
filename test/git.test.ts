@@ -548,6 +548,27 @@ describe('branch picker operations with real Git', () => {
     await expect(git(dir, ['config', '--includes', '--list'])).rejects.toThrow('remote URLs cannot be configured')
   })
 
+  test('a plain include of the same file does not make an inactive gitdir include count', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    write('harmless.config', '[core]\n\tabbrev = 12\n')
+    write('urls.config', '[remote "extra"]\n\turl = https://extra.example.invalid/repo.git\n')
+    await git(dir, ['config', 'includeIf.hasconfig:remote.*.url:**.path', 'harmless.config'])
+    await git(dir, ['config', `includeIf.gitdir:${dir}-other/.git.path`, 'urls.config'])
+    await git(dir, ['config', 'include.path', 'urls.config'])
+    expect(await git(dir, ['config', '--includes', '--list'])).toContain('extra.example.invalid')
+    await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+    await git(dir, ['switch', 'main'])
+    await branchFromCommit(dir, 'from-commit', tip)
+    expect(await sha(dir, 'refs/heads/from-commit')).toBe(tip)
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'topic', upstreamRef: 'refs/remotes/origin/topic' })
+    expect((await git(dir, ['config', 'core.abbrev'])).trim()).toBe('12')
+    expect(await git(dir, ['config', '--includes', '--list'])).toContain('extra.example.invalid')
+  })
+
   const invalidIncludes: Record<string, Record<string, string>> = {
     // Each pass of this self-include grows its path until Git fails on an 11th nested include.
     loop: { 'loop.config': '[include]\n\tpath = ./loop.config\n' },

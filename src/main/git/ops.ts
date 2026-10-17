@@ -185,14 +185,18 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
   // Start from the files Git always reads, without their includes, so depth counts nesting exactly as Git does.
   const sources = [{ args: ['--no-includes'], depth: 0, conditional: false, inert: false }]
   const seen = new Set<string>()
-  // A gitdir condition does not depend on the branch, so Git's answer for the including file now also holds after the switch.
-  const included = new Map<string, Promise<string[]>>()
-  const gitdirApplies = (including: string, file: string) => {
-    if (!included.has(including)) {
-      included.set(including, read(['--file', including, '--includes', '-z', '--show-origin', '--name-only', '--list'])
-        .then((output) => (output ?? '').split('\0')))
+  // A gitdir condition does not depend on the branch, so Git's answer now also holds after the switch. Git expands an
+  // include right where its directive is listed, so a directive applied when the next entry Git lists comes from its file.
+  const listed = new Map<string, Promise<string[]>>()
+  const gitdirApplies = async (origin: string, entry: string, file: string) => {
+    const including = origin.slice('file:'.length)
+    if (!listed.has(including)) {
+      listed.set(including, read(['--file', including, '--includes', '-z', '--show-origin', '--list']).then((output) => (output ?? '').split('\0')))
     }
-    return included.get(including)!.then((origins) => origins.includes(`file:${file}`))
+    const items = await listed.get(including)!
+    // Identical directives share their condition and file. A directive that is not listed counts as applying.
+    for (let j = 0; j + 1 < items.length; j += 2) if (items[j] === origin && items[j + 1] === entry) return items[j + 2] === `file:${file}`
+    return true
   }
   // Once any hasconfig:remote.*.url include applies, Git fails on remote.*.url in a file it reached through includeIf.
   // Files behind a gitdir include that does not apply to this repository are never read by Git, so they count for neither.
@@ -227,7 +231,7 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
       const file = path.isAbsolute(value) ? value : including.slice(0, including.lastIndexOf('/') + 1) + value
       const viaIncludeIf = conditional || entry.startsWith('includeif.')
       // Upstream keys are still checked behind an inactive gitdir include, as everywhere else.
-      const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && origin.startsWith('file:') && !(await gitdirApplies(including, file)))
+      const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && origin.startsWith('file:') && !(await gitdirApplies(origin, entry, file)))
       // The same path at the same depth and kind of edge leads to the same checks. Otherwise it can hit the depth limit
       // or the remote URL rule, so it is read again.
       const visit = `${depth + 1}\0${viaIncludeIf}\0${childInert}\0${file}`
