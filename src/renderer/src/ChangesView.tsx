@@ -61,7 +61,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
   const paneRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  // The file picked last. The pane scrolls to it once its diff loads. A restored scroll position takes its place, so nothing is revealed at launch.
+  // The file picked last. The pane scrolls to it once its diff loads. A file restored at launch is revealed only when it has no saved scroll position.
   const revealRef = useRef<string | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
   // Both sections load on every refresh. The file rows need their +/- counts, and the empty-selection pane shows them all.
@@ -77,7 +77,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const clean = status.changes.length === 0
   const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
   const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
-  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, selection ? `${selection.staged}:${selection.path}` : 'all', selection ? diff !== null : all !== null)
+  // The view each loaded diff belongs to. Only a diff loaded for the file on screen is ready for its scroll position.
+  const diffKey = selection && JSON.stringify([repo, selection.staged, selection.path, context])
+  const diffFor = useRef<string | null>(null)
+  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, selection ? `${selection.staged}:${selection.path}` : 'all',
+    selection ? diffFor.current === diffKey : all !== null,
+    selection ? (pane) => revealFile(pane, selection.path) : undefined)
   const errorRef = useRef(onError)
   errorRef.current = onError
   const extraRef = useRef(extra)
@@ -123,14 +128,18 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   useEffect(() => {
     if (!selection) {
+      diffFor.current = null
       setDiff(null)
       return
     }
     let stale = false
+    const key = diffKey
     api.working(repo, selection.staged, context)
       .then((next: Working) => widen(repo, next, selection.staged, extraRef.current))
       .then((next) => {
-        if (!stale) setDiff(next)
+        if (stale) return
+        diffFor.current = key
+        setDiff(next)
       })
       .catch((failure: unknown) => errorRef.current(failure))
     return () => { stale = true }
@@ -139,13 +148,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   // Picking a file keeps the continuous diff and scrolls the file's header into view once its diff loads.
   useEffect(() => {
     const path = revealRef.current
-    if (!path || !diff) return
+    if (!path || !diff || diffFor.current !== diffKey) return
     revealRef.current = null
     // Files skipped by content-visibility use their estimated height until a frame has laid them out, so scroll after two frames.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      Array.from(paneRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
-        .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
-    }))
+    requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path)))
   }, [diff])
 
   const act = async (action: () => Promise<unknown>) => {
@@ -371,6 +377,11 @@ function savedSelection(repo: string, status: RepoStatus): Selection | null {
   const place = loadSession().places[repo]
   if (!place?.file || !status.changes.some((change) => change.path === place.file)) return null
   return { path: place.file, staged: !!place.staged }
+}
+
+function revealFile(pane: HTMLElement | null, path: string) {
+  Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
+    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
 }
 
 // The path a file is listed and matched by: its new name, or its old one for a deletion.
