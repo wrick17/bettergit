@@ -590,9 +590,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .add-popover { top: 34px; right: 0; }
 .context-menu { position: fixed; transform-origin: top left; }
 .popover button {
-  display: flex; align-items: center; width: 100%; height: 28px; padding: 0 10px;
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 10px;
   border: 0; border-radius: var(--radius-sm); background: transparent; box-shadow: none; text-align: left;
 }
+/* Every menu row shares one icon slot: a 16px glyph with 8px before the label. Lucide's 24px default crowded the label. */
+.popover button svg { flex: none; width: 16px; height: 16px; }
 .popover button:hover:not(:disabled) { background: var(--accent-fill); color: var(--on-accent); }
 .popover button.danger { color: var(--del); }
 .popover button.danger:hover:not(:disabled) { background: var(--del-bg); color: var(--del); }

@@ -10,4 +10,3 @@
 .overflow-item { display: flex; align-items: center; flex: none; padding-right: 2px; }
 .overflow-more { position: relative; flex: none; }
 .overflow-menu { top: calc(100% + 6px); right: 0; }
-.overflow-menu button svg { flex: none; width: 15px; height: 15px; margin-right: 9px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
