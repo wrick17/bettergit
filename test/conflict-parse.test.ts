@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   applyChoices, conflictBlocks, fromMergeOutput, matchBases, matchBasesAcrossRuns, parseConflictReset, parseConflicts, parseConflictSave, splitTokens, toMergeInput,
-  type ApplyResult, type Choice, type Combine, type ConflictSave, type Part, type StageBlock,
+  withStageEnds, type ApplyResult, type Choice, type Combine, type ConflictSave, type Part, type StageBlock,
 } from '../src/shared/conflict'
 
 // The parts of a text that is known to parse. A failing parse fails the test with its message.
@@ -76,6 +76,33 @@ describe('parseConflicts', () => {
     expect(applyChoices(partsOf(samples.noFinalNewline), ['incoming'], [])).toMatchObject({ ok: true, text: 'x\nB' })
     const crlf = partsOf('x\r\n<<<<<<< a\r\nA\r\n=======\r\nB\r\n>>>>>>> b')
     expect(applyChoices(crlf, ['current'], [])).toMatchObject({ ok: true, text: 'x\r\nA' })
+  })
+
+  // Git writes these exact markers for a conflict at the end of the file whether or not either side ends with a newline.
+  test('a side whose stage ends without a newline is chosen without the newline Git added', () => {
+    const markers = 'prefix\n<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> incoming\n'
+    for (const ours of ['prefix\ncurrent', 'prefix\ncurrent\n']) {
+      for (const theirs of ['prefix\nincoming', 'prefix\nincoming\n']) {
+        const parts = withStageEnds(partsOf(markers), ours, theirs)
+        expect(textOf(applyChoices(parts, ['current'], []))).toBe(ours)
+        expect(textOf(applyChoices(parts, ['incoming'], []))).toBe(theirs)
+        expect(textOf(applyChoices(parts, ['both'], []))).toBe(`prefix\ncurrent\n${theirs.slice('prefix\n'.length)}`)
+        const bothEnd = ours.endsWith('\n') || theirs.endsWith('\n') ? '\n' : ''
+        expect(textOf(applyChoices(parts, ['combine'], [ready('merged\n')]))).toBe(`prefix\nmerged${bothEnd}`)
+        expect(textOf(applyChoices(parts, [], []))).toBe(markers)
+      }
+    }
+    const crlf = withStageEnds(partsOf('p\r\n<<<<<<< a\r\nA\r\n=======\r\nB\r\n>>>>>>> b\r\n'), 'p\r\nA', 'p\r\nB\r\n')
+    expect(textOf(applyChoices(crlf, ['current'], []))).toBe('p\r\nA')
+    expect(textOf(applyChoices(crlf, ['incoming'], []))).toBe('p\r\nB\r\n')
+  })
+
+  test("a side keeps its newline unless it ends with its stage's last line at the end of the file", () => {
+    const edited = withStageEnds(partsOf('p\n<<<<<<< a\nprecurrent\n=======\nincoming\n>>>>>>> b\n'), 'p\ncurrent', 'p\nincoming')
+    expect(textOf(applyChoices(edited, ['current'], []))).toBe('p\nprecurrent\n')
+    expect(textOf(applyChoices(edited, ['incoming'], []))).toBe('p\nincoming')
+    const suffix = partsOf('p\n<<<<<<< a\ncurrent\n=======\nincoming\n>>>>>>> b\nend')
+    expect(withStageEnds(suffix, 'p\ncurrent\nend', 'p\nincoming\nend')).toBe(suffix)
   })
 
   test('an unresolved block keeps its markers byte for byte and is counted', () => {

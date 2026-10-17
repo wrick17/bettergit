@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from '../src/main/git/conflict'
@@ -211,6 +211,23 @@ describe('conflict resolution on real Git merges', () => {
     expect(text(repo)).toBe('x\nyours\nend')
   })
 
+  // Git writes the same markers whether or not a side ends with a newline, so only the side's stage can tell.
+  test('a side chosen at the end of the file is saved and previewed exactly as its stage, and nothing is staged', async () => {
+    for (const ending of ['', '\n']) {
+      for (const [choice, stage] of [['current', 2], ['incoming', 3]] as const) {
+        const repo = conflictRepo({ base: 'prefix\nbase\n', ours: `prefix\ncurrent${ending}`, theirs: `prefix\nincoming${ending}` })
+        const stages = stagesOf(repo)
+        const model = await loaded(repo)
+        const preview = await previewConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: [choice] })
+        await saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: [choice] })
+        const expected = execFileSync('git', ['cat-file', 'blob', `:${stage}:doc.txt`], { cwd: repo })
+        expect(readFileSync(path.join(repo, 'doc.txt'))).toEqual(expected)
+        expect(preview.text).toBe(expected.toString('utf8'))
+        expect(stagesOf(repo)).toEqual(stages)
+      }
+    }
+  }, 60_000)
+
   test('stale working bytes are refused, and the hand edit is kept', async () => {
     const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' })
     const model = await loaded(repo)
@@ -415,6 +432,35 @@ describe('conflict resolution on real Git merges', () => {
     expect(stagesOf(repo)).toHaveLength(0)
   })
 
+  // Staging reads a file only to the loader's 2 MiB limit plus one byte. Text past the limit is refused rather than
+  // taken as resolved, and a NUL byte within the read part still marks a binary file, which stages as before.
+  for (const [name, bytes, staged] of [
+    ['text at the limit', Buffer.alloc(2 * 1024 * 1024, 65), true],
+    ['text past the limit', Buffer.alloc(2 * 1024 * 1024 + 1, 65), false],
+    ['a sparse binary past the limit', null, true],
+  ] as const) {
+    test(`staging an unmerged file holding ${name} ${staged ? 'stages it' : 'is refused without writing or staging'}`, async () => {
+      const repo = conflictRepo({ base: 'old\n', ours: 'mine\n', theirs: 'yours\n' })
+      const file = path.join(repo, 'doc.txt')
+      writeFileSync(file, bytes ?? '')
+      if (!bytes) truncateSync(file, 2 * 1024 * 1024 + 1)
+      const files = () => ['doc.txt', '.git/index', '.git/config'].map((entry) => readFileSync(path.join(repo, entry)))
+      const before = files()
+      const mode = statSync(file).mode
+      const stages = stagesOf(repo)
+      if (staged) {
+        await stagePaths(repo, ['doc.txt'])
+        expect(stagesOf(repo)).toEqual([])
+        expect(readFileSync(file)).toEqual(before[0])
+      } else {
+        await expect(stagePaths(repo, ['doc.txt'])).rejects.toThrow('doc.txt is too large to check for conflict markers')
+        expect(files()).toEqual(before)
+        expect(stagesOf(repo)).toEqual(stages)
+      }
+      expect(statSync(file).mode).toBe(mode)
+    })
+  }
+
   test('eight-character markers are refused without clearing the unmerged index or writing the file', async () => {
     const repo = conflictRepo({
       base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n',
@@ -573,6 +619,22 @@ describe('reset resolution on real Git merges', () => {
     expect(text(repo, 'notes.txt')).toBe('plain\n')
     expect(statSync(path.join(repo, 'doc.txt')).mode & 0o777).toBe(0o755)
     expect(temps(repo)).toEqual([])
+  }, 60_000)
+
+  test('after reset, a side chosen at the end of the file is previewed and saved as its stage, with its mode', async () => {
+    const repo = conflictRepo({ base: 'prefix\nbase\n', ours: 'prefix\ncurrent', theirs: 'prefix\nincoming' })
+    chmodSync(path.join(repo, 'doc.txt'), 0o755)
+    const stages = stagesOf(repo)
+    const reset = await resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })
+    expect(reset).toEqual(await loaded(repo) as typeof reset)
+    const save = { fingerprint: reset.fingerprint, choices: ['incoming'] as Choice[] }
+    const preview = await previewConflict(repo, 'doc.txt', save)
+    await saveConflict(repo, 'doc.txt', save)
+    const expected = execFileSync('git', ['cat-file', 'blob', ':3:doc.txt'], { cwd: repo })
+    expect(readFileSync(path.join(repo, 'doc.txt'))).toEqual(expected)
+    expect(preview.text).toBe(expected.toString('utf8'))
+    expect(statSync(path.join(repo, 'doc.txt')).mode & 0o777).toBe(0o755)
+    expect(stagesOf(repo)).toEqual(stages)
   }, 60_000)
 
   test('a file with broken markers can still be reset', async () => {

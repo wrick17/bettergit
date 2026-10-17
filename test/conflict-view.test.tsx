@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import * as rowsModule from '../src/renderer/src/conflict-rows'
-import { applyChoices, conflictBlocks, parseConflicts, type Choice, type Combine } from '../src/shared/conflict'
+import { applyChoices, conflictBlocks, parseConflicts, withStageEnds, type Choice, type Combine } from '../src/shared/conflict'
 
 const { conflictRows, displayLine, isMarker } = rowsModule
 
@@ -345,6 +345,18 @@ describe('conflictRows', () => {
         expect(result.some((row) => /[\r\n]/.test(row.line.text))).toBe(false)
         expect(result.some((row) => isMarker(row.kind))).toBe(choice === null)
       }
+    }
+  })
+
+  test('a side whose stage ends without a newline ends without one, in the rows and in both layouts', () => {
+    const parts = withStageEnds(partsOf('prefix\n<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> topic\n'), 'prefix\ncurrent', 'prefix\nincoming\n')
+    for (const [choice, saved] of [['current', 'prefix\ncurrent'], ['incoming', 'prefix\nincoming\n'], ['both', 'prefix\ncurrent\nincoming\n']] as const) {
+      expect(applyChoices(parts, [choice], [])).toMatchObject({ ok: true, text: saved })
+      expect(conflictRows(parts, [choice], []).result.map((row) => row.raw).join('')).toBe(saved)
+      const view = rowsModule.conflictFile('a.ts', parts, [choice], [], 3)
+      const lines = view.file.hunks.flatMap((hunk) => hunk.lines)
+      expect(lines.map((line) => view.kinds.get(line))).toEqual(choice === 'both' ? ['text', 'current', 'incoming'] : ['text', choice])
+      expect(view.file.hunks.flatMap((hunk) => view.split.get(hunk)!).map((row) => row.right?.line)).toEqual(lines)
     }
   })
 

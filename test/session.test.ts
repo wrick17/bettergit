@@ -79,3 +79,59 @@ test('a pane shown again before the scroll write restores the latest position an
   const child = Bun.spawnSync([process.execPath, '-e', REMOUNT], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
 })
+
+const SAME_PANE = String.raw`
+const assert = require('node:assert/strict')
+const react = require('react')
+const stored = new Map([['bettergit.session', JSON.stringify({ views: { pane: { key: 'a', value: 0 } } })]])
+const frames = new Map()
+let nextFrame = 1
+Object.assign(globalThis, {
+  localStorage: { getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
+  window: { addEventListener() {}, setTimeout: () => 1, clearTimeout() {} },
+  requestAnimationFrame: (callback) => { frames.set(nextFrame, callback); return nextFrame++ },
+  cancelAnimationFrame: (id) => { frames.delete(id) },
+})
+const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
+const slots = []
+let cursor
+react.useRef = (initial) => slots[cursor++] ??= { current: initial }
+react.useEffect = (effect) => effect()
+const { useScrollMemory } = await import('./src/renderer/src/session')
+const element = { scrollTop: 50 }
+const fallbacks = []
+function render(key, ready) {
+  cursor = 0
+  const onScroll = useScrollMemory({ current: element }, 'pane', key, ready, () => fallbacks.push(key))
+  return () => onScroll({ currentTarget: element })
+}
+// Nothing happens until the content for the key is ready. A saved 0 is a position, set after two frames.
+render('a', false)
+assert.equal(frames.size, 0)
+render('a', true)
+tick()
+assert.equal(element.scrollTop, 50)
+tick()
+assert.equal(element.scrollTop, 0)
+// The same element changes key. A restore still waiting for the old key is cancelled, and the buffered position beats storage.
+element.scrollTop = 300
+render('a', true)()
+element.scrollTop = 999
+render('b', true)
+render('a', true)
+tick(); tick()
+assert.equal(element.scrollTop, 300)
+assert.deepEqual(fallbacks, [])
+// A key with no saved position calls the fallback at the same boundary instead.
+render('b', true)
+tick()
+assert.deepEqual(fallbacks, [])
+tick()
+assert.deepEqual(fallbacks, ['b'])
+assert.equal(element.scrollTop, 300)
+`
+
+test('the same pane restores each new key once its content is ready, and falls back when nothing was saved', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', SAME_PANE], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.exitCode, child.stderr.toString()).toBe(0)
+})

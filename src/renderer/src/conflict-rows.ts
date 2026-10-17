@@ -1,6 +1,6 @@
 import type { DiffFile, DiffHunk, DiffLine } from '../../main/git/diff'
 import type { IndexedLine, SplitRow } from './DiffView'
-import { applyChoices, splitLines, type Choice, type Combine, type ConflictBlock, type Part } from '../../shared/conflict'
+import { applyChoices, endOfChoice, splitLines, type Choice, type Combine, type ConflictBlock, type Part } from '../../shared/conflict'
 
 // Where a result line comes from. Marker kinds are the marker lines themselves, taken from the parse, never matched in text.
 export type RowKind = 'text' | 'current' | 'base' | 'incoming' | 'combine' | 'marker-open' | 'marker-base' | 'marker-split' | 'marker-close'
@@ -69,10 +69,10 @@ export function conflictRows(parts: readonly Part[], choices: readonly Choice[],
     const kept: Piece[] = choice === null ? marked
       : choice === 'combine' ? (ready?.state === 'ready' ? [{ kind: 'combine', text: ready.text, old: null, block: part.index }] : [])
       : marked.filter((piece) => piece.kind === choice || (choice === 'both' && (piece.kind === 'current' || piece.kind === 'incoming')))
-    // As in applyChoices: a closing marker with no terminator ends the file, so the replacement ends without one too.
-    if (choice !== null && !part.markers.close.endsWith('\n')) {
+    // The last piece with text ends the replacement, so it ends the way applyChoices ends the replacement.
+    if (choice !== null) {
       const last = [...kept].reverse().find((piece) => piece.text !== '')
-      if (last) last.text = last.text.replace(/\r?\n$/, '')
+      if (last) last.text = endOfChoice(part, choice, last.text)
     }
     // The empty piece marks where the block starts, so a block that keeps no lines still has a place for its controls.
     pieces.push({ kind: 'text', text: '', old: null, block: part.index }, ...kept)
