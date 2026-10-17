@@ -1,0 +1,48 @@
+.diff .markdown-toggle button { white-space: nowrap; }
+.diff .diff-toolbar-controls { justify-content: flex-end; }
+.diff .md-fragment-note { padding: 3px 12px; color: var(--text-3); font: 11px/18px var(--font-ui); }
+.diff .md-diff-block { display: flex; min-width: 0; min-height: 22px; }
+.diff .md-source-rail { flex: none; display: flex; flex-direction: column; font: 12px/22px var(--font-code); }
+.diff .md-source-row { display: flex; flex: 1; min-height: 22px; }
+.diff .md-source-row.add { background: var(--add-bg); box-shadow: inset 2px 0 var(--add); }
+.diff .md-source-row.del { background: var(--del-bg); box-shadow: inset 2px 0 var(--del); }
+.diff .md-source-row.add .sign { color: var(--add); }
+.diff .md-source-row.del .sign { color: var(--del); }
+.diff .md-source-row.moved { background: var(--move-bg); box-shadow: inset 2px 0 var(--move); }
+.diff .md-source-gap { flex: 1; min-height: 22px; }
+.diff .md-split .md-source-rail .gutter { width: 44px; }
+.diff .md-content { flex: 1; min-width: 0; padding: 3px 12px 3px 0; font: 14px/22px var(--font-ui); overflow-wrap: anywhere; }
+.diff .md-before > .md-content { background: var(--del-bg); }
+.diff .md-after > .md-content { background: var(--add-bg); }
+.diff .md-content p { margin: 0 0 8px; white-space: normal; }
+.diff .md-content > :last-child { margin-bottom: 0; }
+.diff .md-content h1, .diff .md-content h2, .diff .md-content h3, .diff .md-content h4, .diff .md-content h5, .diff .md-content h6 { margin: 3px 0 8px; line-height: 1.35; font-weight: 600; }
+.diff .md-content h1 { font-size: 22px; }
+.diff .md-content h2 { font-size: 19px; }
+.diff .md-content h3 { font-size: 17px; }
+.diff .md-content h4, .diff .md-content h5, .diff .md-content h6 { font-size: 14px; }
+.diff .md-content ul, .diff .md-content ol { margin: 0 0 8px; padding-left: 24px; }
+.diff .md-content li > p { margin-bottom: 2px; }
+.diff .md-content li > input { width: 13px; height: 13px; padding: 0; margin-right: 6px; vertical-align: middle; }
+.diff .md-content blockquote { margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--text-3); color: var(--text-2); }
+.diff .md-content code { padding: 1px 3px; border-radius: 3px; background: var(--sunken); font: 13px/22px var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .md-content pre { margin: 0 0 8px; padding: 6px 8px; border-radius: 3px; background: var(--sunken); white-space: pre-wrap; }
+.diff .md-content pre > code { padding: 0; background: transparent; }
+.diff .md-content .md-html { white-space: pre-wrap; }
+.diff .md-content > .md-html { display: block; }
+.diff .md-table-scroll { max-width: 100%; overflow-x: auto; margin-bottom: 8px; }
+.diff .md-content table { width: 100%; min-width: 440px; table-layout: fixed; border-collapse: collapse; font: inherit; }
+.diff .md-content th, .diff .md-content td { padding: 6px 8px; border: 1px solid var(--line); vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.diff .md-content th { text-align: left; font-weight: 600; background: var(--hover); }
+.diff .md-content .md-align-left { text-align: left; }
+.diff .md-content .md-align-right { text-align: right; }
+.diff .md-content .md-align-center { text-align: center; }
+.diff .md-link { color: var(--accent); }
+.diff .md-destination, .diff .md-image, .diff .md-definition, .diff .md-note { color: var(--text-2); }
+.diff .md-footnote-definition { display: flex; gap: 6px; font-size: 12px; }
+.diff .md-content hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+.diff .md-source-syntax { margin-top: 4px; color: var(--text-2); font: 11px/18px var(--font-ui); }
+.diff .md-source-syntax > span:first-child { color: var(--text-3); }
+.diff .md-source-syntax code { font-size: 11px; }
+.diff .md-moved-text { background: var(--move-bg); color: var(--move); }
+.diff .md-content li > input + p { display: inline; }
