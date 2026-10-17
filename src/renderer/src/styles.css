@@ -354,7 +354,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .group ul { list-style: none; margin: 0; padding: 0 6px; }
 .group li {
   position: relative; display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 6px 0 8px; border-radius: var(--radius-sm);
+  height: 28px; padding: 0 6px; border-radius: var(--radius-sm);
 }
 .group li:hover { background: var(--hover); }
 .group li.active {
@@ -363,6 +363,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 .group li .icon-button, .group .tree-row .icon-button { opacity: 0; transition: opacity 120ms var(--ease); }
 .group li:hover .icon-button, .group li:focus-within .icon-button, .group .tree-row:hover .icon-button, .group .tree-row:focus-within .icon-button, .group [role='treeitem']:focus-visible > .tree-row .icon-button { opacity: 1; }
+/* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
+.group > .tree { padding-left: 8px; }
 .group li .check { display: inline-flex; }
 /* Tree file rows: checkbox, icon, and name share one centre line. */
 .tree-row .check { display: inline-flex; flex: none; align-items: center; }
