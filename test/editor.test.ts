@@ -8,6 +8,7 @@ import * as jsxDevRuntime from 'react/jsx-dev-runtime'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as configModule from '../src/main/config'
 import * as editors from '../src/shared/editors'
+import * as editorLaunch from '../src/renderer/src/editor-launch'
 import * as repoBusy from '../src/renderer/src/repo-busy'
 import * as repoLocks from '../src/main/repo-lock'
 import { IconButton } from '../src/renderer/src/Icons'
@@ -171,4 +172,123 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   } finally {
     app.emit('will-quit')
   }
+})
+
+test('JP3 background fetch spins only Fetch through canonical and alias busy state, preserving local precedence', async () => {
+  const busy = await loadEntry('../src/renderer/src/repo-busy.ts', { react: React }) as typeof repoBusy
+  const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
+    'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './repo-busy': busy,
+  }, '', { window: { bettergit: {} } }) as typeof import('../src/renderer/src/RepoMenu')
+  const repo = '/jp3-canonical', alias = '/jp3-alias'
+  const identities = { [alias]: repo }
+  let seq = 0, opened = 0
+  const noop = () => {}
+  const itemsFor = (selected: string) => menu.repoItems({
+    repo: selected, status: null, busy: busy.busyKey(selected), run: async () => true,
+    onTab: noop, onNote: noop, onError: noop, onDialog: noop,
+    editor: { label: 'VS Code', busy: false, onOpen: () => { opened++ } },
+  })
+  const fetchMarkup = (selected: string) => {
+    const item = itemsFor(selected).find((item) => item.key === 'fetch')!
+    return renderToStaticMarkup(React.createElement(IconButton, {
+      icon: item.icon, label: item.label, busy: item.busy, blocked: item.blocked, onClick: item.onClick,
+    }))
+  }
+
+  busy.applyRepoLockSnapshot({ seq: ++seq, holders: { [repo]: 'background-fetch' }, identities })
+  for (const selected of [repo, alias]) {
+    const items = itemsFor(selected)
+    expect(items.find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetching…', busy: true, blocked: undefined })
+    expect(fetchMarkup(selected)).toContain('aria-busy="true"')
+    expect(fetchMarkup(selected)).toContain('action-spin')
+    expect(items.filter((item) => item.busy).map((item) => item.key)).toEqual(['fetch'])
+    for (const key of ['pullMerge', 'pullRebase', 'pullFrom', 'push', 'reset', 'stash', 'applyStash', 'popStash', 'popLatest']) {
+      const item = items.find((item) => item.key === key)!
+      expect(item.busy).not.toBe(true)
+      expect(item.blocked).toBe('Another action is running: Fetching…')
+    }
+    const editor = items.find((item) => item.key === 'openEditor')!
+    expect(editor.busy).toBe(false)
+    expect(editor.blocked).toBeUndefined()
+    expect(editor.disabled).not.toBe(true)
+    editor.onClick()
+    expect(items.find((item) => item.key === 'stashList')!.blocked).toBeUndefined()
+  }
+  expect(opened).toBe(2)
+  busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
+  expect(itemsFor(alias).find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: undefined })
+  expect(fetchMarkup(alias)).not.toContain('action-spin')
+  expect(fetchMarkup(alias)).not.toContain('aria-busy')
+
+  let release!: () => void
+  const local = busy.runRepoAction(alias, 'pull-rebase', () => new Promise<void>((done) => { release = done }), noop)
+  try {
+    busy.applyRepoLockSnapshot({ seq: ++seq, holders: { [repo]: 'background-fetch' }, identities })
+    for (const selected of [repo, alias]) {
+      const items = itemsFor(selected)
+      expect(items.filter((item) => item.busy).map((item) => item.key)).toEqual(['pullRebase'])
+      expect(items.find((item) => item.key === 'pullRebase')!.label).toBe('Pulling…')
+      expect(items.find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: 'Another action is running: Pulling…' })
+      expect(fetchMarkup(selected)).not.toContain('action-spin')
+    }
+    busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
+    expect(itemsFor(repo).find((item) => item.key === 'pullRebase')!.busy).toBe(true)
+  } finally {
+    release()
+    expect(await local).toBe(true)
+  }
+  for (const selected of [repo, alias]) {
+    expect(busy.busyKey(selected)).toBeNull()
+    expect(itemsFor(selected).find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: undefined })
+  }
+  for (const [holder, label] of [['repo:conflict-save', 'Saving resolution…'], ['repo:create-branch', 'Creating branch…'], ['repo:branch-from', 'Creating branch…']]) {
+    busy.applyRepoLockSnapshot({ seq: ++seq, holders: { [repo]: holder }, identities })
+    expect(busy.workingLabel(busy.busyKey(alias)!)).toBe(label)
+    expect(itemsFor(alias).find((item) => item.key === 'fetch')!.blocked).toBe(`Another action is running: ${label}`)
+    expect(itemsFor(alias).filter((item) => item.busy)).toEqual([])
+  }
+  busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
+})
+
+test('App supplies the working-copy editor bridge and a repo launch independent of Git busy state', async () => {
+  const launches: Array<[string, string?]> = []
+  const api = { openInEditor: async (repo: string, file?: string) => { launches.push([repo, file]) } }
+  const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
+    'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './repo-busy': repoBusy,
+  }, '', { window: { bettergit: api } })
+  // RepoMenu reads the bridge at module load, so give it the same isolated window as App.
+  let bridge: editorLaunch.EditorBridge | null = null
+  let items: import('../src/renderer/src/OverflowBar').BarItem[] = []
+  const History = () => { bridge = React.useContext(editorLaunch.EditorContext); return null }
+  const imports = {
+    react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, 'react-dom': { createPortal: (node: React.ReactNode) => node },
+    '../../shared/editors': editors, './editor-launch': editorLaunch,
+    './RepoMenu': { ...menu, RepoDialogs: () => null },
+    './OverflowBar': { OverflowBar: (props: { items: typeof items }) => { items = props.items; return null } },
+    './HistoryView': { HistoryView: History },
+    './Icons': { Icon: History, IconButton: () => null },
+    './repo-busy': { ...repoBusy, useRepoBusy: () => 'push' },
+  }
+  const app = await loadEntry('../src/renderer/src/App.tsx', imports, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: api } })
+  const props = {
+    titlebar: {}, repo: { kind: 'repo', name: 'repo', path: '/repo' }, editor: 'vscode', tab: 'history',
+    onTab: () => {}, sidebarOpen: true, onToggleSidebar: () => {}, listOpen: true, onToggleList: () => {},
+    detailOpen: true, onToggleDetail: () => {}, revision: 0, onChanged: () => {}, onError: () => {}, onCleanChange: () => {},
+  }
+  renderToStaticMarkup(React.createElement(app.RepoPane, props))
+  expect(bridge).not.toBeNull()
+  const current = bridge as unknown as editorLaunch.EditorBridge
+  expect(current.editor).toBe('vscode')
+  expect(current.source).toBe('commit')
+  expect(current.onError).toBe(props.onError)
+  await current.openFile('src/app.ts')
+  const item = items.find((item) => item.key === 'openEditor')!
+  expect(item.label).toBe('Open in VS Code')
+  expect(item.blocked).toBeUndefined()
+  expect(item.busy).toBe(false)
+  item.onClick?.()
+  item.onClick?.()
+  expect(launches).toEqual([['/repo', 'src/app.ts'], ['/repo', undefined]])
+  renderToStaticMarkup(React.createElement(app.RepoPane, { ...props, tab: 'changes' }))
+  expect((bridge as unknown as editorLaunch.EditorBridge).source).toBe('working')
 })

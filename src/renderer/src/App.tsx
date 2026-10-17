@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig, ThemeMode } from '../../main/config'
+import { EDITORS, type EditorId } from '../../shared/editors'
+import { EditorContext, useEditorLaunch } from './editor-launch'
 import type { TreeNode, RepoNode } from '../../main/scan'
 import type { RepoStatus } from '../../main/git/status'
 import type { Branch } from '../../main/git/ops'
@@ -258,6 +260,7 @@ export function App() {
             key={repo.path}
             titlebar={titlebar}
             repo={repo}
+            editor={config.settings.editor}
             tab={tab}
             onTab={setTab}
             sidebarOpen={sidebarOpen}
@@ -315,9 +318,10 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
   titlebar: HTMLElement | null
   repo: RepoNode
+  editor: EditorId
   tab: 'changes' | 'history'
   onTab: (tab: 'changes' | 'history') => void
   sidebarOpen: boolean
@@ -337,6 +341,7 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
   const busy = useRepoBusy(repo.path)
   const [note, setNote] = useState<string | null>(null)
   const [dialog, setDialog] = useState<RepoDialog | null>(null)
+  const editorLaunch = useEditorLaunch(() => api.openInEditor(repo.path), onError)
 
   const load = useCallback(async () => {
     const [nextStatus, nextBranches] = await Promise.all([api.status(repo.path), api.branches(repo.path)])
@@ -366,7 +371,12 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
   const headLabel = status ? (status.head ?? (status.headHash ? `detached at ${status.headHash.slice(0, 7)}` : 'no commits yet')) : '…'
 
   return (
-    <>
+    <EditorContext.Provider value={{
+      editor,
+      openFile: (path) => api.openInEditor(repo.path, path),
+      onError,
+      source: tab === 'history' ? 'commit' : 'working',
+    }}>
       {/* The toolbar lives in the titlebar band beside the traffic lights, not in the pane below it. */}
       {titlebar && createPortal(
         <header className="toolbar">
@@ -396,7 +406,10 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
             )}
           </div>
           <div className="toolbar-actions">
-            <OverflowBar items={repoItems({ repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog })} />
+            <OverflowBar items={repoItems({
+              repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,
+              editor: { label: EDITORS[editor].label, busy: editorLaunch.busy, onOpen: editorLaunch.open },
+            })} />
             <RepoDialogs
               repo={repo.path}
               branch={status?.head ?? ''}
@@ -444,7 +457,7 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
           <HistoryView repo={repo.path} head={status?.headHash ?? null} revision={revision} listOpen={listOpen} detailOpen={detailOpen} onError={onError} onChanged={onChanged} />
         </div>
       )}
-    </>
+    </EditorContext.Provider>
   )
 }
 
