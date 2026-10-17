@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { layoutGraph, type GraphRow } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
@@ -6,7 +7,7 @@ import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Promp
 import { CommitStat } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
 import { Icon } from './Icons'
-import { OverflowBar } from './OverflowBar'
+import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
 import { useResizable } from './Splitter'
 import { loadSession, savePlace } from './session'
@@ -41,6 +42,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  // The commit context menu: the commit it is for, and the point it opened at.
+  const [menu, setMenu] = useState<{ hash: string; x: number; y: number } | null>(null)
   const [upstream, setUpstream] = useState<string | null>(null)
   const [webBase, setWebBase] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
@@ -48,6 +51,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
   const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
   const diffRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
   // Each list (repo, search, or refresh) has a generation. Replies from an older one are dropped.
   const generation = useRef(0)
@@ -115,7 +119,30 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     setCompare(null)
     setPrompt(null)
     setNotice(null)
+    // A right-click selects its commit and opens the menu for it, so the menu survives only for the selected commit.
+    setMenu((current) => (current?.hash === selected ? current : null))
   }, [selected])
+
+  // The commit menu closes on an outside press or Escape, like the other popovers. Escape returns focus to the list.
+  const menuOpen = menu !== null
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (event: MouseEvent) => {
+      if (!(event.target as Element).closest('.commit-menu')) setMenu(null)
+    }
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenu(null)
+        listRef.current?.focus()
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   const compareWith = (label: string, ref: string) => {
     const hash = selected
@@ -188,6 +215,11 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       step(event.key === 'ArrowDown' ? 1 : -1)
+    } else if (selected && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
+      // The keyboard route to the commit menu. It opens beside the selected row.
+      event.preventDefault()
+      const box = document.getElementById(optionId(selected))?.getBoundingClientRect()
+      if (box) setMenu({ hash: selected, x: box.left + 24, y: box.bottom })
     }
   }
 
@@ -205,6 +237,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             />
           </div>
           <ul
+            ref={listRef}
             className="commits"
             role="listbox"
             tabIndex={0}
@@ -220,6 +253,10 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                 active={selected === row.commit.hash}
                 isHead={row.commit.hash === head}
                 onSelect={() => setSelected(row.commit.hash)}
+                onMenu={(x, y) => {
+                  setSelected(row.commit.hash)
+                  setMenu({ hash: row.commit.hash, x, y })
+                }}
               />
             ))}
           </ul>
@@ -237,11 +274,6 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
           {selected && current && (
             <>
               <div className="commit-info">
-                {commitInput && (
-                  <div className="commit-bar">
-                    <OverflowBar items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })} align="start" />
-                  </div>
-                )}
                 <header className="commit-head">
                   {picked && (
                     <div className="commit-title">
@@ -282,6 +314,16 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             </>
           )}
         </div>
+      )}
+      {menu && commitInput && menu.hash === selected && createPortal(
+        <ActionMenu
+          className="context-menu commit-menu"
+          at={menu}
+          items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })}
+          onPick={(item) => { setMenu(null); item.onClick() }}
+          onDismiss={() => setMenu(null)}
+        />,
+        document.body,
       )}
     </div>
   )
@@ -365,12 +407,13 @@ function totalLines(files: DiffFile[]) {
   }
 }
 
-function CommitRow({ row, graphWidth, active, isHead, onSelect }: {
+function CommitRow({ row, graphWidth, active, isHead, onSelect, onMenu }: {
   row: GraphRow<Commit>
   graphWidth: number
   active: boolean
   isHead: boolean
   onSelect: () => void
+  onMenu: (x: number, y: number) => void
 }) {
   const { commit } = row
   const x = LANE_WIDTH * (row.lane + 1)
@@ -378,7 +421,7 @@ function CommitRow({ row, graphWidth, active, isHead, onSelect }: {
   const nodeColor = COLORS[row.color % COLORS.length]
   const refs = commit.refs.map((ref) => ref.replace('HEAD -> ', ''))
   return (
-    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} onClick={onSelect}>
+    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} onClick={onSelect} onContextMenu={(event) => { event.preventDefault(); onMenu(event.clientX, event.clientY) }}>
       <svg className="lanes" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
         {graphSegments(row).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />

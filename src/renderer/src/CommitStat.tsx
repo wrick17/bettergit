@@ -9,9 +9,6 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (path: string) => void }) {
   if (!files.length) return null
   const counts = files.map(countLines)
-  // Bars share one scale, so the commit's largest change fills the bar.
-  const largest = counts.reduce((max, { adds, dels }) => Math.max(max, adds + dels), 0)
-  const width = (value: number) => `${largest ? (value / largest) * 100 : 0}%`
   const insertions = counts.reduce((sum, count) => sum + count.adds, 0)
   const deletions = counts.reduce((sum, count) => sum + count.dels, 0)
   return (
@@ -32,16 +29,10 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
                 {file.binary ? (
                   <span className="commit-stat-note">binary</span>
                 ) : (
-                  <>
-                    <span className="commit-stat-bar" aria-hidden="true">
-                      <span className="add" style={{ width: width(adds) }} />
-                      <span className="del" style={{ width: width(dels) }} />
-                    </span>
-                    <span className="row-stat">
-                      <span className="add">+{adds}</span>
-                      <span className="del">−{dels}</span>
-                    </span>
-                  </>
+                  <span className="row-stat">
+                    <span className="add">+{adds}</span>
+                    <span className="del">−{dels}</span>
+                  </span>
                 )}
               </button>
             </li>

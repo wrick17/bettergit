@@ -14,22 +14,14 @@ export interface BarItem {
   group: string
 }
 
-// Fixed widths: a divider with its margins, and the "more" button.
-const DIVIDER = 13
+// Fixed width of the "more" button and its gap.
 const MORE = 30
 
-// How many items fit in `available` pixels. When some do not fit, room is kept for the "more" button.
-function countFit(items: BarItem[], widths: number[], available: number): number {
-  const width = (count: number) => {
-    let sum = 0
-    for (let index = 0; index < count; index++) {
-      if (index > 0 && items[index].group !== items[index - 1].group) sum += DIVIDER
-      sum += widths[index]
-    }
-    return sum
-  }
-  if (width(items.length) <= available) return items.length
-  let count = items.length - 1
+// How many items fit in `available` pixels. Each width already includes its item's divider. When some do not fit, room is kept for the "more" button.
+function countFit(widths: number[], available: number): number {
+  const width = (count: number) => widths.slice(0, count).reduce((sum, value) => sum + value, 0)
+  if (width(widths.length) <= available) return widths.length
+  let count = widths.length - 1
   while (count > 0 && width(count) + MORE > available) count--
   return count
 }
@@ -54,7 +46,7 @@ export function OverflowBar({ items, align = 'end' }: { items: BarItem[]; align?
   useLayoutEffect(() => {
     const box = boxRef.current
     if (!box) return
-    const update = () => setFit(widths.length === items.length ? countFit(items, widths, box.clientWidth) : items.length)
+    const update = () => setFit(widths.length === items.length ? countFit(widths, box.clientWidth) : items.length)
     update()
     const observer = new ResizeObserver(update)
     observer.observe(box)
@@ -81,70 +73,111 @@ export function OverflowBar({ items, align = 'end' }: { items: BarItem[]; align?
     }
   }, [menuOpen])
 
-  // Focus moves into the menu when it opens.
-  useEffect(() => {
-    if (menuOpen) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus()
-  }, [menuOpen])
-
   const hidden = items.slice(fit)
+
+  // One item with the divider before it. The measuring copy and the visible row share this markup, so their widths match.
+  const renderItem = (item: BarItem, index: number, onClick: () => void) => (
+    <span key={item.key} className="overflow-item">
+      {index > 0 && items[index - 1].group !== item.group && <span className="toolbar-divider" aria-hidden="true" />}
+      <IconButton icon={item.icon} label={item.label} disabled={item.disabled} className={item.danger ? 'danger' : undefined} onClick={onClick} />
+    </span>
+  )
 
   return (
     <div className={`overflow-bar${align === 'end' ? ' end' : ''}`} ref={boxRef}>
-      {items.slice(0, fit).map((item, index) => (
+      <div className="overflow-probe" ref={probeRef} aria-hidden="true">
+        {items.map((item, index) => renderItem(item, index, () => undefined))}
+      </div>
+      <div className="overflow-row">
+        {items.slice(0, fit).map((item, index) => renderItem(item, index, item.onClick))}
+        {hidden.length > 0 && (
+          <div className="overflow-more" ref={menuRef}>
+            <button
+              ref={moreRef}
+              type="button"
+              className={`icon-button${menuOpen ? ' on' : ''}`}
+              aria-label="More actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              title="More actions"
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <Icon name="more" />
+            </button>
+            {menuOpen && (
+              <ActionMenu
+                className="overflow-menu"
+                items={hidden}
+                onPick={(item) => { setMenuOpen(false); moreRef.current?.focus(); item.onClick() }}
+                onDismiss={() => setMenuOpen(false)}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const ENABLED_ITEM = '[role="menuitem"]:not(:disabled)'
+
+// A popover of actions, with a divider between groups. Arrow keys, Home, and End move between enabled items.
+// With `at`, the menu opens at that point and is kept inside the window. Focus leaving the menu, by Tab or a click
+// elsewhere, dismisses it and keeps focus where it went.
+export function ActionMenu({ items, onPick, onDismiss, className, at }: {
+  items: BarItem[]
+  onPick: (item: BarItem) => void
+  onDismiss?: () => void
+  className?: string
+  at?: { x: number; y: number }
+}) {
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Focus goes to the first enabled item when the menu opens.
+  useEffect(() => {
+    rootRef.current?.querySelector<HTMLElement>(ENABLED_ITEM)?.focus()
+  }, [])
+
+  useLayoutEffect(() => {
+    const menu = rootRef.current
+    if (!at || !menu) return
+    menu.style.left = `${Math.max(0, Math.min(at.x, window.innerWidth - menu.offsetWidth))}px`
+    menu.style.top = `${Math.max(0, Math.min(at.y, window.innerHeight - menu.offsetHeight))}px`
+  }, [at])
+
+  return (
+    <div
+      ref={rootRef}
+      className={`popover${className ? ` ${className}` : ''}`}
+      role="menu"
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onDismiss?.() }}
+      onKeyDown={(event) => {
+        const menuItems = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(ENABLED_ITEM)]
+        const index = menuItems.indexOf(document.activeElement as HTMLButtonElement)
+        let next: number | undefined
+        if (event.key === 'ArrowDown') next = (index + 1) % menuItems.length
+        else if (event.key === 'ArrowUp') next = (index - 1 + menuItems.length) % menuItems.length
+        else if (event.key === 'Home') next = 0
+        else if (event.key === 'End') next = menuItems.length - 1
+        if (next === undefined) return
+        event.preventDefault()
+        menuItems[next]?.focus()
+      }}
+    >
+      {items.map((item, index) => (
         <Fragment key={item.key}>
-          {index > 0 && item.group !== items[index - 1].group && <span className="toolbar-divider" aria-hidden="true" />}
-          <IconButton icon={item.icon} label={item.label} disabled={item.disabled} className={item.danger ? 'danger' : undefined} onClick={item.onClick} />
+          {index > 0 && items[index - 1].group !== item.group && <div className="popover-sep" role="separator" />}
+          <button
+            role="menuitem"
+            className={item.danger ? 'danger' : undefined}
+            disabled={item.disabled}
+            onClick={() => onPick(item)}
+          >
+            <Icon name={item.icon} />
+            {item.label}
+          </button>
         </Fragment>
       ))}
-      {hidden.length > 0 && (
-        <div className="overflow-more" ref={menuRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuOpen(false) }}>
-          <button
-            ref={moreRef}
-            type="button"
-            className={`icon-button${menuOpen ? ' on' : ''}`}
-            aria-label="More actions"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            title="More actions"
-            onClick={() => setMenuOpen((open) => !open)}
-          >
-            <Icon name="more" />
-          </button>
-          {menuOpen && (
-            <div
-              className="popover overflow-menu"
-              role="menu"
-              onKeyDown={(event) => {
-                const menuItems = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')]
-                const index = menuItems.indexOf(document.activeElement as HTMLButtonElement)
-                let next: number | undefined
-                if (event.key === 'ArrowDown') next = (index + 1) % menuItems.length
-                else if (event.key === 'ArrowUp') next = (index - 1 + menuItems.length) % menuItems.length
-                else if (event.key === 'Home') next = 0
-                else if (event.key === 'End') next = menuItems.length - 1
-                if (next === undefined) return
-                event.preventDefault()
-                menuItems[next]?.focus()
-              }}
-            >
-              {hidden.map((item, index) => (
-                <Fragment key={item.key}>
-                  {index > 0 && hidden[index - 1].group !== item.group && <div className="popover-sep" role="separator" />}
-                  <button role="menuitem" className={item.danger ? 'danger' : undefined} disabled={item.disabled} onClick={() => { setMenuOpen(false); moreRef.current?.focus(); item.onClick() }}>
-                    <Icon name={item.icon} />
-                    {item.label}
-                  </button>
-                </Fragment>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="overflow-probe" ref={probeRef} aria-hidden="true">
-        {items.map((item) => (
-          <IconButton key={item.key} icon={item.icon} label={item.label} onClick={() => undefined} />
-        ))}
-      </div>
     </div>
   )
 }
