@@ -455,31 +455,40 @@ describe('conflict resolution on real Git merges', () => {
     expect(stagesOf(repo)).toEqual(stages)
   })
 
-  // Git runs a merge driver configured under the selected name before its built-in drivers, even for set and text.
-  for (const [selection, name] of [['attribute', 'fixture'], ['default', 'fixture'], ['attribute', 'set'], ['attribute', 'text'], ['default', 'set']] as const) {
+  // Git runs a merge driver configured under the selected name before its built-in drivers, even for set, text, and
+  // unspecified, the word check-attr also prints for an absent attribute.
+  for (const [selection, name] of [
+    ['attribute', 'fixture'], ['default', 'fixture'], ['attribute', 'set'], ['attribute', 'text'], ['attribute', 'unspecified'], ['default', 'set'],
+  ] as const) {
     test(`a custom merge driver named ${name} selected by ${selection} cannot appear clean or clear the unmerged index`, async () => {
       const repo = conflictRepo({
         base: 'old\n', ours: 'mine\n', theirs: 'yours\n',
-        plain: selection === 'attribute' ? { '.gitattributes': `doc.txt merge=${name}\n` } : {},
+        plain: { 'notes.txt': 'plain\n', ...(selection === 'attribute' ? { '.gitattributes': `doc.txt merge=${name}\n` } : {}) },
         config: { [`merge.${name}.driver`]: CANARY, ...(selection === 'default' ? { 'merge.default': name } : {}) },
       })
-      const before = text(repo)
+      const files = () => ['doc.txt', 'notes.txt', '.git/index', '.git/config'].map((file) => readFileSync(path.join(repo, file)))
+      const before = files()
       const stages = stagesOf(repo)
-      expect(before).toBe('mine\n')
+      expect(text(repo)).toBe('mine\n')
       expect(stages).toHaveLength(3)
       expect(driverRuns(repo)).toBe('ran\n')
       expect(await loadConflict(repo, 'doc.txt')).toMatchObject({ supported: false, message: expect.stringContaining('merge driver') })
       await expect(stagePaths(repo, ['doc.txt'])).rejects.toThrow('merge driver')
-      expect(text(repo)).toBe(before)
+      expect(files()).toEqual(before)
       expect(stagesOf(repo)).toEqual(stages)
       expect(driverRuns(repo)).toBe('ran\n')
     })
   }
 
-  // check-attr prints set for a bare merge attribute too, which runs Git's text driver, so a driver named set refuses it
-  // as well. With no such driver, or when neither the attribute nor merge.default names one, the file stays supported.
-  test("set and text keep Git's text merge unless a driver of that name could run", async () => {
-    for (const [attributes, driver, supported] of [['doc.txt merge\n', 'set', false], ['doc.txt merge=set\n', null, true], [null, 'text', true]] as const) {
+  // check-attr prints set for a bare merge attribute and unspecified for an absent one, the same words as merge=set and
+  // merge=unspecified, so a driver configured under either word refuses both, though Git runs its text driver for the
+  // bare and absent ones. Without such a driver, or when neither the attribute nor merge.default names one, the file
+  // stays supported.
+  test("set, text, and unspecified keep Git's text merge unless a driver of that name could run", async () => {
+    for (const [attributes, driver, supported] of [
+      ['doc.txt merge\n', 'set', false], [null, 'unspecified', false],
+      ['doc.txt merge=set\n', null, true], ['doc.txt merge=unspecified\n', null, true], [null, 'text', true], [null, null, true],
+    ] as const) {
       const repo = conflictRepo({
         base: 'old\n', ours: 'mine\n', theirs: 'yours\n',
         plain: attributes ? { '.gitattributes': attributes } : {},
@@ -493,7 +502,7 @@ describe('conflict resolution on real Git merges', () => {
       expect(text(repo)).toBe(before)
       expect(driverRuns(repo)).toBe('')
     }
-  })
+  }, 60_000)
 
   test('marker-looking text in an ordinary file is staged as written', async () => {
     const repo = conflictRepo({
