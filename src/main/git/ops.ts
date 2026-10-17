@@ -4,12 +4,19 @@ import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
 import { git, gitOk, gitRaw } from './exec'
 
-
 export interface Branch {
   name: string
+  fullRef: string
+  upstreamRef: string | null
   remote: boolean
   current: boolean
   upstream: string | null
+  hash: string
+}
+
+// Only identities returned by readBranches, or a displayed HEAD snapshot for creation, cross IPC.
+export interface BranchSelection {
+  fullRef: string
   hash: string
 }
 
@@ -79,22 +86,18 @@ export async function commit(repo: string, message: string, amend = false): Prom
 }
 
 export async function readBranches(repo: string): Promise<Branch[]> {
-  const format = '%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(objectname)%1f%(refname)'
+  const format = '%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(objectname)%1f%(refname)%1f%(upstream)%1f%(symref)'
   const output = await git(repo, ['for-each-ref', `--format=${format}`, 'refs/heads', 'refs/remotes'])
-  return output
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [name, head, upstream, hash, fullRef] = line.split('\x1f')
-      return {
-        name,
-        remote: fullRef.startsWith('refs/remotes/'),
-        current: head === '*',
-        upstream: upstream || null,
-        hash,
-      }
-    })
-    .filter((branch) => !branch.name.endsWith('/HEAD'))
+  return output.split('\n').filter(Boolean).flatMap((line) => {
+    const [, head, upstream, hash, fullRef, upstreamRef, symref] = line.split('\x1f')
+    const remote = fullRef.startsWith('refs/remotes/')
+    if (remote && symref) return []
+    return [{
+      // Strip the namespace, so ambiguous short-ref formatting never changes the displayed branch name.
+      name: fullRef.slice(remote ? 'refs/remotes/'.length : 'refs/heads/'.length),
+      fullRef, upstreamRef: upstreamRef || null, remote, current: head === '*', upstream: upstream || null, hash,
+    }]
+  })
 }
 
 export async function switchBranch(repo: string, name: string): Promise<void> {
