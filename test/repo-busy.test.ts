@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { IconButton } from '../src/renderer/src/Icons'
 import {
   applyRepoLockSnapshot, blockedReason, busyKey, connectRepoLocks, REPO_WORKING_LABELS, runRepoAction, runRepoWrite,
   subscribeRepoBusy, workingLabel, type RepoLockSnapshot,
@@ -139,6 +142,16 @@ test('every repo action key has a working label that ends in an ellipsis', () =>
   }
 })
 
+test('a busy IconButton keeps its label, sets aria-busy, and swaps in the spinner', () => {
+  const busy = renderToStaticMarkup(createElement(IconButton, { icon: 'push', label: 'Pushing…', busy: true, onClick: noop }))
+  expect(busy).toContain('aria-label="Pushing…"')
+  expect(busy).toContain('aria-busy="true"')
+  expect(busy).toContain('action-spin')
+
+  const idle = renderToStaticMarkup(createElement(IconButton, { icon: 'push', label: 'Push', onClick: noop }))
+  expect(idle).not.toContain('aria-busy')
+  expect(idle).not.toContain('action-spin')
+})
 
 
 test('an alias displays canonical background busy state and ignores an older identity map', async () => {

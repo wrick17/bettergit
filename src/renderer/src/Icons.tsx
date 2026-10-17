@@ -3,13 +3,15 @@ import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, Columns2, Columns3,
   CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, GitBranch, GitCompare,
-  GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
+  GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
   PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Search, Settings, Shuffle, Tag, Trash2, Undo2, UnfoldVertical, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
 const ICONS = {
   refresh: RefreshCw,
+  // Replaces an action's glyph while that action runs.
+  loader: LoaderCircle,
   push: ArrowUpFromLine,
   stash: Archive,
   undo: Undo2,
@@ -85,32 +87,40 @@ function Tooltip({ anchor, label }: { anchor: HTMLElement; label: string }) {
 }
 
 // An icon-only button. The label is both the accessible name and the hover or keyboard-focus tooltip.
-export function IconButton({ icon, label, onClick, active, disabled, className, tabIndex }: {
+// While `busy`, the glyph becomes a spinner and aria-busy is set. The label should then say what runs.
+// `blocked` gives the reason a control cannot run now. It stays focusable and hoverable, so the reason shows as a tooltip.
+export function IconButton({ icon, label, onClick, active, disabled, busy, blocked, className, tabIndex }: {
   icon: IconName
   label: string
   onClick: () => void
   active?: boolean
   disabled?: boolean
+  busy?: boolean
+  blocked?: string
   className?: string
   tabIndex?: number
 }) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null)
+  const inert = !!busy || !!blocked
+  const tip = blocked ? `${label}. ${blocked}` : label
   return (
     <button
       type="button"
-      className={`icon-button${active ? ' on' : ''}${className ? ` ${className}` : ''}`}
+      className={`icon-button${active ? ' on' : ''}${busy ? ' busy' : ''}${blocked ? ' blocked' : ''}${className ? ` ${className}` : ''}`}
       aria-label={label}
       aria-pressed={active === undefined ? undefined : active}
+      aria-busy={busy || undefined}
+      aria-disabled={inert || undefined}
       disabled={disabled}
       tabIndex={tabIndex}
-      onClick={onClick}
+      onClick={inert ? undefined : onClick}
       onPointerEnter={(event) => setAnchor(event.currentTarget)}
       onPointerLeave={() => setAnchor(null)}
       onFocus={(event) => { if (event.currentTarget.matches(':focus-visible')) setAnchor(event.currentTarget) }}
       onBlur={() => setAnchor(null)}
     >
-      <Icon name={icon} />
-      {anchor && <Tooltip anchor={anchor} label={label} />}
+      <Icon name={busy ? 'loader' : icon} className={busy ? 'action-spin' : undefined} />
+      {anchor && <Tooltip anchor={anchor} label={tip} />}
     </button>
   )
 }

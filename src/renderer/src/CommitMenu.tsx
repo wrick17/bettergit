@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Commit } from '../../main/git/history'
 import type { BarItem } from './OverflowBar'
 import { PromptDialog } from './PromptDialog'
+import { blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
 
 const api = window.bettergit
 
@@ -23,23 +24,12 @@ export interface CommitInput {
   onError: (error: unknown) => void
 }
 
-// The caller owns the prompt, notice, and pending state, because it renders the dialogs and the notice.
+// The caller owns the prompt and notice, because it renders the dialogs and the notice.
 export interface CommitUi {
   setPrompt: (prompt: Prompt) => void
   setNotice: (notice: string) => void
-  // The key of the running state change, or null. While one runs, the other state changes are disabled.
+  // The write running in this repo, or null. The state changes wait for it, and the read-only items do not.
   pending: string | null
-  setPending: (key: string | null) => void
-}
-
-// The label each state change shows while it runs.
-const WORKING: Record<string, string> = {
-  detach: 'Checking out…',
-  branch: 'Creating branch…',
-  tag: 'Creating tag…',
-  cherry: 'Cherry-picking…',
-  revert: 'Reverting…',
-  amend: 'Amending…',
 }
 
 // Turns a git remote into the https base of its web page. Covers git@host:owner/repo and https://host/owner/repo.
@@ -49,19 +39,22 @@ export function remoteWebBase(remotes: { name: string; url: string }[]): string 
   return match ? `https://${match[1]}/${match[2]}` : null
 }
 
-// Git changes the repository, so the parent reloads. Failures go to the error banner. `key` stays pending until both finish.
-function runGit({ onChanged, onError }: CommitInput, setPending: (key: string | null) => void, key: string, action: () => Promise<unknown>) {
-  setPending(key)
-  return action().then(() => onChanged?.()).catch(onError).finally(() => setPending(null))
+// Git changes the repository, so the parent reloads after a successful write. Failures go to the error banner.
+function runGit({ repo, onChanged, onError }: CommitInput, key: string, action: () => Promise<unknown>) {
+  return runRepoWrite(repo, key, action, { onError, reload: () => onChanged?.() })
 }
 
 export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   const { repo, commit, message, head, upstream, webBase, onOpenChanges, onCompare, onError } = input
   const { hash, subject } = commit
   const { pending } = ui
-  const shown = (key: string, label: string) => (pending === key ? WORKING[key] : label)
+  // The running state change shows its working label and spinner. The others wait for it and say why.
+  const state = (key: string, label: string) => {
+    const running = pending === key
+    return { label: running ? REPO_WORKING_LABELS[key] : label, busy: running, blocked: pending !== null && !running ? blockedReason(pending) : undefined }
+  }
 
-  const run = (key: string, action: () => Promise<unknown>) => runGit(input, ui.setPending, key, action)
+  const run = (key: string, action: () => Promise<unknown>) => runGit(input, key, action)
   const copy = (text: string) => navigator.clipboard.writeText(text).catch(onError)
   const openRemote = () => api.openExternal(`${webBase}/commit/${hash}`).catch(onError)
   const compareRemote = () => { if (upstream) onCompare(upstream, upstream) }
@@ -83,24 +76,30 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
     { key: 'compareBase', icon: 'mergeBase', label: 'Compare with Merge Base', disabled: !head, group: 'compare', onClick: compareBase },
     { key: 'compareRef', icon: 'compareRef', label: 'Compare with Ref…', group: 'compare', onClick: () => ui.setPrompt('ref') },
     // State changes come last and are rare, so the "…" menu takes them first when the bar is narrow.
-    { key: 'detach', icon: 'locate', label: shown('detach', 'Checkout Detached'), disabled: !!pending, group: 'checkout', onClick: () => run('detach', () => api.checkoutDetached(repo, hash)) },
-    { key: 'branch', icon: 'branch', label: shown('branch', 'Create Branch from Commit…'), disabled: !!pending, group: 'checkout', onClick: () => ui.setPrompt('branch') },
-    { key: 'tag', icon: 'tag', label: shown('tag', 'Create Tag from Commit…'), disabled: !!pending, group: 'checkout', onClick: () => ui.setPrompt('tag') },
-    { key: 'cherry', icon: 'cherry', label: shown('cherry', 'Cherry Pick'), disabled: !!pending, group: 'change', onClick: cherryPick },
-    { key: 'revert', icon: 'undo', label: shown('revert', 'Revert Commit…'), disabled: !!pending, group: 'change', onClick: revert },
-    { key: 'amend', icon: 'edit', label: shown('amend', 'Amend Commit Message…'), disabled: !!pending || hash !== head, group: 'change', onClick: () => ui.setPrompt('amend') },
+    { key: 'detach', icon: 'locate', ...state('detach', 'Checkout Detached'), group: 'checkout', onClick: () => run('detach', () => api.checkoutDetached(repo, hash)) },
+    { key: 'branch', icon: 'branch', ...state('branch', 'Create Branch from Commit…'), group: 'checkout', onClick: () => ui.setPrompt('branch') },
+    { key: 'tag', icon: 'tag', ...state('tag', 'Create Tag from Commit…'), group: 'checkout', onClick: () => ui.setPrompt('tag') },
+    { key: 'cherry', icon: 'cherry', ...state('cherry', 'Cherry Pick'), group: 'change', onClick: cherryPick },
+    { key: 'revert', icon: 'undo', ...state('revert', 'Revert Commit…'), group: 'change', onClick: revert },
+    { key: 'amend', icon: 'edit', ...state('amend', 'Amend Commit Message…'), disabled: hash !== head, group: 'change', onClick: () => ui.setPrompt('amend') },
   ]
 }
 
-export function CommitDialogs({ input, prompt, onClose, setPending }: {
+export function CommitDialogs({ input, prompt, onClose }: {
   input: CommitInput
   prompt: Prompt | null
   onClose: () => void
-  setPending: (key: string | null) => void
 }) {
-  const { repo, commit, message, upstream, onCompare } = input
+  const { repo, commit, message, upstream, onCompare, onError } = input
   const { hash, subject } = commit
   const short = hash.slice(0, 7)
+  // The dialog closes only when its write can start, so a refused submit keeps the typed text and says why.
+  const submit = (key: string, action: () => Promise<unknown>) => {
+    const reason = blockedReason(busyKey(repo))
+    if (reason) return onError(new Error(reason))
+    onClose()
+    void runGit(input, key, action)
+  }
   // Keyed to the commit it checked, so a reply for an earlier commit is never shown for this one.
   const [check, setCheck] = useState<{ hash: string; state: PushCheck }>({ hash, state: 'checking' })
   const checkState = check.hash === hash ? check.state : 'checking'
@@ -130,7 +129,7 @@ export function CommitDialogs({ input, prompt, onClose, setPending }: {
           label="Branch name"
           submitLabel="Create"
           onClose={onClose}
-          onSubmit={(name) => { onClose(); runGit(input, setPending, 'branch', () => api.branchFromCommit(repo, name, hash)) }}
+          onSubmit={(name) => submit('branch', () => api.branchFromCommit(repo, name, hash))}
         />
       )}
       {prompt === 'tag' && (
@@ -139,7 +138,7 @@ export function CommitDialogs({ input, prompt, onClose, setPending }: {
           label="Tag name"
           submitLabel="Create"
           onClose={onClose}
-          onSubmit={(name) => { onClose(); runGit(input, setPending, 'tag', () => api.tagFromCommit(repo, name, hash)) }}
+          onSubmit={(name) => submit('tag', () => api.tagFromCommit(repo, name, hash))}
         />
       )}
       {prompt === 'amend' && (
@@ -158,7 +157,7 @@ export function CommitDialogs({ input, prompt, onClose, setPending }: {
           )}
           submitLabel="Amend commit"
           onClose={onClose}
-          onSubmit={(text) => { onClose(); runGit(input, setPending, 'amend', () => api.amendMessage(repo, text, hash)) }}
+          onSubmit={(text) => submit('amend', () => api.amendMessage(repo, text, hash))}
         />
       )}
       {prompt === 'ref' && (

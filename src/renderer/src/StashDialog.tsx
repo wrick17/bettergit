@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import type { Stash } from '../../main/git/ops'
 import type { Run } from './RepoMenu'
 import { useDialogFocus } from './Dialogs'
+import { Icon } from './Icons'
+import { REPO_WORKING_LABELS, useRepoBusy } from './repo-busy'
 
 const api = window.bettergit
 
@@ -22,21 +24,15 @@ export function StashDialog({ repo, mode, run, onError, onClose }: {
   onClose: () => void
 }) {
   const [stashes, setStashes] = useState<Stash[] | null>(null)
-  const [pending, setPending] = useState(false)
+  const busy = useRepoBusy(repo)
 
   useEffect(() => {
     api.stashes(repo).then(setStashes).catch(onError)
   }, [repo])
 
-  // The list is read once on open, so each button passes the ref it was listed with.
+  // The list is read once on open, so each button passes the ref it was listed with. The dialog closes only on success.
   const act = async (ref: string) => {
-    if (pending) return
-    setPending(true)
-    try {
-      if (await run(mode, () => api.stashAction(repo, mode, ref))) onClose()
-    } finally {
-      setPending(false)
-    }
+    if (await run(`${mode}:${ref}`, () => api.stashAction(repo, mode, ref))) onClose()
   }
 
   return (
@@ -51,9 +47,16 @@ export function StashDialog({ repo, mode, run, onError, onClose }: {
         {stashes?.map((stash) => (
           <li key={stash.ref}>
             <span title={stash.message}><b>{stash.ref}</b> {stash.message}</span>
-            {mode !== 'view' && (
-              <button type="button" aria-label={`${mode === 'apply' ? 'Apply' : 'Pop'} ${stash.ref}: ${stash.message}`} disabled={pending} onClick={() => void act(stash.ref)}>{mode === 'apply' ? 'Apply' : 'Pop'}</button>
-            )}
+            {mode !== 'view' && (() => {
+              const key = `${mode}:${stash.ref}`
+              const running = busy === key
+              return (
+                <button type="button" aria-label={`${mode === 'apply' ? 'Apply' : 'Pop'} ${stash.ref}: ${stash.message}`} aria-busy={running || undefined} disabled={busy !== null} onClick={() => void act(stash.ref)}>
+                  {running && <Icon name="loader" className="action-spin" />}
+                  {running ? REPO_WORKING_LABELS[mode] : mode === 'apply' ? 'Apply' : 'Pop'}
+                </button>
+              )
+            })()}
           </li>
         ))}
       </ul>
@@ -71,7 +74,7 @@ export function PullFromDialog({ repo, branch, run, onError, onClose }: {
   const [remotes, setRemotes] = useState<string[]>([])
   const [remote, setRemote] = useState('')
   const [name, setName] = useState(branch)
-  const [pending, setPending] = useState(false)
+  const busy = useRepoBusy(repo)
   // A typed branch name survives a stray Escape or scrim click until the user confirms discarding it.
   const requestClose = () => { if (name === branch || window.confirm('Discard this pull?')) onClose() }
 
@@ -84,13 +87,7 @@ export function PullFromDialog({ repo, branch, run, onError, onClose }: {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (pending) return
-    setPending(true)
-    try {
-      if (await run('pull', () => api.pullFrom(repo, remote, name.trim()))) onClose()
-    } finally {
-      setPending(false)
-    }
+    if (await run('pull', () => api.pullFrom(repo, remote, name.trim()))) onClose()
   }
 
   return (
@@ -101,7 +98,10 @@ export function PullFromDialog({ repo, branch, run, onError, onClose }: {
       footer={(
         <>
           <button type="button" className="ghost" onClick={requestClose}>Cancel</button>
-          <button type="submit" form="pull-from" className="primary" disabled={pending || !remote || !name.trim()}>Pull</button>
+          <button type="submit" form="pull-from" className="primary" disabled={busy !== null || !remote || !name.trim()} aria-busy={busy === 'pull' || undefined}>
+            {busy === 'pull' && <Icon name="loader" className="action-spin" />}
+            {busy === 'pull' ? REPO_WORKING_LABELS.pull : 'Pull'}
+          </button>
         </>
       )}
     >
