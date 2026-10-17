@@ -301,18 +301,23 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 .toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-pill); }
 
-.tabs { display: flex; align-items: stretch; gap: 22px; height: 40px; padding: 0 20px; flex: none; }
+/* The selected tab shares the list's fill and open bottom edge. Folded lists keep a detached tab. */
+.tabs { display: flex; align-items: stretch; gap: 4px; height: 40px; padding: 0 12px; flex: none; }
 .tabs button {
-  position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0;
-  background: transparent; box-shadow: none; border-radius: 0; color: var(--text-3); font-weight: 500; font-size: 14px;
+  position: relative; display: inline-flex; align-items: center; gap: 6px; margin: 4px 0; padding: 0 12px;
+  background: transparent; box-shadow: none; border-radius: var(--panel-radius); color: var(--text-3); font-weight: 500; font-size: 14px;
 }
-.tabs button:hover:not(:disabled) { background: transparent; color: var(--text-2); }
-.tabs button[aria-selected='true'] { color: var(--text); font-weight: 600; }
-.tabs button::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 2px;
-  background: var(--accent); transform: scaleX(0); transition: transform 220ms var(--ease);
+.tabs button:hover:not(:disabled) { background: var(--hover); color: var(--text-2); }
+.tabs button[aria-selected='true'] { background: var(--glass-chip); color: var(--text); font-weight: 600; }
+.tabs button:active:not(:disabled) { transform: none; color: var(--accent); }
+.pane:has(> [role='tabpanel'] > :is(.changes, .history) > :is(.file-list, .history-list):not(.folded)) .tabs button[aria-selected='true'] {
+  margin-bottom: 0; border-radius: var(--panel-radius) var(--panel-radius) 0 0; background: var(--list);
+  box-shadow: inset 0 1px 0 var(--glass-edge), inset 0.5px 0 0 var(--glass-outline), inset -0.5px 0 0 var(--glass-outline);
 }
-.tabs button[aria-selected='true']::after { transform: scaleX(1); }
+/* Leave the list's top edge open so no rim separates it from the selected tab. */
+.changes > .file-list:not(.folded), .history > .history-list:not(.folded) {
+  box-shadow: inset 0.5px 0 0 var(--glass-outline), inset -0.5px 0 0 var(--glass-outline), inset 0 -0.5px 0 var(--glass-outline), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
 .tab-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-2); font-size: 12px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 
 /* Empty pane: one mark, one line of guidance, two obvious next steps. */
