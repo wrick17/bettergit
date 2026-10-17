@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
@@ -100,6 +100,32 @@ describe('operations', () => {
     await stagePaths(dir, ['new.ts'])
     await commit(dir, 'feat: add new file\n\nBody text')
     expect((await readHistory(dir, 0, 1))[0].subject).toBe('feat: add new file')
+  })
+
+  test('unstaging a staged rename restores its original path literally and leaves other staged files', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-rename-'))
+    try {
+      await git(dir, ['init', '-q'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      // The original name is also a glob matching a.txt, whose staged edit must stay staged.
+      writeFileSync(path.join(dir, '[ab].txt'), 'renamed content\n')
+      writeFileSync(path.join(dir, 'a.txt'), 'base\n')
+      await git(dir, ['add', '-A'])
+      await git(dir, ['commit', '-qm', 'base'])
+      writeFileSync(path.join(dir, 'a.txt'), 'staged edit\n')
+      await git(dir, ['add', '--', 'a.txt'])
+      await git(dir, ['mv', '[ab].txt', 'new.txt'])
+      expect((await readStatus(dir)).changes).toContainEqual(expect.objectContaining({ path: 'new.txt', originalPath: '[ab].txt', kind: 'renamed', staged: true }))
+      const mode = statSync(path.join(dir, 'new.txt')).mode
+      await unstagePaths(dir, ['new.txt'], true)
+      expect((await git(dir, ['diff', '--cached', '--name-status'])).trim()).toBe('M\ta.txt')
+      expect(readFileSync(path.join(dir, 'new.txt'), 'utf8')).toBe('renamed content\n')
+      expect(statSync(path.join(dir, 'new.txt')).mode).toBe(mode)
+      expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('staged edit\n')
+    } finally {
+      cleanup(dir)
+    }
   })
 
   test('lists branches with upstreams and stashes with messages', async () => {
