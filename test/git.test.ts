@@ -708,6 +708,43 @@ describe('branch picker operations with real Git', () => {
     expect((await readBranches(dir)).some((entry) => entry.name === 'mine')).toBe(false)
   })
 
+  test('tracking creation is refused before writing when the remote fetch mapping depends on an include that can change with the branch', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const write = (file: string, text: string) => writeFileSync(path.join(gitDir, file), text)
+    // Another remote's settings in such an include do not block tracking through origin.
+    write('other-remote.config', `[remote "other"]\n\turl = ${dir}\n\tfetch = +refs/heads/*:refs/remotes/other/*\n`)
+    await git(dir, ['config', 'includeIf.onbranch:main.path', 'other-remote.config'])
+    await switchBranch(dir, await select(dir, 'refs/remotes/origin/topic'))
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'topic', upstreamRef: 'refs/remotes/origin/topic' })
+    await git(dir, ['switch', 'main'])
+    // Origin's mapping only applies while main is checked out.
+    await git(dir, ['config', '--unset-all', 'remote.origin.fetch'])
+    write('main-remote.config', '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n')
+    await git(dir, ['config', '--add', 'includeIf.onbranch:main.path', 'main-remote.config'])
+    await git(dir, ['update-ref', 'refs/remotes/origin/later', tip])
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2']), readFileSync(path.join(gitDir, 'config'), 'utf8'),
+    ]
+    const before = await snapshot()
+    const later = await select(dir, 'refs/remotes/origin/later')
+    await expect(switchBranch(dir, later)).rejects.toThrow('remote.origin.fetch')
+    expect(await snapshot()).toEqual(before)
+    // Git itself creates the branch, but its upstream stops resolving once main is no longer checked out.
+    await git(dir, ['switch', '-q', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', 'later', later.fullRef, '--'])
+    await expect(git(dir, ['rev-parse', '--symbolic-full-name', 'later@{upstream}'])).rejects.toThrow('upstream')
+    // Back on main the mapping applies again, so the existing tracker is reused, and creation without tracking still works.
+    await git(dir, ['switch', 'main'])
+    await switchBranch(dir, later)
+    expect((await readStatus(dir)).head).toBe('later')
+    await git(dir, ['switch', 'main'])
+    await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+    await branchFromCommit(dir, 'from-commit', tip)
+    expect((await readBranches(dir)).find((entry) => entry.name === 'from-commit')).toMatchObject({ hash: tip, upstreamRef: null })
+  })
+
   const invalidIncludes: Record<string, Record<string, string>> = {
     // Each pass of this self-include grows its path until Git fails on an 11th nested include.
     loop: { 'loop.config': '[include]\n\tpath = ./loop.config\n' },

@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
@@ -39,7 +39,7 @@ export async function stagePaths(repo: string, paths: string[]): Promise<void> {
   if (!paths.length) return
   for (const file of await unmergedPaths(repo, paths)) {
     await assertSupportedConflictFormat(repo, file)
-    if (await hasUnresolvedMarkers(path.join(repo, file))) {
+    if (await hasUnresolvedMarkers(repo, file)) {
       throw new Error(`${file} still has conflict markers. Resolve the conflict before staging it.`)
     }
   }
@@ -57,14 +57,26 @@ async function unmergedPaths(repo: string, paths: string[]): Promise<string[]> {
   return [...new Set(files)]
 }
 
+// The conflict loader's limit. Staging reads a file only this far, so a huge file is never buffered whole.
+const MAX_MARKER_SCAN = 2 * 1024 * 1024
+
 // A file counts as unresolved when its text parses into conflict blocks, or holds a marker that cannot be parsed.
-// Binary files are not checked here, and the resolver reports them as unsupported.
-async function hasUnresolvedMarkers(file: string): Promise<boolean> {
-  const info = await fs.lstat(file).catch(() => null)
+// Binary files, found by a NUL byte in the part read, are not checked here, and the resolver reports them as
+// unsupported. Text past the limit is refused, never taken as resolved.
+async function hasUnresolvedMarkers(repo: string, file: string): Promise<boolean> {
+  const full = path.join(repo, file)
+  const info = await fs.lstat(full).catch(() => null)
   if (!info?.isFile()) return false
-  const bytes = await fs.readFile(file)
-  if (bytes.includes(0)) return false
-  const parsed = parseConflicts(new TextDecoder('utf-8').decode(bytes))
+  const chunks: Buffer[] = []
+  let size = 0
+  // end is inclusive, so the read stops one byte past the limit, even for a file that grew after lstat.
+  for await (const chunk of createReadStream(full, { end: MAX_MARKER_SCAN })) {
+    if (chunk.includes(0)) return false
+    chunks.push(chunk)
+    size += chunk.length
+  }
+  if (size > MAX_MARKER_SCAN) throw new Error(`${file} is too large to check for conflict markers. Stage it outside BetterGit.`)
+  const parsed = parseConflicts(new TextDecoder('utf-8').decode(Buffer.concat(chunks)))
   return parsed.ok ? conflictBlocks(parsed.parts).length > 0 : true
 }
 
@@ -133,7 +145,7 @@ async function switchLocal(repo: string, branch: Branch): Promise<void> {
 }
 
 // A remote ref can be mapped by more than one configured remote/refspec. Never let Git guess the source.
-async function trackingName(repo: string, fullRef: string): Promise<string> {
+async function trackingName(repo: string, fullRef: string): Promise<{ name: string; remote: string }> {
   const mappings: { name: string; source: string }[] = []
   const match = (pattern: string, value: string): string | null => {
     const parts = pattern.split('*')
@@ -156,16 +168,16 @@ async function trackingName(repo: string, fullRef: string): Promise<string> {
     }
   }
   if (mappings.length !== 1) throw new Error('Ambiguous or unsupported remote fetch mapping. Select a local branch instead.')
-  return mappings[0].source.slice('refs/heads/'.length)
+  return { name: mappings[0].source.slice('refs/heads/'.length), remote: mappings[0].name }
 }
 
-async function assertNewBranch(repo: string, name: string, branches: Branch[]): Promise<void> {
+async function assertNewBranch(repo: string, name: string, branches: Branch[], remote?: string): Promise<void> {
   await assertBranchName(repo, name)
   const fullRef = `refs/heads/${name}`
   const collision = branches.find((branch) => !branch.remote && (branch.fullRef === fullRef
     || branch.fullRef.startsWith(fullRef + '/') || fullRef.startsWith(branch.fullRef + '/')))
   if (collision) throw new Error(`Branch already exists or name conflicts with ${collision.name}. Choose another name.`)
-  await assertNoUpstreamConfig(repo, name)
+  await assertNoUpstreamConfig(repo, name, remote)
 }
 
 // Git keeps branch.<name>.remote/merge after a branch ref vanishes (unborn or externally deleted)
@@ -174,7 +186,8 @@ async function assertNewBranch(repo: string, name: string, branches: Branch[]): 
 // evaluate them for that state ahead of time. So every reachable include file is read on its own and checked too,
 // whatever its condition, except behind a gitdir include that does not apply to this repository. An include that Git
 // would fail on once it applies is refused as well, since the switch would already have written the branch and HEAD by then.
-async function assertNoUpstreamConfig(repo: string, name: string): Promise<void> {
+// A new branch that tracks through a remote also needs that remote's URL and fetch mapping to stay the same after the switch.
+async function assertNoUpstreamConfig(repo: string, name: string, remote?: string): Promise<void> {
   const unchecked = (reason: string) => new Error(`Could not read the Git config to check upstream settings for ${name}: ${reason}`)
   // A silent exit 1 is an absent key, no match or a missing include file. Git also exits 1 for a file it cannot
   // open, but with a warning, so that and anything else fails closed.
@@ -210,6 +223,12 @@ async function assertNoUpstreamConfig(repo: string, name: string): Promise<void>
     for (const key of inert ? [] : [`branch.${name}.remote`, `branch.${name}.merge`]) {
       if ((await read([...args, '--get-all', key])) !== null) {
         throw new Error(`Branch ${name} could inherit upstream settings (${key}) from the Git config. Choose another name, or remove those settings first.`)
+      }
+    }
+    // Conditions are not evaluated, so any includeIf file Git could read may add, remove or reorder them once the branch changes.
+    for (const key of remote && conditional && !inert ? [`remote.${remote}.url`, `remote.${remote}.fetch`] : []) {
+      if ((await read([...args, '--get-all', key])) !== null) {
+        throw new Error(`Remote ${remote} has settings (${key}) in a Git config file reached through includeIf, so tracking could break once ${name} is checked out. Move them to the repository config first.`)
       }
     }
     if (conditional && !inert && (await read([...args, '--name-only', '--get-regexp', '^remote\\..*\\.url$'])) !== null) conditionalUrl = true
@@ -253,11 +272,11 @@ export async function switchBranch(repo: string, selection: BranchSelection): Pr
   const branches = await readBranches(repo)
   const branch = selectedBranch(branches, selection)
   if (!branch.remote) return switchLocal(repo, branch)
-  const name = await trackingName(repo, branch.fullRef)
+  const { name, remote } = await trackingName(repo, branch.fullRef)
   const tracking = branches.filter((entry) => !entry.remote && entry.upstreamRef === branch.fullRef)
   if (tracking.length > 1) throw new Error(`Multiple local branches track ${branch.name}: ${tracking.map((entry) => entry.name).join(', ')}. Select a local branch explicitly.`)
   if (tracking.length === 1) return switchLocal(repo, tracking[0])
-  await assertNewBranch(repo, name, branches)
+  await assertNewBranch(repo, name, branches, remote)
   await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', name, branch.fullRef, '--'])
 }
 

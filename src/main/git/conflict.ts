@@ -4,9 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   applyChoices, BASE_REASON_TEXT, conflictBlocks, DEFAULT_MARKER_SIZE, fromMergeOutput, matchBasesAcrossRuns, MAX_CONFLICT_BLOCKS, parseConflicts,
-  splitTokens, toMergeInput,
+  splitTokens, toMergeInput, withStageEnds,
   type BaseReason, type Combine, type ConflictBlock, type ConflictDocument, type ConflictFingerprint, type ConflictPreview,
-  type ConflictSave, type ConflictSaved, type StageBlock,
+  type ConflictSave, type ConflictSaved, type Part, type StageBlock,
 } from '../../shared/conflict'
 import { gitRaw } from './exec'
 
@@ -270,6 +270,22 @@ async function combineStates(repo: string, snapshot: Snapshot, blocks: ConflictB
   return states
 }
 
+// One stage as text, or null when git cannot give it as a blob within the size limit, or it is not text.
+async function stageText(repo: string, sha: string): Promise<string | null> {
+  const size = await gitRaw(repo, ['cat-file', '-s', sha])
+  if (size.code !== 0 || Number(size.stdout.toString('utf8')) > MAX_BYTES) return null
+  const blob = await gitRaw(repo, ['cat-file', 'blob', sha])
+  return blob.code === 0 ? decodeText(blob.stdout) : null
+}
+
+// The parts, with the block that ends the file marked from stages 2 and 3, ours and theirs. The stages are in the
+// fingerprint, so a save reads the same stage ends as the load it was reviewed from.
+async function withStageEndsOf(repo: string, stages: Map<number, StageEntry>, parts: Part[]): Promise<Part[]> {
+  if (parts.at(-1)?.kind !== 'conflict') return parts
+  const [ours, theirs] = await Promise.all([2, 3].map((stage) => stageText(repo, stages.get(stage)!.sha)))
+  return withStageEnds(parts, ours, theirs)
+}
+
 // What the UI shows for one file: its parts with combine states, or the reason it cannot be resolved here.
 export async function loadConflict(repo: string, relPath: string): Promise<ConflictDocument> {
   try {
@@ -278,7 +294,8 @@ export async function loadConflict(repo: string, relPath: string): Promise<Confl
     if (!parsed.ok) return { supported: false, message: parsed.failure.message }
     const blocks = conflictBlocks(parsed.parts)
     if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS }
-    return { supported: true, fingerprint: snapshot.fingerprint, parts: parsed.parts, combine: await combineStates(repo, snapshot, blocks) }
+    const parts = await withStageEndsOf(repo, snapshot.stages, parsed.parts)
+    return { supported: true, fingerprint: snapshot.fingerprint, parts, combine: await combineStates(repo, snapshot, blocks) }
   } catch (error) {
     if (error instanceof ConflictRefusal) return { supported: false, message: error.message }
     throw error
@@ -295,7 +312,7 @@ async function resolve(repo: string, relPath: string, save: ConflictSave): Promi
   if (blocks.length > MAX_CONFLICT_BLOCKS) throw new ConflictRefusal(TOO_MANY_CONFLICTS)
   if (save.choices.length !== blocks.length) throw new ConflictRefusal('The choices no longer match the conflicts in this file. Reload the conflict.')
   const combine = save.choices.includes('combine') ? await combineStates(repo, snapshot, blocks) : []
-  const applied = applyChoices(parsed.parts, save.choices, combine)
+  const applied = applyChoices(await withStageEndsOf(repo, snapshot.stages, parsed.parts), save.choices, combine)
   if (!applied.ok) throw new ConflictRefusal(applied.reason)
   if (Buffer.byteLength(applied.text, 'utf8') > MAX_BYTES) throw new ConflictRefusal(TOO_LARGE)
   return { snapshot, text: applied.text, unresolved: applied.unresolved }
