@@ -27,6 +27,10 @@ export interface ConflictBlock {
   incoming: string
   currentLabel: string
   incomingLabel: string
+  // Characters Git added after each side's last line only so the next marker starts a line. Git writes the same markers
+  // whether or not a side's version ends with a newline, so the parser never sets this. withStageEnds sets it from the
+  // index stages, on the block that ends the file. Absent means none.
+  addedNewline?: { current: number; incoming: number }
 }
 
 export type Part = TextPart | ConflictBlock
@@ -226,10 +230,39 @@ export function applyChoices(parts: readonly Part[], choices: readonly Choice[],
     if (replacement === null) {
       return { ok: false, index: part.index, reason: `Conflict ${part.index + 1} cannot be combined. Choose another resolution.` }
     }
-    // A closing marker with no terminator ends the file. The result then ends without one too.
-    text += part.markers.close.endsWith('\n') ? replacement : replacement.replace(/\r?\n$/, '')
+    text += endOfChoice(part, choice, replacement)
   }
   return { ok: true, text, unresolved }
+}
+
+// The end of a chosen block's replacement. A closing marker with no terminator ends the file, so the replacement ends
+// without one too. Otherwise it drops the newline Git added after the side that ends it: incoming ends both unless it is
+// empty, and a combination ends with both sides, so it drops only a newline both added. Only a newline is ever dropped.
+export function endOfChoice(block: ConflictBlock, choice: ChoiceKind, text: string): string {
+  if (!block.markers.close.endsWith('\n')) return text.replace(/\r?\n$/, '')
+  const added = block.addedNewline ?? { current: 0, incoming: 0 }
+  const count = choice === 'current' || (choice === 'both' && block.incoming === '') ? added.current
+    : choice === 'combine' ? (added.current === added.incoming ? added.current : 0)
+    : added.incoming
+  return count > 0 && ['\n', '\r\n'].includes(text.slice(-count)) ? text.slice(0, -count) : text
+}
+
+// Marks the block that ends the file with the newline Git added to each side, read against that side's index stage:
+// ours for current, theirs for incoming. A side is marked only when its stage ends without a newline and the side ends
+// with that same last line plus one newline, so a side edited after the merge keeps its text. A null stage, one Git
+// could not give, marks nothing.
+export function withStageEnds(parts: Part[], ours: string | null, theirs: string | null): Part[] {
+  const last = parts.at(-1)
+  if (last?.kind !== 'conflict' || !last.markers.close.endsWith('\n')) return parts
+  const added = { current: addedAfter(last.current, ours), incoming: addedAfter(last.incoming, theirs) }
+  return added.current || added.incoming ? [...parts.slice(0, -1), { ...last, addedNewline: added }] : parts
+}
+
+function addedAfter(side: string, stage: string | null): number {
+  if (stage === null) return 0
+  const line = stage.slice(stage.lastIndexOf('\n') + 1)
+  if (line === '') return 0
+  return ['\r\n', '\n'].find((end) => side === line + end || side.endsWith(`\n${line}${end}`))?.length ?? 0
 }
 
 function replacementFor(block: ConflictBlock, choice: ChoiceKind, combine: Combine | undefined): string | null {
