@@ -80,21 +80,35 @@ export function rememberScroll(id: string, key: string, top: number) {
 window.addEventListener('pagehide', flushScroll)
 
 // Returns a scroll container to its saved position once it shows ready content with the key the position was saved for.
-// Each element restores once, so a pane or diff that mounts later (a pane shown again, or a new commit) restores too.
+// Each element restores once per id and key, so a pane that mounts later (a pane shown again, or a new commit) restores too,
+// and so does a pane that stays mounted while its key changes. With no saved position, the fallback runs instead.
 // Returns the scroll handler to put on the container.
-export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, key: string, ready: boolean) {
-  const restoredFor = useRef<HTMLElement | null>(null)
+export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, key: string, ready: boolean, fallback?: (element: HTMLElement) => void) {
+  const restored = useRef<{ element: HTMLElement; id: string; key: string; frame: number } | null>(null)
   // No dependency list: a container that mounts after the first render is caught on the render that mounts it.
   useEffect(() => {
     const element = ref.current
-    if (!element || !ready || restoredFor.current === element) return
-    restoredFor.current = element
+    const last = restored.current
+    if (last?.element === element && last.id === id && last.key === key) return
+    // Frames still waiting belong to the view before this one.
+    if (last) {
+      cancelAnimationFrame(last.frame)
+      restored.current = null
+    }
+    if (!element || !ready) return
     // A pane shown again before the 250ms write restores the position still buffered, not the older one in storage.
     flushScroll()
     const top = savedView<number | null>(id, key, null)
-    if (top === null) return
+    const entry = { element, id, key, frame: 0 }
+    restored.current = entry
+    if (top === null && !fallback) return
     // Rows and diffs lay out a frame after their data arrives, so the position is set after two frames.
-    requestAnimationFrame(() => requestAnimationFrame(() => { element.scrollTop = top }))
+    entry.frame = requestAnimationFrame(() => {
+      entry.frame = requestAnimationFrame(() => {
+        if (top === null) fallback?.(element)
+        else element.scrollTop = top
+      })
+    })
   })
   return (event: UIEvent<HTMLElement>) => rememberScroll(id, key, event.currentTarget.scrollTop)
 }
