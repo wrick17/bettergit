@@ -281,6 +281,30 @@ describe('conflict resolution on real Git merges', () => {
     })
   }
 
+  test('a mode change during the temporary write is caught before rename, and nothing is written or staged', async () => {
+    const repo = conflictRepo({ base: 'old\n', ours: 'mine\n', theirs: 'yours\n' })
+    const file = path.join(repo, 'doc.txt')
+    chmodSync(file, 0o644)
+    const model = await loaded(repo)
+    const before = text(repo)
+    const stages = stagesOf(repo)
+    const originalChmod = fs.chmod.bind(fs)
+    const injected = spyOn(fs, 'chmod').mockImplementationOnce(async (temp, mode) => {
+      await originalChmod(temp, mode)
+      chmodSync(file, 0o755)
+    })
+    try {
+      await expect(saveConflict(repo, 'doc.txt', { fingerprint: model.fingerprint, choices: ['current'] }))
+        .rejects.toThrow('changed after it was loaded')
+    } finally {
+      injected.mockRestore()
+    }
+    expect(text(repo)).toBe(before)
+    expect(statSync(file).mode & 0o777).toBe(0o755)
+    expect(stagesOf(repo)).toEqual(stages)
+    expect(readdirSync(repo).filter((name) => name.includes('.bettergit-'))).toEqual([])
+  })
+
   test('an oversized stage leaves combine unavailable without reading the blob or merging', async () => {
     const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' })
     const big = git(repo, ['hash-object', '-w', '--stdin'], Buffer.from(`old\n${'x'.repeat(2 * 1024 * 1024)}\n`))

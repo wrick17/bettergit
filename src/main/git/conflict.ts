@@ -59,6 +59,8 @@ interface StageEntry {
 }
 
 interface Snapshot {
+  // The checked path relative to the repository, as git lists it.
+  relPath: string
   file: string
   mode: number
   fingerprint: ConflictFingerprint
@@ -145,7 +147,7 @@ async function readSnapshot(repo: string, relPath: unknown): Promise<Snapshot> {
       ? 'This file contains NUL bytes, so it is not text. Resolve it outside BetterGit.'
       : 'This file is not valid UTF-8 text, so it cannot be resolved here.')
   }
-  return { file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
+  return { relPath: checked, file, mode: info.mode & 0o7777, fingerprint: { working: digest(bytes), stages: stageDigest(stages) }, text, stages }
 }
 
 async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
@@ -291,21 +293,28 @@ export async function previewConflict(repo: string, relPath: string, save: Confl
   return { text, unresolved }
 }
 
-// Writes the resolution to a temp file beside the original, checks the file and its stages once more, then renames
-// the temp file over the original. Nothing is staged, and nothing is retried.
-export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
-  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
-  const bytes = Buffer.from(text, 'utf8')
+// Writes bytes to a temp file beside the original, checks the file, its stages, place and mode once more, then renames
+// the temp file over the original. Nothing is staged, and nothing is retried. `recheck` adds a caller's own last check.
+async function replaceWorkingFile(repo: string, snapshot: Snapshot, bytes: Buffer, stale: string, recheck?: (again: Snapshot) => Promise<void>) {
   const temp = path.join(path.dirname(snapshot.file), `.${path.basename(snapshot.file)}.bettergit-${randomUUID()}.tmp`)
   try {
     await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 })
     await fs.chmod(temp, snapshot.mode)
-    const again = await readSnapshot(repo, relPath)
-    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint)) throw new ConflictRefusal(STALE)
+    const again = await readSnapshot(repo, snapshot.relPath)
+    if (!sameFingerprint(again.fingerprint, snapshot.fingerprint) || again.file !== snapshot.file || again.mode !== snapshot.mode) {
+      throw new ConflictRefusal(stale)
+    }
+    await recheck?.(again)
     await fs.rename(temp, snapshot.file)
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => {})
     throw error
   }
+}
+
+export async function saveConflict(repo: string, relPath: string, save: ConflictSave): Promise<ConflictSaved> {
+  const { snapshot, text, unresolved } = await resolve(repo, relPath, save)
+  const bytes = Buffer.from(text, 'utf8')
+  await replaceWorkingFile(repo, snapshot, bytes, STALE)
   return { fingerprint: { working: digest(bytes), stages: snapshot.fingerprint.stages }, unresolved }
 }
