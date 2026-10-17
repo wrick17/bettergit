@@ -184,7 +184,28 @@ if (process.env.CHECK_MODE === 'conflict-reset') {
   unmount()
 }
 
-if (process.env.CHECK_MODE === 'status-loads') {
+if (process.env.CHECK_MODE === 'commit-draft') {
+  const commits = []
+  window.bettergit.commitChanges = (...args) => new Promise((resolve) => commits.push({ args, resolve }))
+  const box = () => find(tree, (p) => p['aria-label'] === 'Commit message')
+  const draft = () => JSON.parse(stored.get('bettergit.session')).places['/repo'].draft
+  const remount = () => { unmount(); slots = []; mounted = true; render() }
+  // Nothing typed after the remount, a different draft, and the committed text typed again.
+  for (const typed of [null, 'second', 'first']) {
+    await start(false)
+    box().onChange({ target: { value: 'first' } }); render()
+    find(tree, (p) => p.className === 'commit-action').onClick()
+    // The tab is left and shown again while the commit runs.
+    remount()
+    assert.equal(box().value, 'first')
+    if (typed !== null) { box().onChange({ target: { value: typed } }); render() }
+    commits[0].resolve(); await flush()
+    assert.deepEqual(commits[0].args, ['/repo', 'first', false])
+    assert.equal(draft(), typed ?? undefined, 'old commit cleared a newer draft')
+    commits.length = 0
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'status-loads') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
     await start(false)
     if (mode !== 'all') {
@@ -357,4 +378,5 @@ test('old Changes loads and widens cannot replace a newer load error', () => che
 test('a base reload invalidates old file widens before React renders the replacement', () => check('batched'))
 test('status changes invalidate pending base loads and start current staged, working and selected loads', () => check('status-loads'))
 test('a widen requested under the current revision remains valid after its base reload fails', () => check('retained'))
+test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

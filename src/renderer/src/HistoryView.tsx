@@ -62,7 +62,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   // Shown only for the target and option on screen. While a new fetch runs, the commit's own diff is shown.
-  const compare = loaded && target && loaded.hash === target.hash && loaded.ref === target.ref && loaded.ignoreWhitespace === ignoreWhitespace ? loaded : null
+  const compare = loaded && target && target.hash === selected && loaded.hash === target.hash && loaded.ref === target.ref && loaded.ignoreWhitespace === ignoreWhitespace ? loaded : null
   const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
   const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
   // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
@@ -142,6 +142,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // A compare, prompt, or notice belongs to the commit it was started from. Moving to another commit clears it.
   useEffect(() => {
     selectedRef.current = selected
+    // The launch compare is spent once the selection leaves its commit, even before that commit's detail arrived.
+    if (selected !== savedCompare?.hash) restoredCompare.current = true
     setTarget(null)
     setLoaded(null)
     setPrompt(null)
@@ -171,8 +173,9 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     }
   }, [menuOpen])
 
+  // A merge-base lookup answers later, so a reply for a commit no longer selected is dropped.
   const compareWith = (label: string, ref: string) => {
-    if (selected) setTarget({ hash: selected, label, ref })
+    if (selected && selected === selectedRef.current) setTarget({ hash: selected, label, ref })
   }
 
   const rows = useMemo(() => layoutGraph(commits), [commits])
@@ -197,7 +200,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // Fetches the target with the option on screen. A new target or option cancels the older fetch, so its reply cannot land.
   // Toggling the option refetches the same target, so the diff is never left unfiltered under a pressed option.
   useEffect(() => {
-    if (!target) return
+    if (!target || target.hash !== selected) return
     let stale = false
     api.compare(repo, target.hash, target.ref, ignoreWhitespace).then((result: { files: DiffFile[]; moves: MovedBlock[] }) => {
       if (!stale) setLoaded({ hash: target.hash, label: target.label, ref: target.ref, ignoreWhitespace, ...result })
@@ -208,12 +211,14 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       if (!target.quiet) onError(failure)
     })
     return () => { stale = true }
-  }, [repo, target, ignoreWhitespace, onError])
+  }, [repo, selected, target, ignoreWhitespace, onError])
 
   // The compare that is requested is saved with its commit, so a reload asks for it again.
+  // A saved compare stays saved until it returns, so a remount before its commit shows still restores it.
   useEffect(() => {
+    if (!restoredCompare.current && savedCompare?.hash === selected) return
     saveView(`${repo}|compare`, selected ?? '', target && target.hash === selected ? { label: target.label, ref: target.ref } : null)
-  }, [repo, selected, target])
+  }, [repo, selected, target, savedCompare])
   // The heading already shows the subject, so the body under it leaves the subject out.
   const body = current ? bodyBelow(current.details.body, picked?.subject ?? '') : ''
   // A repo with no commits gets its own message in place of the selection hint.
