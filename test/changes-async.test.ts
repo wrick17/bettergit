@@ -105,6 +105,53 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     commits.length = 0
     unmount()
   }
+} else if (process.env.CHECK_MODE === 'restore') {
+  const frames = new Map()
+  let nextFrame = 1
+  globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
+  const { parseDiff } = await import('./src/main/git/diff')
+  const working = (label) => ({ files: ['a.ts', 'b.ts'].flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n')), moves: [] })
+  async function load(label) {
+    for (const request of requests.filter((r) => !r.done)) { request.done = true; request.resolve(working(label)) }
+    await flush()
+  }
+  const revealed = []
+  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path) }))
+  const pane = { scrollTop: 400, querySelectorAll: () => sections }
+  stored.clear(); requests.length = 0; slots = []; mounted = true
+  stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => { throw error },
+  }
+  render()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = pane
+  render()
+  // A restored file with no saved position is shown once its diff loads, two frames later.
+  await load('initial')
+  tick()
+  assert.deepEqual(revealed, [])
+  tick()
+  assert.deepEqual(revealed, ['a.ts'])
+  assert.equal(pane.scrollTop, 400)
+  // Picking another file waits for its own diff. The old file's diff on screen is not ready for it.
+  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  tick(); tick()
+  assert.deepEqual(revealed, ['a.ts'])
+  await load('latest')
+  tick(); tick()
+  assert.equal(revealed.at(-1), 'b.ts')
+  assert.equal(pane.scrollTop, 400)
+  // The same pane leaves the file for all changes and restores the saved position for all, here 0.
+  const session = JSON.parse(stored.get('bettergit.session'))
+  session.views = { '/repo|changes-diff': { key: 'all', value: 0 } }
+  stored.set('bettergit.session', JSON.stringify(session))
+  find(tree, (p) => p.className?.startsWith('file-list')).onClick({ target: { closest: () => null } }); render()
+  tick(); tick()
+  assert.equal(pane.scrollTop, 0)
+  unmount()
 }
 `
 
@@ -118,3 +165,4 @@ function check(mode: string) {
 }
 
 test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
+test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
