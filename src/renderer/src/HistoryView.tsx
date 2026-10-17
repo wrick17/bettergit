@@ -48,8 +48,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [webBase, setWebBase] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
-  const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
-  const { size: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640)
+  const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
+  const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
@@ -224,7 +224,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   return (
-    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `min(${historyWidth}px, 35%) 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `${historyWidth} 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
       {listOpen && (
         <div className="history-list">
           <div className="search">
@@ -266,7 +266,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       )}
       {listOpen && detailOpen && <div className="splitter" {...historyHandle} />}
       {detailOpen && (
-        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `min(${detailWidth}px, 40%) 9px minmax(0, 1fr)` } : undefined}>
+        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `${detailWidth} 9px minmax(0, 1fr)` } : undefined}>
           {!selected && (empty
             ? <p className="hint">This repository has no commits yet.</p>
             : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}

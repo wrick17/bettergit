@@ -3,7 +3,8 @@ import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 // A resizable column width, remembered between launches. Spread `handle` onto a divider element:
 // drag it, double-click to restore the default, or use the arrow keys (Shift for bigger steps).
 // Dragging writes the grid directly, so React only re-renders once, on release.
-export function useResizable(key: string, initial: number, min: number, max: number) {
+// With `cap` (a percent of the grid), the track never renders wider than the cap. Render `track` so React and the drag agree.
+export function useResizable(key: string, initial: number, min: number, max: number, cap?: number) {
   const clamp = (value: number) => Math.min(max, Math.max(min, Math.round(value)))
   const [size, setSize] = useState(() => clamp(Number(localStorage.getItem(key)) || initial))
   const latest = useRef(size)
@@ -14,8 +15,9 @@ export function useResizable(key: string, initial: number, min: number, max: num
     setSize(latest.current)
     localStorage.setItem(key, String(latest.current))
   }
+  const track = (px: number) => (cap ? `min(${px}px, ${cap}%)` : `${px}px`)
   const paint = (grid: HTMLElement, px: number) => {
-    grid.style.gridTemplateColumns = `${px}px 9px minmax(0, 1fr)`
+    grid.style.gridTemplateColumns = `${track(px)} 9px minmax(0, 1fr)`
   }
 
   const handle = {
@@ -29,7 +31,10 @@ export function useResizable(key: string, initial: number, min: number, max: num
       const grid = event.currentTarget.parentElement
       if (!grid) return
       event.currentTarget.setPointerCapture(event.pointerId)
-      drag.current = { x: event.clientX, size: latest.current, px: latest.current, frame: 0, grid }
+      // A capped track can render narrower than the saved width. A move starts from the rendered width, so it does not jump,
+      // and a click without a move keeps the saved width.
+      const shown = cap ? parseFloat(getComputedStyle(grid).gridTemplateColumns) : NaN
+      drag.current = { x: event.clientX, size: shown || latest.current, px: latest.current, frame: 0, grid }
     },
     onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
       const d = drag.current
@@ -57,5 +62,5 @@ export function useResizable(key: string, initial: number, min: number, max: num
     },
   }
 
-  return { size, handle }
+  return { size, track: track(size), handle }
 }
