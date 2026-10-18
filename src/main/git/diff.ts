@@ -57,6 +57,13 @@ export function parseDiff(text: string): DiffFile[] {
       }
       continue
     }
+    // git prints a conflicted path as a combined diff, with two-column markers. Its lines belong to no regular file, so
+    // the section is dropped here. Without this, its hunks would attach to the file printed before it.
+    if (raw.startsWith('diff --cc ') || raw.startsWith('diff --combined ') || raw.startsWith('@@@')) {
+      file = null
+      hunk = null
+      continue
+    }
     if (!file) continue
     if (raw.startsWith('new file mode')) file.status = 'added'
     else if (raw.startsWith('deleted file mode')) file.status = 'deleted'

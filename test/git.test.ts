@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
+import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
 import { commitDiff, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory } from '../src/main/git/history'
@@ -10,6 +12,7 @@ import { readStatus } from '../src/main/git/status'
 import { readBranches, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
+import type { ConflictFingerprint } from '../src/shared/conflict'
 
 let root: string
 const repo = (...parts: string[]) => path.join(root, ...parts)
@@ -156,6 +159,73 @@ describe('operations', () => {
   test('lists linked worktrees', async () => {
     const worktrees = await readWorktrees(repo('work/acme/web-app'))
     expect(worktrees.map((entry) => entry.branch)).toEqual(expect.arrayContaining(['main', 'release/1.0']))
+  })
+})
+
+describe('unmerged working marker safety', () => {
+  let dir: string
+  let indexRecords: string
+  beforeAll(async () => {
+    dir = repo('work/acme/conflict-demo')
+    indexRecords = await git(dir, ['ls-files', '-u', '--', 'config.txt'])
+    expect(indexRecords.trim().split('\n')).toHaveLength(3)
+  })
+
+  // Reuse the sample's real merge and restore its original stages so each regression is independent.
+  const prepare = async () => {
+    await git(dir, ['update-index', '--index-info'], { input: `0 ${'0'.repeat(40)}\tconfig.txt\n${indexRecords}` })
+    writeFileSync(path.join(dir, '.gitattributes'), 'config.txt conflict-marker-size=7\n')
+    await git(dir, ['checkout', '--conflict=merge', '--', 'config.txt'])
+    const model = await loadConflict(dir, 'config.txt')
+    if (!model.supported) throw new Error(model.message)
+    return model.fingerprint
+  }
+
+  const assertRefused = async (fingerprint: ConflictFingerprint) => {
+    const file = path.join(dir, 'config.txt')
+    const before = readFileSync(file)
+    const staging = await stagePaths(dir, ['config.txt']).then(() => null, (error: unknown) => error)
+    expect(await git(dir, ['ls-files', '-u', '--', 'config.txt'])).toBe(indexRecords)
+    expect(staging).toMatchObject({ message: expect.stringContaining('still has conflict markers') })
+    expect(await loadConflict(dir, 'config.txt')).toMatchObject({ supported: false, message: expect.stringContaining('marker') })
+    const save = { fingerprint: { ...fingerprint, working: createHash('sha256').update(before).digest('hex') }, choices: [] }
+    await expect(previewConflict(dir, 'config.txt', save)).rejects.toThrow('marker')
+    await expect(saveConflict(dir, 'config.txt', save)).rejects.toThrow('marker')
+    expect(readFileSync(file)).toEqual(before)
+    expect(await git(dir, ['ls-files', '-u', '--', 'config.txt'])).toBe(indexRecords)
+  }
+
+  test('orphan markers after deleting only the opening line cannot clear the unmerged index', async () => {
+    const fingerprint = await prepare()
+    const file = path.join(dir, 'config.txt')
+    const marked = readFileSync(file, 'utf8')
+    expect(marked).toContain('<<<<<<< ')
+    writeFileSync(file, marked.replace(/^<<<<<<< .*\n/m, ''))
+    await assertRefused(fingerprint)
+  })
+
+  test('unsupported marker bytes remain refused after the configured width changes back to seven', async () => {
+    const fingerprint = await prepare()
+    writeFileSync(path.join(dir, '.gitattributes'), 'config.txt conflict-marker-size=8\n')
+    await git(dir, ['checkout', '--conflict=merge', '--', 'config.txt'])
+    expect(readFileSync(path.join(dir, 'config.txt'), 'utf8')).toContain('<<<<<<<< ')
+    writeFileSync(path.join(dir, '.gitattributes'), 'config.txt conflict-marker-size=7\n')
+    await assertRefused(fingerprint)
+  })
+
+  test('a manual resolution containing ordinary Markdown separators can still be saved and staged', async () => {
+    await prepare()
+    const resolved = '﻿Title\r\n=======\r\n> quoted café 😀\r\nAnother title\r\n========\r\n'
+    writeFileSync(path.join(dir, 'config.txt'), resolved)
+    const model = await loadConflict(dir, 'config.txt')
+    if (!model.supported) throw new Error(model.message)
+    const save = { fingerprint: model.fingerprint, choices: [] }
+    expect(await previewConflict(dir, 'config.txt', save)).toEqual({ text: resolved, unresolved: 0 })
+    await saveConflict(dir, 'config.txt', save)
+    expect(readFileSync(path.join(dir, 'config.txt'), 'utf8')).toBe(resolved)
+    expect(await git(dir, ['ls-files', '-u', '--', 'config.txt'])).toBe(indexRecords)
+    await stagePaths(dir, ['config.txt'])
+    expect(await git(dir, ['ls-files', '-u', '--', 'config.txt'])).toBe('')
   })
 })
 

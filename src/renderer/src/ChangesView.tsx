@@ -10,6 +10,8 @@ import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savePlace, useScrollMemory } from './session'
+import { ConflictView } from './ConflictView'
+import type { Choice, ConflictDocument, ConflictSave } from '../../shared/conflict'
 
 const api = window.bettergit
 
@@ -30,6 +32,13 @@ type View = 'list' | 'tree'
 interface Selection {
   path: string
   staged: boolean
+}
+
+// The conflict on screen. Its choices belong to the model they were made on, so a new model starts them over.
+interface ConflictState {
+  path: string
+  model: ConflictDocument
+  choices: Choice[]
 }
 
 interface SectionProps {
@@ -65,6 +74,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   // The file picked last. The pane scrolls to it once its diff loads. A file restored at launch is revealed only when it has no saved scroll position.
   const revealRef = useRef<string | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
+  const [conflict, setConflict] = useState<ConflictState | null>(null)
   // Both sections load on every refresh. The file rows need their +/- counts, and the empty-selection pane shows them all.
   const [all, setAll] = useState<{ staged: Working; unstaged: Working } | null>(null)
   // Context level of each widened file, keyed by levelKey. Kept across refreshes and read by the loaders.
@@ -92,6 +102,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const staged = useMemo(() => status.changes.filter((change) => change.staged), [status])
   const unstaged = useMemo(() => status.changes.filter((change) => change.unstaged && !change.conflicted), [status])
   const conflicted = useMemo(() => status.changes.filter((change) => change.conflicted), [status])
+  // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
+  const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
   const stats = useMemo(() => countStats(all), [all])
   const List = view === 'tree' ? Tree : Group
 
@@ -128,7 +140,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }, [repo, revision, context])
 
   useEffect(() => {
-    if (!selection) {
+    if (!selection || conflictSelected) {
       diffFor.current = null
       setDiff(null)
       return
@@ -144,7 +156,20 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       })
       .catch((failure: unknown) => errorRef.current(failure))
     return () => { stale = true }
-  }, [repo, selection, revision, context])
+  }, [repo, selection, conflictSelected, revision, context])
+
+  // The resolver loads the file and its stage IDs together. A reload that finds the same fingerprint keeps the choices.
+  useEffect(() => {
+    if (!selection || !conflictSelected) return
+    let stale = false
+    const path = selection.path
+    api.conflictLoad(repo, path)
+      .then((model: ConflictDocument) => {
+        if (!stale) setConflict((prev) => ({ path, model, choices: prev?.path === path && sameModel(prev.model, model) ? prev.choices : [] }))
+      })
+      .catch((failure: unknown) => { if (!stale) errorRef.current(failure) })
+    return () => { stale = true }
+  }, [repo, selection, conflictSelected, revision])
 
   // Picking a file keeps the continuous diff and scrolls the file's header into view once its diff loads.
   useEffect(() => {
@@ -168,6 +193,21 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
+
+  // Each choice copies the list, since the list belongs to the model on screen and that model is replaced on reload.
+  const chooseConflict = (index: number, choice: Choice) => setConflict((prev) => {
+    if (!prev) return prev
+    const choices = [...prev.choices]
+    choices[index] = choice
+    return { ...prev, choices }
+  })
+
+  // Save sends the fingerprint the file had at load, with the choices. The write takes the repo's single write slot.
+  const saveConflictFile = (save: ConflictSave) => {
+    if (!conflict) return
+    const path = conflict.path
+    void write('resolve', () => api.conflictSave(repo, path, save))
+  }
 
   // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
   const togglePaths = (paths: string[], stage: boolean) => {
@@ -369,7 +409,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               )}
             </>
           )}
-          {selection && diff && (
+          {selection && conflictSelected && (conflict?.path === selection.path
+            ? <ConflictView path={selection.path} model={conflict.model} choices={conflict.choices} onChoose={chooseConflict} onSave={saveConflictFile} saving={busy === 'resolve'} />
+            : <p className="hint">Loading conflict…</p>)}
+          {selection && !conflictSelected && diff && (
+
             <DiffView
               files={diff.files}
               moves={diff.moves}
@@ -382,6 +426,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       )}
     </div>
   )
+}
+
+// Two loads describe the same file and merge state when their fingerprints match. An unsupported file never matches.
+function sameModel(a: ConflictDocument, b: ConflictDocument): boolean {
+  return a.supported && b.supported && a.fingerprint.working === b.fingerprint.working && a.fingerprint.stages === b.fingerprint.stages
 }
 
 // The file open last time, if it is still in the changes. A file that is gone opens with no selection.

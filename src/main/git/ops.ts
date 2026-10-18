@@ -1,4 +1,8 @@
-import { git, gitOk } from './exec'
+import { createReadStream, promises as fs } from 'node:fs'
+import path from 'node:path'
+import { conflictBlocks, parseConflicts } from '../../shared/conflict'
+import { assertSupportedConflictFormat } from './conflict'
+import { git, gitOk, gitRaw } from './exec'
 import { readStatus } from './status'
 
 export interface Branch {
@@ -21,8 +25,51 @@ export interface Worktree {
   locked: boolean
 }
 
+// Staging a file that still holds conflict markers would commit the markers. Only unmerged paths are checked, so text
+// that looks like a marker in a resolved or ordinary file is staged as written.
 export async function stagePaths(repo: string, paths: string[]): Promise<void> {
-  if (paths.length) await git(repo, ['add', '--', ...paths])
+  if (!paths.length) return
+  for (const file of await unmergedPaths(repo, paths)) {
+    await assertSupportedConflictFormat(repo, file)
+    if (await hasUnresolvedMarkers(repo, file)) {
+      throw new Error(`${file} still has conflict markers. Resolve the conflict before staging it.`)
+    }
+  }
+  await git(repo, ['add', '--', ...paths])
+}
+
+// The unmerged paths that git add would touch for these pathspecs. Git applies the same pathspec rules to both.
+async function unmergedPaths(repo: string, paths: string[]): Promise<string[]> {
+  const listed = await gitRaw(repo, ['ls-files', '-u', '-z', '--', ...paths])
+  if (listed.code !== 0) throw new Error(listed.stderr || 'Git could not list the conflicts.')
+  const files = listed.stdout.toString('utf8').split('\0').flatMap((record) => {
+    const tab = record.indexOf('\t')
+    return tab < 0 ? [] : [record.slice(tab + 1)]
+  })
+  return [...new Set(files)]
+}
+
+// The conflict loader's limit. Staging reads a file only this far, so a huge file is never buffered whole.
+const MAX_MARKER_SCAN = 2 * 1024 * 1024
+
+// A file counts as unresolved when its text parses into conflict blocks, or holds a marker that cannot be parsed.
+// Binary files, found by a NUL byte in the part read, are not checked here, and the resolver reports them as
+// unsupported. Text past the limit is refused, never taken as resolved.
+async function hasUnresolvedMarkers(repo: string, file: string): Promise<boolean> {
+  const full = path.join(repo, file)
+  const info = await fs.lstat(full).catch(() => null)
+  if (!info?.isFile()) return false
+  const chunks: Buffer[] = []
+  let size = 0
+  // end is inclusive, so the read stops one byte past the limit, even for a file that grew after lstat.
+  for await (const chunk of createReadStream(full, { end: MAX_MARKER_SCAN })) {
+    if (chunk.includes(0)) return false
+    chunks.push(chunk)
+    size += chunk.length
+  }
+  if (size > MAX_MARKER_SCAN) throw new Error(`${file} is too large to check for conflict markers. Stage it outside BetterGit.`)
+  const parsed = parseConflicts(new TextDecoder('utf-8').decode(Buffer.concat(chunks)))
+  return parsed.ok ? conflictBlocks(parsed.parts).length > 0 : true
 }
 
 export async function unstagePaths(repo: string, paths: string[], hasHead: boolean): Promise<void> {
