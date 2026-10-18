@@ -1,12 +1,15 @@
-import { Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
-import type { DiffFile, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
+import { Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import type { DiffFile, DiffHunk, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
 import { EDITORS } from '../../shared/editors'
 import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
-import { CONTEXT_OPTIONS, setContextLines, useContextLines, useLanguageOverrides } from './prefs'
+import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides } from './prefs'
 import { highlightFile, type Segment } from './highlight'
+import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
+import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
+import './intraline.css'
 
 interface Props {
   files: DiffFile[]
@@ -17,6 +20,18 @@ interface Props {
   onExpand?: (file: DiffFile) => void
   // Where the open and closed choices of each file are saved. The choices come back only for the same key, such as a commit.
   persist?: { id: string; key: string }
+  // Set by the conflict resolver, which shows a conflicted file here with its controls inline.
+  conflict?: ConflictDecor
+  // Replaces the text shown when there are no files. Set when the caller has nothing to show because a load failed.
+  emptyHint?: string
+}
+
+// A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
+// or after a hunk's last row when the index equals the hunk's length.
+export interface ConflictDecor {
+  row: (line: DiffLine) => { className: string; plain: boolean } | undefined
+  controls: (hunk: DiffHunk, index: number) => ReactNode
+  splitRows: (hunk: DiffHunk) => SplitRow[]
 }
 
 export type DiffLayout = 'unified' | 'split'
@@ -24,9 +39,20 @@ export type DiffLayout = 'unified' | 'split'
 // One layout choice shared by every diff on screen. Kept in the renderer, so it needs no restart.
 const LAYOUT_KEY = 'bettergit.diffLayout'
 const listeners = new Set<() => void>()
+const sourceAnchors = new Set<() => { pane: HTMLElement; top: number; select: () => void } | undefined>()
 let layout: DiffLayout = localStorage.getItem(LAYOUT_KEY) === 'split' ? 'split' : 'unified'
 
+function captureSourceAnchors() {
+  const panes = new Map<HTMLElement, { top: number; select: () => void }>()
+  for (const remember of sourceAnchors) {
+    const candidate = remember()
+    if (candidate && (!panes.has(candidate.pane) || candidate.top < panes.get(candidate.pane)!.top)) panes.set(candidate.pane, candidate)
+  }
+  panes.forEach((candidate) => candidate.select())
+}
+
 export function setDiffLayout(next: DiffLayout) {
+  if (next !== layout) captureSourceAnchors()
   layout = next
   localStorage.setItem(LAYOUT_KEY, next)
   listeners.forEach((listener) => listener())
@@ -43,13 +69,32 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist }: Props) {
+export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
+  // The changed words of each paired line, per hunk. Pure text work, so it does not wait for colours. Worked out only for a
+  // hunk on screen, since a collapsed file shows none, and kept for these files so a re-render does not compare again.
+  const intra = useMemo(() => new Map<DiffHunk, Map<number, Span[]>>(), [files])
+  const spansOf = (hunk: DiffHunk) => {
+    let spans = intra.get(hunk)
+    if (!spans) intra.set(hunk, (spans = intralineSpans(hunk.lines)))
+    return spans
+  }
   const current = useDiffLayout()
   const context = useContextLines()
+  const ignoreWhitespace = useIgnoreWhitespace()
+  const formatMarkdown = useFormatMarkdown()
+  // Conflict markers are source, so a conflicted file is never formatted.
+  const formatted = formatMarkdown && !conflict
   const tokens = useTokens(files, useLanguageOverrides())
+  // A conflict row shows only its own text: colours made for other lines, such as before a choice changed the file, are dropped.
+  const decorate = (line: DiffLine, segments?: Segment[]) => {
+    const row = conflict?.row(line)
+    const fits = !conflict || (!row?.plain && segments?.map((segment) => segment.text).join('') === line.text)
+    return { className: row?.className, segments: fits ? segments : undefined }
+  }
   const containerRef = useRef<HTMLDivElement>(null)
+  const headId = `move-head-${useId().replace(/\W/g, '')}`
   const [arrows, setArrows] = useState<Arrow[]>([])
   const [height, setHeight] = useState(0)
   // The user's open or closed choice per file path. Files without a choice use the default.
@@ -60,52 +105,87 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
     if (persistId !== undefined && persistKey !== undefined) saveView(persistId, persistKey, choices)
   }, [persistId, persistKey, choices])
 
+  useSourceAnchor(containerRef, current, formatMarkdown, files)
+
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
   useLayoutEffect(() => {
     const container = containerRef.current
-    // Arrows only make sense side by side: the old side is on the left, the new side on the right.
-    if (!container || !moves.length || current !== 'split') {
+    if (!container || !moves.length) {
       setArrows([])
       return
     }
+    const observed = new Set<Element>([container])
     const measure = () => {
       const box = container.getBoundingClientRect()
       const place = (id: string) => {
         const element = container.querySelector<HTMLElement>(`[data-move-id="${id}"]`)
         if (!element) return null
-        const rect = element.getBoundingClientRect()
-        return { left: rect.left - box.left, right: rect.right - box.left, y: rect.top - box.top + rect.height / 2 }
+        const block = current === 'split' ? element.closest<HTMLElement>('.md-diff-block') ?? element : element
+        const rect = block.getBoundingClientRect()
+        observed.add(block)
+        let top = rect.top
+        let bottom = rect.bottom
+        if (current === 'split' && block !== element) {
+          const line = Number(element.dataset.sourceRow?.split(':').pop())
+          let span = Infinity
+          for (const node of block.querySelectorAll<HTMLElement>('[data-source-range]')) {
+            const [first, last] = (node.dataset.sourceRange ?? '').split(':').map(Number)
+            if (!(first <= line && line <= last) || last - first > span) continue
+            const content = node.getBoundingClientRect()
+            if (!content.height) continue
+            observed.add(node)
+            if (last - first < span) {
+              top = content.top
+              bottom = content.bottom
+              span = last - first
+            } else {
+              top = Math.min(top, content.top)
+              bottom = Math.max(bottom, content.bottom)
+            }
+          }
+        }
+        return { left: rect.left - box.left, right: rect.right - box.left, y: (top + bottom) / 2 - box.top }
       }
       const next: Arrow[] = []
       moves.forEach((_, index) => {
         const from = place(`${index}-from`)
         const to = place(`${index}-to`)
         if (!from || !to) return
-        // From the right edge of the old-side cell to a 2px gap before the new-side cell, through the channel
+        if (current === 'unified') {
+          // The connector runs down the lane left of the line numbers, so it never crosses code. Each move takes its own
+          // column in the lane, so crossing connectors stay apart. The arrowhead lands on the new line.
+          const x = LANE_FIRST + (index % LANE_COLUMNS) * LANE_STEP
+          next.push({ d: `M ${LANE_END} ${from.y} H ${x} V ${to.y} H ${LANE_END}`, head: true })
+          return
+        }
+        // Side by side: connect facing block edges through the channel
         // between the columns. Each arrow bends at its own depth so crossing arrows stay readable.
         const x1 = from.right
-        const x2 = to.left - 2
+        const x2 = to.left
         const depth = x1 + (x2 - x1) * (0.3 + (index % 4) * 0.13)
-        next.push({ d: `M ${x1} ${from.y} C ${depth} ${from.y}, ${depth} ${to.y}, ${x2} ${to.y}` })
+        next.push({ d: `M ${x1} ${from.y} C ${depth} ${from.y}, ${depth} ${to.y}, ${x2} ${to.y}`, head: false })
       })
       setArrows(next)
       setHeight(container.offsetHeight)
     }
     measure()
     const observer = new ResizeObserver(measure)
-    observer.observe(container)
+    observed.forEach(element => observer.observe(element))
     return () => observer.disconnect()
-  }, [files, moves, current, choices])
-
-  if (!files.length) return <p className="hint">No changes in this view.</p>
+  }, [files, moves, current, formatMarkdown, choices])
 
   return (
     <div className="diff" ref={containerRef}>
       {arrows.length > 0 && (
         <svg className="move-arrows" width="100%" height={height} aria-hidden="true">
+          <defs>
+            <marker id={headId} viewBox="0 0 6 6" refX="6" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto">
+              <path d="M0 0L6 3L0 6z" fill="var(--move)" />
+            </marker>
+          </defs>
           {arrows.map((arrow, index) => (
-            <path key={index} d={arrow.d} fill="none" stroke="var(--move)" strokeWidth={1.5} strokeOpacity={0.9} />
+            <path key={index} d={arrow.d} fill="none" stroke="var(--move)" strokeWidth={1.5} strokeOpacity={0.9} markerEnd={arrow.head ? `url(#${headId})` : undefined} />
           ))}
         </svg>
       )}
@@ -136,8 +216,30 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
             <IconButton icon="rows" label="Unified diff" active={current === 'unified'} onClick={() => setDiffLayout('unified')} />
             <IconButton icon="columns" label="Split diff" active={current === 'split'} onClick={() => setDiffLayout('split')} />
           </div>
+          <div className="diff-layout-toggle markdown-toggle" role="group" aria-label="Markdown formatting">
+            <button
+              type="button"
+              className={`icon-button${formatMarkdown ? ' on' : ''}`}
+              aria-label="Format Markdown"
+              aria-pressed={formatMarkdown}
+              title="Format Markdown. Parse visible Markdown hunk fragments on each side. Missing surrounding content is not inferred; widen context for complete blocks. Links and images stay inert. Raw view preserves exact source."
+              onClick={() => {
+                captureSourceAnchors()
+                setFormatMarkdown(!formatMarkdown)
+              }}
+            >
+              <Icon name="markdown" />
+            </button>
+          </div>
+          {/* Last in the row. It stays visible when the filtered patch is empty, so the user can turn the option off in place. */}
+          <div className="diff-layout-toggle" role="group" aria-label="Whitespace">
+            <IconButton icon="eyeOff" label="Hide whitespace" active={ignoreWhitespace} onClick={() => setIgnoreWhitespace(!ignoreWhitespace)} />
+          </div>
         </div>
       </div>
+      {!files.length && (
+        <p className="hint">{emptyHint ?? (ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.')}</p>
+      )}
       {files.map((file, fileIndex) => {
         const path = pathOf(file)
         const stat = stats[fileIndex]
@@ -154,26 +256,44 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                 <button onClick={toggle}>Show diff</button>
               </div>
             )}
-            {open && file.hunks.map((hunk, hunkIndex) => (
+            {open && conflict && current === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
+            {open && file.hunks.map((hunk, hunkIndex) => {
+              const markdown = formatted && isMarkdownPath(path)
+              const format = markdown && fitsMarkdown(hunk.lines)
+              return (
               <Fragment key={hunkIndex}>
                 {onExpand && <ExpandRow label={`Show more context above line ${edgeLines(hunk.lines).first}`} onExpand={() => onExpand(file)} />}
                 <div className="hunk">
                   <div className="hunk-header">{hunk.header}</div>
-                  {current === 'unified'
-                    ? hunk.lines.map((line, lineIndex) => (
-                      <UnifiedLine
-                        key={lineIndex}
-                        line={line}
-                        segments={tokens[fileIndex]?.[hunkIndex]?.[lineIndex]}
-                        label={labels.get(key(fileIndex, hunkIndex, lineIndex))}
-                        anchor={anchors.get(key(fileIndex, hunkIndex, lineIndex))}
-                      />
-                    ))
-                    : toRows(hunk.lines).map((row, rowIndex) => {
+                  {markdown && !format && <div className="md-fragment-note">Too large to format as Markdown. Showing the source diff.</div>}
+                  {format
+                    ? <MarkdownHunkView lines={hunk.lines} changes={spansOf(hunk)} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
+                    : current === 'unified'
+                    ? hunk.lines.map((line, lineIndex) => {
+                      const row = decorate(line, tokens[fileIndex]?.[hunkIndex]?.[lineIndex])
+                      return (
+                        <Fragment key={lineIndex}>
+                          {conflict?.controls(hunk, lineIndex)}
+                          <UnifiedLine
+                            line={line}
+                            segments={row.segments}
+                            className={row.className}
+                            changed={spansOf(hunk).get(lineIndex)}
+                            label={labels.get(key(fileIndex, hunkIndex, lineIndex))}
+                            anchor={anchors.get(key(fileIndex, hunkIndex, lineIndex))}
+                            source={key(fileIndex, hunkIndex, lineIndex)}
+                          />
+                        </Fragment>
+                      )
+                    })
+                    : (conflict ? conflict.splitRows(hunk) : toRows(hunk.lines)).map((row, rowIndex) => {
                       const leftLabel = row.left ? labels.get(key(fileIndex, hunkIndex, row.left.index)) : undefined
                       const rightLabel = row.right ? labels.get(key(fileIndex, hunkIndex, row.right.index)) : undefined
+                      const left = row.left ? decorate(row.left.line, tokens[fileIndex]?.[hunkIndex]?.[row.left.index]) : undefined
+                      const right = row.right ? decorate(row.right.line, tokens[fileIndex]?.[hunkIndex]?.[row.right.index]) : undefined
                       return (
                         <Fragment key={rowIndex}>
+                          {conflict?.controls(hunk, row.controlIndex ?? (row.left ?? row.right)!.index)}
                           {(leftLabel || rightLabel) && (
                             <div className="split-row">
                               {leftLabel ? <div className="move-note">{leftLabel}</div> : <div />}
@@ -184,25 +304,33 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                             <SplitCell
                               cell={row.left}
                               side="old"
-                              segments={row.left ? tokens[fileIndex]?.[hunkIndex]?.[row.left.index] : undefined}
+                              segments={left?.segments}
+                              className={left?.className}
+                              changed={row.left ? spansOf(hunk).get(row.left.index) : undefined}
                               label={leftLabel}
                               anchor={row.left ? anchors.get(key(fileIndex, hunkIndex, row.left.index)) : undefined}
+                              source={row.left ? key(fileIndex, hunkIndex, row.left.index) : undefined}
                             />
                             <SplitCell
                               cell={row.right}
                               side="new"
-                              segments={row.right ? tokens[fileIndex]?.[hunkIndex]?.[row.right.index] : undefined}
+                              segments={right?.segments}
+                              className={right?.className}
+                              changed={row.right ? spansOf(hunk).get(row.right.index) : undefined}
                               label={rightLabel}
                               anchor={row.right ? anchors.get(key(fileIndex, hunkIndex, row.right.index)) : undefined}
+                              source={row.right ? key(fileIndex, hunkIndex, row.right.index) : undefined}
                             />
                           </div>
                         </Fragment>
                       )
                     })}
+                  {conflict?.controls(hunk, hunk.lines.length)}
                 </div>
                 {onExpand && <ExpandRow label={`Show more context below line ${edgeLines(hunk.lines).last}`} onExpand={() => onExpand(file)} />}
               </Fragment>
-            ))}
+              )
+            })}
           </section>
         )
       })}
@@ -210,9 +338,51 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   )
 })
 
+// Only the selected view restores its pane, even when staged and unstaged diffs share that pane.
+// The pane keeps its existing scroll handler, so session persistence records the corrected position too.
+function useSourceAnchor(containerRef: React.RefObject<HTMLDivElement | null>, layout: DiffLayout, formatted: boolean, files: DiffFile[]) {
+  const saved = useRef<{ source: string; side?: string; offset: number } | null>(null)
+  const previous = useRef({ layout, formatted, files })
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    const pane = container?.closest<HTMLElement>('.diff-pane')
+    if (!container || !pane) return
+    const changed = previous.current.layout !== layout || previous.current.formatted !== formatted
+    if (changed && previous.current.files === files && saved.current) {
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-source-row]')].filter((element) => element.dataset.sourceRow === saved.current!.source)
+      const row = rows.find(element => element.dataset.sourceSide === saved.current!.side) ?? rows.find(element => !element.dataset.sourceSide || element.dataset.sourceSide === 'both') ?? rows[0]
+      if (row) pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - saved.current.offset
+    }
+    saved.current = null
+    previous.current = { layout, formatted, files }
+    const remember = () => {
+      saved.current = null
+      const box = pane.getBoundingClientRect()
+      const toolbar = container.querySelector('.diff-toolbar')?.getBoundingClientRect()
+      const top = Math.max(box.top, toolbar?.bottom ?? box.top) + 42
+      const row = [...container.querySelectorAll<HTMLElement>('[data-source-row]')].find((element) => element.getBoundingClientRect().bottom > top)
+      if (!row || row.getBoundingClientRect().top >= box.bottom) return
+      const topOfRow = row.getBoundingClientRect().top
+      const anchor = { source: row.dataset.sourceRow!, side: row.dataset.sourceSide, offset: topOfRow - box.top }
+      return { pane, top: topOfRow, select: () => { saved.current = anchor } }
+    }
+    sourceAnchors.add(remember)
+    return () => { sourceAnchors.delete(remember) }
+  }, [containerRef, layout, formatted, files])
+}
+
 interface Arrow {
   d: string
+  // Unified connectors end in an arrowhead at the new line.
+  head: boolean
 }
+
+// The unified connector lane is 28px wide (styles.css `.lane`). Connectors use its first columns, and the arrowhead
+// stops 2px before the code.
+const LANE_END = 26
+const LANE_FIRST = 5
+const LANE_STEP = 5
+const LANE_COLUMNS = 3
 
 // Colours every file once per change. Until the colours arrive, lines render as plain text.
 function useTokens(files: DiffFile[], overrides: Record<string, string>): Segment[][][][] {
@@ -227,27 +397,32 @@ function useTokens(files: DiffFile[], overrides: Record<string, string>): Segmen
   return tokens
 }
 
-function Code({ text, segments }: { text: string; segments?: Segment[] }) {
-  if (!segments) return <code>{text}</code>
+// Text is rendered as React text nodes, so code never reaches the DOM as markup. Changed spans wrap their pieces in `.intra`.
+function Code({ text, segments, changed }: { text: string; segments?: Segment[]; changed?: Span[] }) {
+  if (!segments && !changed?.length) return <code>{text}</code>
+  const pieces: Piece[] = changed?.length
+    ? emphasize(text, segments ?? [{ text }], changed)
+    : (segments ?? []).map((segment) => ({ ...segment, changed: false }))
   return (
     <code>
-      {segments.map((segment, index) => (segment.light || segment.dark
-        ? <span key={index} className="tok" style={{ '--tok-light': segment.light, '--tok-dark': segment.dark } as CSSProperties}>{segment.text}</span>
-        : <span key={index}>{segment.text}</span>))}
+      {pieces.map((piece, index) => (piece.light || piece.dark || piece.changed
+        ? <span key={index} className={`${piece.light || piece.dark ? 'tok' : ''} ${piece.changed ? 'intra' : ''}`.trim()} style={{ '--tok-light': piece.light, '--tok-dark': piece.dark } as CSSProperties}>{piece.text}</span>
+        : <span key={index}>{piece.text}</span>))}
     </code>
   )
 }
 
 // The label gets its own line above the moved line, so it never takes code width or covers code.
-function UnifiedLine({ line, segments, label, anchor }: { line: DiffLine; segments?: Segment[]; label?: string; anchor?: string }) {
+export function UnifiedLine({ line, segments, changed, label, anchor, source, className }: { line: DiffLine; segments?: Segment[]; changed?: Span[]; label?: string; anchor?: string; source?: string; className?: string }) {
   return (
     <>
-      {label && <div className="move-note">{label}</div>}
-      <div className={`line ${line.type}${label ? ' moved' : ''}`} data-move-id={anchor}>
+      {label && <div className="move-note lane-note">{label}</div>}
+      <div className={`line ${line.type}${label ? ' moved' : ''}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
+        <span className="lane" aria-hidden="true" />
         <span className="gutter">{line.oldNo ?? ''}</span>
         <span className="gutter">{line.newNo ?? ''}</span>
         <span className="sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
-        <Code text={line.text} segments={segments} />
+        <Code text={line.text} segments={segments} changed={label ? undefined : changed} />
       </div>
     </>
   )
@@ -270,14 +445,18 @@ function ExpandRow({ onExpand, label }: { onExpand: () => void; label: string })
   )
 }
 
-interface IndexedLine {
+export interface IndexedLine {
   line: DiffLine
   index: number
+  // A conflict split cell names its line in the preview, on either side.
+  number?: number | null
 }
 
-interface SplitRow {
+export interface SplitRow {
   left: IndexedLine | null
   right: IndexedLine | null
+  // Projection may put a later source line on the left; controls still belong to the block's first source row.
+  controlIndex?: number
 }
 
 // Pairs removed and added lines side by side. Context lines appear on both sides. A run of removals
@@ -302,20 +481,102 @@ export function toRows(lines: DiffLine[]): SplitRow[] {
   return rows
 }
 
-function SplitCell({ cell, side, segments, label, anchor }: {
+export function SplitCell({ cell, side, segments, changed, label, anchor, source, className }: {
   cell: IndexedLine | null
   side: 'old' | 'new'
   segments?: Segment[]
+  changed?: Span[]
   label?: string
   anchor?: string
+  source?: string
+  className?: string
 }) {
   if (!cell) return <div className="split-cell empty" aria-hidden="true" />
   const { line } = cell
-  const number = side === 'old' ? line.oldNo : line.newNo
+  const number = cell.number !== undefined ? cell.number : side === 'old' ? line.oldNo : line.newNo
   return (
-    <div className={`split-cell ${line.type}${label ? ' moved' : ''}`} data-move-id={anchor}>
+    <div className={`split-cell ${line.type}${label ? ' moved' : ''}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
       <span className="gutter">{number ?? ''}</span>
-      <Code text={line.text} segments={segments} />
+      <Code text={line.text} segments={segments} changed={label ? undefined : changed} />
+    </div>
+  )
+}
+
+interface MarkdownHunkProps {
+  lines: DiffLine[]
+  changes: Map<number, Span[]>
+  layout: DiffLayout
+  prefix: string
+  labels: Map<string, string>
+  anchors: Map<string, string>
+}
+
+// Formatting parses both whole sides of a hunk, its context included, so a hunk past these sizes shows the source diff
+// instead. They are a conservative bound on that work, not a measured threshold, and are counted before any source is built.
+const MARKDOWN_MAX_ROWS = 5_000
+const MARKDOWN_MAX_CHARS = 200_000
+
+function fitsMarkdown(lines: DiffLine[]) {
+  if (lines.length > MARKDOWN_MAX_ROWS) return false
+  let chars = 0
+  // Each row's UTF-16 length plus the line break that joins it to the next.
+  for (const line of lines) if ((chars += line.text.length + 1) > MARKDOWN_MAX_CHARS) return false
+  return true
+}
+
+// The plan is built here, so only hunks of open files are parsed. A collapsed file parses when it is opened.
+function MarkdownHunkView({ lines, changes, layout, prefix, labels, anchors }: MarkdownHunkProps) {
+  const plan = useMemo(() => markdownHunk(lines, changes, toRows(lines).map(row => [row.left?.index ?? null, row.right?.index ?? null]),
+    new Set(lines.flatMap((_, index) => labels.has(`${prefix}:${index}`) ? [index] : []))), [lines, changes, prefix, labels])
+  return (
+    <div className={`md-hunk md-${layout}`}>
+      {lines.length > 0 && <div className="md-fragment-note">Visible Markdown fragment. Source gutters identify original lines.</div>}
+      {plan.groups.map(group => {
+        const indices = Array.from({ length: group.end - group.start + 1 }, (_, index) => group.start + index)
+        const before = indices.filter(index => lines[index].type !== 'add')
+        const after = indices.filter(index => lines[index].type !== 'del')
+        const paired = group.rows
+        const pane = (side: 'old' | 'new', slots: Array<number | null>) => {
+          const nodes = side === 'old' ? group.old : group.new
+          const parsed: MarkdownSide = side === 'old' ? plan.old : plan.new
+          if (!slots.some(index => index !== null)) return <div className="split-cell empty md-empty-block" aria-hidden="true" />
+          return (
+            <div className={`md-diff-block${!group.unchanged ? ` md-${side === 'old' ? 'before' : 'after'}` : ''}`} role={group.unchanged ? undefined : 'group'} aria-label={group.unchanged ? undefined : side === 'old' ? 'Previous Markdown source' : 'Current Markdown source'}>
+              <div className="md-source-rail">
+                {slots.map((index, slot) => {
+                  if (index === null) return <div key={`gap-${slot}`} className="split-cell empty md-source-gap" aria-hidden="true" />
+                  const line = lines[index]
+                  const source = `${prefix}:${index}`
+                  const move = labels.get(source)
+                  return (
+                    <div key={index} className={`md-source-row ${line.type}${move ? ' moved' : ''}`} data-move-id={anchors.get(source)} data-source-row={source} data-source-side={group.unchanged && layout === 'unified' ? 'both' : side} title={move ?? `Source line ${line.oldNo ?? line.newNo ?? 'note'}. Gutters map source lines to this formatted block.`}>
+                      {layout === 'unified' && <span className="lane" aria-hidden="true" />}
+                      {layout === 'unified' ? <><span className="gutter">{line.oldNo ?? ''}</span><span className="gutter">{line.newNo ?? ''}</span></> : <span className="gutter">{(side === 'old' ? line.oldNo : line.newNo) ?? ''}</span>}
+                      <span className="sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="md-content">
+                {slots.flatMap(index => index !== null && labels.has(`${prefix}:${index}`) ? [<div key={index} className="move-note">{labels.get(`${prefix}:${index}`)}</div>] : [])}
+                <MarkdownContent nodes={nodes} side={parsed} />
+                {slots.flatMap(index => {
+                  if (index === null) return []
+                  const changes = parsed.annotations.get(index)
+                  if (!changes?.length) return []
+                  const line = lines[index]
+                  return [<div key={`syntax-${index}`} className={`md-source-syntax ${line.type}`}><span>Source syntax {line.type === 'del' ? '−' : '+'} {side === 'old' ? line.oldNo : line.newNo}</span>{changes.map(([a, b], at) => <span key={at}> · col {a + 1} <code className="intra">{JSON.stringify(line.text.slice(a, b))}</code></span>)}</div>]
+                })}
+                {slots.flatMap(index => index !== null && lines[index].type === 'note' ? [<p key={index} className="md-note">{lines[index].text}</p>] : [])}
+              </div>
+            </div>
+          )
+        }
+        return <Fragment key={group.start}>{layout === 'split'
+          ? <div className="split-row md-block-pair">{pane('old', paired.map(row => row[0]))}{pane('new', paired.map(row => row[1]))}</div>
+          : group.unchanged ? pane('new', after)
+            : <>{before.length > 0 && pane('old', before)}{after.length > 0 && pane('new', after)}</>}</Fragment>
+      })}
     </div>
   )
 }

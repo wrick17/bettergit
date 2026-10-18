@@ -105,3 +105,85 @@ test('emphasis splits coloured segments without losing text or colour, even acro
   expect(pieces.filter((piece) => piece.changed)).toEqual([{ text: 'b', light: '#1', changed: true }])
   expect(pieces.find((piece) => piece.text === 'x')).toEqual({ text: 'x', light: '#2', changed: false })
 })
+
+// Renders the real row components, so a cell that drops its `changed` prop fails here even though the helpers pass.
+// Runs in a child process: DiffView reads localStorage and window when it loads, and session.test.ts stubs them in this process.
+const RENDER_CHECK = `
+Object.assign(globalThis, {
+  localStorage: { getItem: () => null, setItem: () => undefined },
+  window: { addEventListener: () => undefined, setTimeout, clearTimeout },
+})
+const { createElement } = await import('react')
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { SplitCell, UnifiedLine } = await import('./src/renderer/src/DiffView')
+const { intralineSpans } = await import('./src/renderer/src/intraline')
+const lines = [
+  { type: 'del', text: 'const total = count + 1', oldNo: 1, newNo: null },
+  { type: 'add', text: 'const total = amount + 1', oldNo: null, newNo: 1 },
+]
+const spans = intralineSpans(lines)
+const intraCount = (html) => (html.match(/class="intra"/g) ?? []).length
+console.log(JSON.stringify({
+  split: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0) }))),
+  unified: intraCount(renderToStaticMarkup(createElement(UnifiedLine, { line: lines[1], changed: spans.get(1) }))),
+  splitMoved: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0), label: 'moved' }))),
+}))
+`
+
+test('split and unified rows render the changed words, and a moved label drops them', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.stderr.toString()).toBe('')
+  expect(JSON.parse(child.stdout.toString())).toEqual({ split: 1, unified: 1, splitMoved: 0 })
+})
+
+// A collapsed file does no word comparison for its hunks, in any layout or with Markdown formatting. The lines count reads
+// of their text, which only the comparison and the rendered rows do. An open file still shows its changed words.
+const LAZY_CHECK = `
+const views = {}
+Object.assign(globalThis, {
+  localStorage: { getItem: (key) => (key === 'bettergit.session' ? JSON.stringify({ views }) : null), setItem: () => undefined },
+  window: { addEventListener: () => undefined, setTimeout, clearTimeout },
+})
+const react = require('react')
+react.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
+const { createElement } = react
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { DiffView, setDiffLayout } = await import('./src/renderer/src/DiffView')
+const { setFormatMarkdown } = await import('./src/renderer/src/prefs')
+const { parseDiff } = await import('./src/main/git/diff')
+let reads = 0
+function file(path) {
+  const [parsed] = parseDiff('diff --git a/' + path + ' b/' + path + '\\n--- a/' + path + '\\n+++ b/' + path + '\\n@@ -1 +1 @@\\n-const total = count + 1\\n+const total = amount + 1\\n')
+  for (const hunk of parsed.hunks) hunk.lines = hunk.lines.map((line) => {
+    const text = line.text
+    return Object.defineProperty({ ...line }, 'text', { enumerable: true, get: () => { reads++; return text } })
+  })
+  return parsed
+}
+function render(path, open, layout, markdown) {
+  views.files = { key: 'k', value: open === undefined ? {} : { [path]: open } }
+  setDiffLayout(layout); setFormatMarkdown(markdown)
+  const files = [file(path)]
+  reads = 0
+  const html = renderToStaticMarkup(createElement(DiffView, { files, moves: [], persist: { id: 'files', key: 'k' } }))
+  return { reads, intra: (html.match(/class="intra"/g) ?? []).length }
+}
+const result = {}
+for (const layout of ['unified', 'split']) for (const markdown of [false, true]) {
+  const name = layout + (markdown ? '-md' : '')
+  result[name] = {
+    closed: render('notes.md', false, layout, markdown),
+    lock: render('bun.lock', undefined, layout, markdown),
+    open: render('notes.md', true, layout, markdown).intra > 0,
+  }
+}
+console.log(JSON.stringify(result))
+`
+
+test('a collapsed file compares no words in any layout, and an open one still shows them', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', LAZY_CHECK], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.stderr.toString()).toBe('')
+  const closed = { reads: 0, intra: 0 }
+  const expected = { closed, lock: closed, open: true }
+  expect(JSON.parse(child.stdout.toString())).toEqual({ unified: expected, 'unified-md': expected, split: expected, 'split-md': expected })
+})

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 
-// Isolates renderer globals from the other suites. The hook runner drives the real ChangesView
-// callbacks and effects without a browser or a live Electron app.
+// Like diff-toolbar.test.ts, isolate renderer globals from the other suites. The hook runner
+// drives the real ChangesView callbacks and effects without a browser or a live Electron app.
 const CHECK = String.raw`
 const assert = require('node:assert/strict')
 const react = require('react')
@@ -19,7 +19,7 @@ Object.assign(globalThis, {
   requestAnimationFrame: () => 0,
 })
 
-let slots, cursor, effects, dirty, mounted, props, tree
+let slots, cursor, effects, dirty, mounted, props, tree, errors
 const changed = (before, after) => !before || !after || before.length !== after.length || before.some((value, i) => !Object.is(value, after[i]))
 react.useState = (initial) => {
   const index = cursor++
@@ -48,6 +48,8 @@ react.useLayoutEffect = react.useEffect
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 
 const { ChangesView } = await import('./src/renderer/src/ChangesView')
+const { setContextLines, setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
+const { parseDiff } = await import('./src/main/git/diff')
 
 function render() {
   do {
@@ -56,10 +58,10 @@ function render() {
     for (const effect of effects) effect()
   } while (dirty)
 }
-async function flush() {
+async function flush(renderUpdates = true) {
   for (let i = 0; i < 12; i++) {
     await Promise.resolve()
-    if (dirty && mounted) render()
+    if (renderUpdates && dirty && mounted) render()
   }
 }
 function find(node, match) {
@@ -70,18 +72,116 @@ function find(node, match) {
     if (found) return found
   }
 }
+const diff = () => find(tree, (p) => Array.isArray(p.files) && typeof p.onExpand === 'function' && !p.stage.staged)
+  ?? find(tree, (p) => Array.isArray(p.files) && typeof p.onExpand === 'function')
 const change = (path) => ({ path, staged: true, unstaged: true, conflicted: false, kind: 'modified' })
+function working(label) {
+  return { files: ['a.ts', 'b.ts'].flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n')), moves: [] }
+}
+async function load(label, renderUpdates = true) {
+  for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) {
+    request.done = true; request.resolve(working(label))
+  }
+  await flush(renderUpdates)
+}
 function unmount() {
   for (const slot of slots) slot?.cleanup?.()
   mounted = false
 }
-async function start() {
-  stored.clear(); requests.length = 0; slots = []; mounted = true
+async function start(selected) {
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  if (selected) stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
   props = {
     repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
-    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => { throw error },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+  }
+  render(); await load('initial')
+}
+function expand() {
+  const view = diff()
+  assert.ok(view, 'Changes diff is mounted')
+  view.onExpand(view.files[0])
+  const request = requests.at(-1)
+  assert.equal(request.args[3], 'a.ts')
+  assert.equal(request.args[2], 10)
+  return request
+}
+
+if (process.env.CHECK_MODE === 'conflict-reset') {
+  const { parseConflicts, conflictBlocks } = await import('./src/shared/conflict')
+  const loads = [], resets = [], confirms = []
+  let answer = true
+  Object.assign(window.bettergit, {
+    conflictLoad: (...args) => new Promise((resolve, reject) => loads.push({ args, resolve, reject })),
+    conflictReset: (...args) => new Promise((resolve, reject) => resets.push({ args, resolve, reject })),
+  })
+  window.confirm = (message) => { confirms.push(message); return answer }
+  const fingerprint = (label) => ({ working: label.repeat(64), stages: 'b'.repeat(64) })
+  const conflictDoc = (label) => {
+    const { parts } = parseConflicts('x\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> t\n')
+    return { supported: true, fingerprint: fingerprint(label), parts, combine: conflictBlocks(parts).map(() => ({ state: 'overlap' })), reset: { available: true, fingerprint: fingerprint(label) } }
+  }
+  const conflicted = (path) => ({ path, staged: false, unstaged: false, conflicted: true, kind: 'modified' })
+  const view = () => find(tree, (p) => typeof p.onReset === 'function')
+  const choose = () => { view().onChoose(0, 'current'); render(); assert.deepEqual(view().choices, ['current']) }
+  stored.clear(); errors = []; slots = []; mounted = true
+  stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'c.ts', staged: false } } }))
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [conflicted('c.ts'), conflicted('d.ts')] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
   }
   render()
+  const first = conflictDoc('a')
+  loads.at(-1).resolve(first); await flush()
+  choose()
+
+  // Cancel asks once and calls nothing.
+  answer = false
+  view().onReset(); await flush()
+  assert.equal(resets.length, 0)
+  assert.equal(confirms.length, 1)
+  for (const words of ['c.ts', "Git's index", 'saved edits and unsaved choices', 'stays unmerged and unstaged', 'Other files are unchanged']) {
+    assert.ok(confirms[0].includes(words), 'confirmation says: ' + words)
+  }
+  assert.deepEqual(view().choices, ['current'])
+
+  // The request is the confirmed fingerprint alone. A refusal keeps the model and its choices.
+  answer = true
+  view().onReset(); await flush()
+  assert.deepEqual(resets[0].args, ['/repo', 'c.ts', { fingerprint: fingerprint('a') }])
+  resets[0].reject(new Error('refused')); await flush()
+  assert.deepEqual(errors, ['Error: refused'])
+  assert.equal(view().model, first)
+  assert.deepEqual(view().choices, ['current'])
+
+  // A reset that writes the same bytes still installs its model and clears the choices.
+  view().onReset(); await flush()
+  const same = conflictDoc('a')
+  resets[1].resolve(same); await flush()
+  assert.equal(view().model, same)
+  assert.deepEqual(view().choices, [])
+
+  // A reply for a file the pane has left does not replace the file now on screen.
+  choose()
+  view().onReset(); await flush()
+  find(tree, (p) => p.title === 'Conflicts' && typeof p.onSelect === 'function').onSelect(conflicted('d.ts')); render()
+  const other = conflictDoc('d')
+  loads.at(-1).resolve(other); await flush()
+  resets[2].resolve(conflictDoc('c')); await flush()
+  assert.equal(view().path, 'd.ts')
+  assert.equal(view().model, other)
+
+  // Nor does a reply for a repo the pane has left.
+  choose()
+  view().onReset(); await flush()
+  props = { ...props, repo: '/other' }; render()
+  // Same path and fingerprint as the request, so only the repo tells them apart.
+  const elsewhere = conflictDoc('d')
+  loads.at(-1).resolve(elsewhere); await flush()
+  resets[3].resolve(conflictDoc('f')); await flush()
+  assert.equal(view().model, elsewhere)
+  unmount()
 }
 
 if (process.env.CHECK_MODE === 'commit-draft') {
@@ -92,7 +192,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   const remount = () => { unmount(); slots = []; mounted = true; render() }
   // Nothing typed after the remount, a different draft, and the committed text typed again.
   for (const typed of [null, 'second', 'first']) {
-    await start()
+    await start(false)
     box().onChange({ target: { value: 'first' } }); render()
     find(tree, (p) => p.className === 'commit-action').onClick()
     // The tab is left and shown again while the commit runs.
@@ -111,20 +211,15 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
   globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
   const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
-  const { parseDiff } = await import('./src/main/git/diff')
-  const working = (label) => ({ files: ['a.ts', 'b.ts'].flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n')), moves: [] })
-  async function load(label) {
-    for (const request of requests.filter((r) => !r.done)) { request.done = true; request.resolve(working(label)) }
-    await flush()
-  }
   const revealed = []
   const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path) }))
   const pane = { scrollTop: 400, querySelectorAll: () => sections }
-  stored.clear(); requests.length = 0; slots = []; mounted = true
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
   stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
   props = {
     repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
-    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => { throw error },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
   }
   render()
   find(tree, (p) => p.className === 'diff-pane').ref.current = pane
@@ -152,6 +247,341 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   tick(); tick()
   assert.equal(pane.scrollTop, 0)
   unmount()
+} else if (process.env.CHECK_MODE === 'whitespace-failure') {
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  const counts = (node, out = []) => {
+    for (const child of Array.isArray(node) ? node : [node]) {
+      if (!react.isValidElement(child)) continue
+      if (child.props.className === 'diff-section') out.push(child)
+      counts(child.props.children, out)
+    }
+    return out.filter((h2) => [].concat(h2.props.children).some((c) => react.isValidElement(c) && c.props.className === 'count')).length
+  }
+  const settle = async (outcome) => {
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) {
+      request.done = true
+      if (outcome instanceof Error) request.reject(outcome)
+      else request.resolve(outcome)
+    }
+    await flush()
+  }
+  for (const selected of [false, true]) {
+    await start(selected)
+    // Hiding whitespace reloads with the new option. If that load fails, the hunks loaded without it are not shown under it.
+    setIgnoreWhitespace(true); render()
+    assert.ok(requests.filter((r) => !r.done && r.args[3] === undefined).every((r) => r.args[4] === true))
+    await settle(new Error('filtered load failed'))
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: filtered load failed'))
+    // The failure stays on screen in place of the changes, with the toolbar mounted so the option can be changed back.
+    for (let pass = 0; pass < 2; pass++) {
+      for (const view of views(selected)) {
+        assert.ok(view, 'toolbar unmounted after a failed load')
+        assert.deepEqual(view.files, [], 'hunks loaded with whitespace shown under hidden whitespace')
+        assert.equal(view.emptyHint, 'Could not load these changes.')
+      }
+      if (!selected) assert.equal(counts(tree), 0, 'a failed load shows file counts')
+      render()
+    }
+    // A refresh with the same options that loads no files is a valid empty view, with the default text.
+    props = { ...props, revision: 2 }; render()
+    await settle({ files: [], moves: [] })
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    if (!selected) assert.equal(counts(tree), 2)
+    // Showing whitespace again loads the changes. A failed refresh with those options keeps them.
+    setIgnoreWhitespace(false); render(); await load('shown')
+    props = { ...props, revision: 3 }; render()
+    await settle(new Error('refresh failed'))
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'shown')
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'initial-failure') {
+  // The first load fails before any result has shown. The failure stays in place of the changes, with the toolbar
+  // mounted, after the error banner clears; a later load for the same view replaces it.
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  for (const selected of [false, true]) {
+    stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+    setContextLines(3); setIgnoreWhitespace(false)
+    if (selected) stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
+    props = {
+      repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+      listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+    }
+    render()
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) { request.done = true; request.reject(new Error('first load failed')) }
+    await flush()
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: first load failed'))
+    for (let pass = 0; pass < 2; pass++) {
+      for (const view of views(selected)) {
+        assert.ok(view, 'no diff toolbar after a failed first load')
+        assert.deepEqual(view.files, [])
+        assert.equal(view.emptyHint, 'Could not load these changes.')
+      }
+      render()
+    }
+    props = { ...props, revision: 2 }; render(); await load('recovered')
+    for (const view of views(selected)) {
+      assert.equal(view.emptyHint, undefined)
+      assert.equal(view.files[0].hunks[0].lines.at(-1).text, 'recovered')
+    }
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'option-pending') {
+  // While a load for new options runs, hunks, counts and row stats from the old options are not shown; the toolbar is.
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  const texts = (selected) => views(selected).map((view) => view.files.map((file) => file.hunks[0].lines.at(-1).text))
+  const counted = () => {
+    const out = []
+    const walk = (node) => { for (const child of Array.isArray(node) ? node : [node]) if (react.isValidElement(child)) { if (child.props.className === 'count') out.push(child); walk(child.props.children) } }
+    walk(tree)
+    return out.length
+  }
+  const rowStats = () => find(tree, (p) => p.title === 'Unstaged' && p.stats instanceof Map).stats.size
+  const settle = async (option, outcome) => {
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined && r.args[4] === option)) {
+      request.done = true
+      if (outcome instanceof Error) request.reject(outcome)
+      else request.resolve(working(outcome))
+    }
+    await flush()
+  }
+  for (const selected of [false, true]) {
+    await start(selected)
+    const loadedCounts = counted()
+    assert.ok(rowStats() > 0)
+    setIgnoreWhitespace(true); render()
+    for (const view of views(selected)) {
+      assert.ok(view, 'toolbar unmounted while the new option loads')
+      assert.deepEqual(view.files, [], 'old-option hunks shown while the new option loads')
+      assert.equal(view.emptyHint, 'Loading…')
+    }
+    assert.equal(rowStats(), 0, 'old-option row stats shown while the new option loads')
+    assert.equal(counted(), loadedCounts - (selected ? 0 : 2), 'old-option section counts shown while the new option loads')
+    // Switching back shows the result loaded for that option at once, while its refresh runs.
+    setIgnoreWhitespace(false); render()
+    assert.deepEqual(texts(selected), views(selected).map(() => ['initial', 'initial']))
+    // A reply for an option already left changes nothing; the current reply shows.
+    setIgnoreWhitespace(true); render()
+    await settle(false, 'obsolete')
+    for (const view of views(selected)) assert.equal(view.emptyHint, 'Loading…')
+    await settle(true, 'filtered')
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    assert.ok(rowStats() > 0)
+    // A refresh with the same options keeps its result while it runs and after it fails.
+    props = { ...props, revision: 2 }; render()
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    await settle(true, new Error('refresh failed'))
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: refresh failed'))
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'option-scroll') {
+  // The pane models the browser: its height follows the files on screen once a frame lays them out, a shorter pane clamps
+  // scrollTop, and a clamp fires the pane's scroll event. A scrolled view keeps its place through an option reload.
+  const frames = new Map()
+  let nextFrame = 1
+  globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  let top = 0
+  const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [] }
+  Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
+  const scrolled = () => find(tree, (p) => p.className === 'diff-pane').onScroll({ currentTarget: pane })
+  const frame = () => {
+    const shown = []
+    const walk = (node) => { for (const child of Array.isArray(node) ? node : [node]) if (react.isValidElement(child)) { if (Array.isArray(child.props.files) && child.props.stage) shown.push(...child.props.files); walk(child.props.children) } }
+    walk(tree)
+    pane.scrollHeight = shown.length ? 3000 : 40
+    const before = pane.scrollTop
+    pane.scrollTop = before
+    if (pane.scrollTop !== before) scrolled()
+    const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback())
+  }
+  const saved = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return JSON.parse(stored.get('bettergit.session')).views['/repo|changes-diff']
+  }
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+  }
+  render()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = pane
+  await load('initial')
+  frame(); frame()
+  pane.scrollTop = 900; scrolled()
+  setIgnoreWhitespace(true); render()
+  frame()
+  assert.equal(pane.scrollTop, 0)
+  await load('filtered')
+  frame(); frame()
+  assert.equal(pane.scrollTop, 900, 'scroll position lost across an option reload')
+  assert.deepEqual(await saved(), { key: 'all', value: 900 }, 'the clamp to the top was saved')
+  // Picking a file while an option reload runs leaves that file to its own reveal, not the old position.
+  setIgnoreWhitespace(false); render()
+  frame()
+  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  await load('picked')
+  frame(); frame(); frame()
+  assert.notEqual(pane.scrollTop, 900, 'old view position restored into a picked file')
+  setIgnoreWhitespace(false)
+  unmount()
+} else if (process.env.CHECK_MODE === 'status-loads') {
+  for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
+    await start(false)
+    if (mode !== 'all') {
+      const title = mode === 'selected-staged' ? 'Staged' : 'Unstaged'
+      find(tree, (p) => p.title === title && typeof p.onSelect === 'function').onSelect(change('b.ts'))
+      render(); await load('initial')
+    }
+    props = { ...props, revision: 2 }; render()
+    const oldLoads = requests.filter((r) => !r.done && r.args[3] === undefined)
+    const oldWiden = expand()
+    const beforeStatus = requests.length
+    props = { ...props, status: { changes: [change('b.ts')] } }; render()
+    const currentLoads = requests.slice(beforeStatus).filter((r) => r.args[3] === undefined)
+    const beforeReply = JSON.stringify(diff().files)
+    for (const request of [...oldLoads, oldWiden]) {
+      request.done = true
+      if (reject) request.reject(new Error('obsolete status request'))
+      else request.resolve(working('obsolete'))
+    }
+    await flush()
+    assert.equal(JSON.stringify(diff().files), beforeReply, mode + ': old base load replaced the current source')
+    assert.deepEqual(errors, [], mode + ': obsolete status error reached onError')
+    assert.deepEqual(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened, {})
+    assert.equal(currentLoads.length, mode === 'all' ? 2 : 3, mode + ': status must start fresh base loads')
+    const current = working('current')
+    current.files = current.files.filter((file) => file.newPath === 'b.ts')
+    for (const request of currentLoads) { request.done = true; request.resolve(current) }
+    await flush()
+    for (const staged of mode === 'all' ? [false, true] : [mode === 'selected-staged']) {
+      const view = find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged)
+      assert.deepEqual(view.files.map((file) => file.newPath), ['b.ts'], mode + ': obsolete a.ts leaked')
+      assert.equal(view.files[0].hunks[0].lines.at(-1).text, 'current')
+    }
+    // A later failure for the current status must still report from each active loader.
+    props = { ...props, status: { changes: [change('b.ts')] } }; render()
+    const active = requests.filter((r) => !r.done && r.args[3] === undefined)
+    for (const request of active) { request.done = true; request.reject(new Error('active status failure')) }
+    await flush()
+    assert.equal(errors.length, mode === 'all' ? 1 : 2)
+    assert.ok(errors.every((error) => error === 'Error: active status failure'))
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'retained') {
+  for (const selected of [false, true]) for (const reject of [false, true]) {
+    await start(selected)
+    props = { ...props, revision: 2 }; render()
+    // This widen is requested from the still-displayed file under the NEW revision.
+    const currentWiden = expand()
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) {
+      request.done = true; request.reject(new Error('current base failure'))
+    }
+    await flush()
+    assert.equal(errors.length, selected ? 2 : 1)
+    const baseErrors = [...errors]
+    currentWiden.done = true
+    if (reject) currentWiden.reject(new Error('current widen failure'))
+    else currentWiden.resolve({ files: [working('retained-wide').files[0]], moves: [] })
+    await flush()
+    assert.deepEqual(errors, reject ? [...baseErrors, 'Error: current widen failure'] : baseErrors)
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, reject ? 'initial' : 'retained-wide')
+    assert.equal(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened['u:a.ts'], reject ? undefined : 10)
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'batched') {
+  for (const selected of [false, true]) for (const reject of [false, true]) {
+    await start(selected)
+    props = { ...props, revision: 2 }; render()
+    const oldWiden = expand()
+    await load('latest', false)
+    oldWiden.done = true
+    if (reject) oldWiden.reject(new Error('stale batched error'))
+    else oldWiden.resolve({ files: [working('stale-wide').files[0]], moves: [] })
+    await flush()
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'latest', 'batched widen replaced the latest file')
+    assert.equal(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened['u:a.ts'], undefined)
+    assert.deepEqual(errors, [])
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'errors') {
+  for (const selected of [false, true]) {
+    await start(selected)
+    const oldWiden = expand()
+    props = { ...props, revision: 2 }; render()
+    const oldLoads = requests.filter((r) => !r.done && r.args[3] === undefined)
+    setIgnoreWhitespace(true); render()
+    const latestLoad = requests.at(-1)
+    latestLoad.done = true; latestLoad.reject(new Error('latest load error'))
+    await flush()
+    assert.deepEqual(errors, ['Error: latest load error'])
+    for (const request of [...oldLoads, oldWiden]) {
+      request.done = true; request.reject(new Error('stale request error'))
+    }
+    await flush()
+    assert.deepEqual(errors, ['Error: latest load error'], 'stale failure replaced the latest load error')
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'fresh') {
+  for (const selected of [false, true]) {
+    await start(selected)
+    const request = expand()
+    request.done = true; request.resolve({ files: [working('fresh-wide').files[0]], moves: [] })
+    await flush()
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'fresh-wide')
+    assert.equal(diff().files[1].hunks[0].lines.at(-1).text, 'initial')
+    assert.equal(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened['u:a.ts'], 10)
+    assert.deepEqual(errors, [])
+    const view = diff()
+    view.onExpand(view.files[0]); const widerA = requests.at(-1)
+    view.onExpand(view.files[1]); const widerB = requests.at(-1)
+    assert.equal(widerA.args[2], 25)
+    widerB.done = true; widerB.resolve({ files: [working('wide-b').files[1]], moves: [] })
+    await flush(false)
+    widerA.done = true; widerA.resolve({ files: [working('wider-a').files[0]], moves: [] })
+    await flush()
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'wider-a')
+    assert.equal(diff().files[1].hunks[0].lines.at(-1).text, 'wide-b')
+    assert.deepEqual(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened, { 'u:a.ts': 25, 'u:b.ts': 10 })
+    unmount()
+  }
+} else {
+  const selected = process.env.CHECK_MODE === 'selected'
+  const transitions = ['whitespace', 'context', 'revision', 'status', 'repo', 'file', 'section', 'clear', 'unmount']
+  for (const transition of transitions) for (const reject of [false, true]) {
+    await start(selected)
+    const request = expand()
+    if (transition === 'whitespace') setIgnoreWhitespace(true)
+    if (transition === 'context') setContextLines(25)
+    if (transition === 'revision') props = { ...props, revision: 2 }
+    if (transition === 'status') props = { ...props, status: { ...props.status, changes: [...props.status.changes] } }
+    if (transition === 'repo') props = { ...props, repo: '/other' }
+    if (transition === 'file' || transition === 'section') {
+      const section = transition === 'section' ? 'Staged' : 'Unstaged'
+      find(tree, (p) => p.title === section && typeof p.onSelect === 'function').onSelect(change(transition === 'file' ? 'b.ts' : 'a.ts'))
+    }
+    if (transition === 'clear') {
+      // Clearing an already empty selection is not a target change.
+      if (!selected) { unmount(); continue }
+      find(tree, (p) => p.className?.startsWith('file-list')).onClick({ target: { closest: () => null } })
+    }
+    if (transition === 'unmount') unmount()
+    else { render(); await load('latest') }
+    const before = JSON.stringify(diff()?.files)
+    errors.push('latest error')
+    request.done = true
+    if (reject) request.reject(new Error('stale widen error'))
+    else request.resolve({ files: [working('stale-wide').files[0]], moves: [] })
+    await flush()
+    assert.equal(JSON.stringify(diff()?.files), before, transition + ': old widen replaced latest diff')
+    assert.deepEqual(errors, ['latest error'], transition + ': old widen replaced latest error')
+    const place = JSON.parse(stored.get('bettergit.session')).places['/repo']
+    assert.equal(place?.widened?.['u:a.ts'], undefined, transition + ': old widen persisted its level')
+    if (mounted) unmount()
+  }
 }
 `
 
@@ -164,5 +594,16 @@ function check(mode: string) {
   expect(child.exitCode, child.stderr.toString()).toBe(0)
 }
 
+test('a current Changes widen replaces only its file and persists its level', () => check('fresh'))
+test('all Changes drops stale widen replies and errors across options, refreshes, targets and unmount', () => check('all'))
+test('selected Changes drops stale widen replies and errors across options, refreshes, targets and unmount', () => check('selected'))
+test('old Changes loads and widens cannot replace a newer load error', () => check('errors'))
+test('a base reload invalidates old file widens before React renders the replacement', () => check('batched'))
+test('status changes invalidate pending base loads and start current staged, working and selected loads', () => check('status-loads'))
+test('a widen requested under the current revision remains valid after its base reload fails', () => check('retained'))
 test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
 test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
+test('a failed load with new whitespace options shows the failure in place of the old hunks and keeps the toolbar', () => check('whitespace-failure'))
+test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))
+test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
+test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
