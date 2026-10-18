@@ -213,6 +213,8 @@ let revealing = 0
 // mounts, and the row is looked for again on the next frames. An editable file reveals the line in its editor.
 export async function revealMatch(source: FindSource, match: Match) {
   const run = ++revealing
+  // Checked right after every wait, before any scroll, unfold or mark: a newer reveal or a cleared find ends this one.
+  const stale = () => run !== revealing
   const container = source.container.current
   const file = source.files[match.file]
   const line = file?.hunks[match.hunk]?.lines[match.line]
@@ -220,8 +222,9 @@ export async function revealMatch(source: FindSource, match: Match) {
   const path = file.newPath ?? file.oldPath ?? ''
   const section = () => container.querySelector<HTMLElement>(`[data-file-index="${match.file}"]`)
   if (section()?.querySelector(':scope > .collapsed-note')) source.openFile(path)
-  for (let frame = 0; frame < 90 && run === revealing; frame++) {
+  for (let frame = 0; frame < 90; frame++) {
     if (frame) await nextFrame()
+    if (stale()) return
     const host = section()?.querySelector<HTMLElement>('.diff-editor')
     const editor = host && mountedEditors.get(host)
     if (editor) {
@@ -231,17 +234,20 @@ export async function revealMatch(source: FindSource, match: Match) {
       // A folded line opens first. A removed line in the unified editor is found in its removed block.
       editor.unfold(old ? 'old' : 'new', (old ? line.oldNo : line.newNo) ?? 1)
       if (old && unifiedEditor && line.oldNo) {
-        clearHighlight()
+        unhighlight()
         let row: HTMLElement | null = null
-        for (let step = 0; step < 30 && run === revealing && !(row = editor.deletedLine(line.oldNo)); step++) await nextFrame()
-        if (row && run === revealing) {
+        for (let step = 0; step < 30 && !(row = editor.deletedLine(line.oldNo)); step++) {
+          await nextFrame()
+          if (stale()) return
+        }
+        if (row) {
           place(row, 'center')
           highlight(row, match)
           return
         }
       }
       const near = lines.slice(match.line).find((other) => other.newNo != null) ?? [...lines.slice(0, match.line)].reverse().find((other) => other.newNo != null)
-      clearHighlight()
+      unhighlight()
       marked = editor
       const side = old ? 'old' : 'new'
       // A removed line in the unified editor is drawn from the old text, so the current line next to it is used.
@@ -255,6 +261,7 @@ export async function revealMatch(source: FindSource, match: Match) {
         place(host, hostBox.top > paneBox.bottom ? 'start' : 'end')
         await nextFrame()
         await nextFrame()
+        if (stale()) return
       }
       // The side's editor: the old one is the first of a split view's two.
       const editors = host.querySelectorAll<HTMLElement>('.cm-editor')
@@ -267,7 +274,7 @@ export async function revealMatch(source: FindSource, match: Match) {
       // The editor knows real heights only for lines it has drawn, and corrects the rest as it draws them, so the pane
       // steps toward the line a screen at a time until it is drawn, then keeps it centred until it holds still.
       let steady = 0
-      for (let step = 0; step < 90 && run === revealing && pane; step++) {
+      for (let step = 0; step < 90 && pane; step++) {
         const element = shown()
         const bounds = pane.getBoundingClientRect()
         if (element) {
@@ -288,6 +295,7 @@ export async function revealMatch(source: FindSource, match: Match) {
           pane.scrollTop += step * pane.clientHeight
         }
         await nextFrame()
+        if (stale()) return
       }
       return
     }
@@ -319,7 +327,7 @@ export async function revealMatch(source: FindSource, match: Match) {
 // The current match uses the CSS Custom Highlight API, so no row re-renders. A row without the line's text (formatted
 // Markdown shows its source gutter only) is highlighted whole.
 function highlight(row: HTMLElement, match: Match) {
-  clearHighlight()
+  unhighlight()
   const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights
   const Highlight = (globalThis as { Highlight?: new (range: Range) => unknown }).Highlight
   const code = row.querySelector('code') ?? (row.matches('.cm-deletedLine') ? row : null)
@@ -355,7 +363,13 @@ function setHighlight(range: Range) {
 // The editor holding the current match's mark, if the match is in an editable file.
 let marked: Mounted | null = null
 
+// Also stops a reveal still under way, so clearing or closing find never scrolls or highlights afterwards.
 export function clearHighlight() {
+  revealing++
+  unhighlight()
+}
+
+function unhighlight() {
   marked?.unmark()
   marked = null
   ;(globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights?.delete('find-current')

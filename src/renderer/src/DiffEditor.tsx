@@ -205,12 +205,9 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   const startAt = useRef<At | null>(null)
   const anchor = useRef<{ line: number; top: number } | null>(null)
   const typed = useRef<string[] | null>(null)
-  // Ends the key capture that keeps those keys. It runs when the editor mounts, the load fails, or the file goes.
+  // Ends the key capture and drops its keys. Only the editor mount it was waiting for takes the keys first.
   const stopTyping = useRef<(() => void) | null>(null)
-  const dropTyping = () => {
-    stopTyping.current?.()
-    typed.current = null
-  }
+  const dropTyping = () => stopTyping.current?.()
   useEffect(() => dropTyping, [key])
   useEffect(() => { if (source && 'error' in source) dropTyping() }, [source])
   const [near, setNear] = useState(() => dirty(drafts.get(key)))
@@ -314,9 +311,9 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
     const section = parent.closest<HTMLElement>('.diff-file')
     const unfollow = section ? editor.scrollers.map((element) => hscrollOf(section).follow(element)) : []
     // Keys typed before the editor was ready go in now, at the caret.
-    stopTyping.current?.()
-    if (typed.current?.length) cm.typeKeys(editor.view, typed.current)
-    typed.current = null
+    const keys = typed.current
+    dropTyping()
+    if (keys?.length) cm.typeKeys(editor.view, keys)
     // The editor draws on its next measure, before the frame paints. The clicked line is kept where it was on screen,
     // since lines above it that the editor has not drawn yet are estimated.
     const pane = parent.closest<HTMLElement>('.diff-pane')
@@ -405,7 +402,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
     }
     startAt.current = { line: line.newNo, column }
     if (stopTyping.current) return
-    const keys = typed.current ?? []
+    const keys: string[] = []
     typed.current = keys
     const file = event.currentTarget as HTMLElement
     const onKey = (key: KeyboardEvent) => {
@@ -427,6 +424,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
       window.removeEventListener('blur', stop)
       clearTimeout(timer)
       if (stopTyping.current === stop) stopTyping.current = null
+      if (typed.current === keys) typed.current = null
     }
     const timer = setTimeout(stop, TYPE_AHEAD_MS)
     window.addEventListener('keydown', onKey, true)

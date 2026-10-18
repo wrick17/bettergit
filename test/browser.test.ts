@@ -144,10 +144,12 @@ test.skipIf(!playwright)('keys typed while a file loads are not taken from other
     document.body.insertAdjacentHTML('beforeend', '<input id="other">')
     const w = window as any
     w.root = createRoot(document.getElementById('root')!)
-    const edit = { repo: 'r', load: () => new Promise((_, fail) => { w.failLoad = () => fail(new Error('gone')) }), save: async () => true, onError: () => undefined }
+    const edit = { repo: 'r', load: () => new Promise((done, fail) => { w.failLoad = () => fail(new Error('gone')); w.finishLoad = () => done('hello') }), save: async () => true, onError: () => undefined }
     const hunks = [{ header: '@@ -1 +1 @@', lines: [{ type: 'context', text: 'hello', oldNo: 1, newNo: 1 }] }]
     const fallback = createElement('div', { 'data-source-row': '0:0:0', 'data-source-side': 'new' }, createElement('code', null, 'hello'))
-    flushSync(() => w.root.render(createElement(EditableDiff, { edit, path: 'a.ts', hunks, layout: 'unified', language: null, fallback, fileIndex: 0, onExtent: () => undefined })))
+    // A new path each time, since the draft one run types into outlives it.
+    w.run = (w.run ?? 0) + 1
+    flushSync(() => w.root.render(createElement(EditableDiff, { edit, path: `a${w.run}.ts`, hunks, layout: 'unified', language: null, fallback, fileIndex: 0, onExtent: () => undefined })))
     const row = document.querySelector('[data-source-row]')!.getBoundingClientRect()
     for (const type of ['mousedown', 'mouseup']) {
       document.querySelector('[data-source-row]')!.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: row.left + 2, clientY: row.top + 2 }))
@@ -186,6 +188,24 @@ test.skipIf(!playwright)('keys typed while a file loads are not taken from other
   await page.evaluate(() => (window as any).root.unmount())
   expect(await probe()).toEqual({ taken: false, typed: 'h' })
   await reset()
+
+  // The keys go into the editor the load mounts, unless the capture ended first: a blur (or the timeout) drops them.
+  const finish = (blur: boolean) => page.evaluate(async (blur: boolean) => {
+    const press = () => !document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', bubbles: true, cancelable: true }))
+    const taken = press()
+    if (blur) window.dispatchEvent(new Event('blur'))
+    ;(window as any).finishLoad()
+    for (let tries = 0; tries < 100 && !document.querySelector('.cm-content, .ed-preview'); tries++) await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const content = document.querySelector('.cm-content')
+    return { taken, editor: content && [...content.querySelectorAll(':scope > .cm-line')].map((line) => line.textContent).join('\n') }
+  }, blur)
+  await start()
+  expect(await finish(false)).toEqual({ taken: true, editor: 'qhello' })
+  await reset()
+  await start()
+  expect(await finish(true)).toEqual({ taken: true, editor: null })
+  await reset()
 })
 
 test.skipIf(!playwright)('find recounts matches when a diff refreshes with the same number of files', async () => {
@@ -202,4 +222,67 @@ test.skipIf(!playwright)('find recounts matches when a diff refreshes with the s
   await render(fileWith('needle and needle'))
   expect(await page.textContent('.find-count')).toBe('1 of 2')
   await page.evaluate(() => (window as any).findRoot.unmount())
+})
+
+test.skipIf(!playwright)('clearing find stops a reveal still under way: no later scroll, no highlight', async () => {
+  const result = await page.evaluate(async () => {
+    const { revealMatch, clearHighlight } = (window as any).under
+    const frames = (count: number) => new Promise<void>((resolve) => {
+      const tick = () => (count-- ? requestAnimationFrame(tick) : resolve())
+      tick()
+    })
+    // A match far down, in a chunk whose rows are not mounted yet, so the reveal keeps scrolling to it frame by frame.
+    document.getElementById('root')!.innerHTML = `
+      <div class="diff-pane" style="height: 200px; overflow: auto">
+        <div class="diff"><div data-file-index="0"><div style="height: 5000px"></div><div data-lines="0:0:0:99" style="height: 400px"></div></div></div>
+      </div>`
+    const pane = document.querySelector<HTMLElement>('.diff-pane')!
+    const container = document.querySelector<HTMLElement>('.diff')!
+    const lines = Array.from({ length: 100 }, (_, index) => ({ type: 'context', text: index === 50 ? 'needle' : 'line', oldNo: index + 1, newNo: index + 1 }))
+    const files = [{ oldPath: 'a.ts', newPath: 'a.ts', status: 'modified', binary: false, hunks: [{ header: '@@ -1,100 +1,100 @@', lines }] }]
+    void revealMatch({ container: { current: container }, files, openFile: () => undefined }, { file: 0, hunk: 0, line: 50, start: 0, end: 6 })
+    const scrolled = pane.scrollTop > 0
+    clearHighlight()
+    pane.scrollTop = 0
+    // The row mounts after find was cleared.
+    container.querySelector('[data-lines]')!.insertAdjacentHTML('beforeend', '<div data-source-row="0:0:50"><code>needle</code></div>')
+    await frames(5)
+    return { scrolled, after: pane.scrollTop, highlighted: (CSS as any).highlights.has('find-current') }
+  })
+  expect(result).toEqual({ scrolled: true, after: 0, highlighted: false })
+})
+
+test.skipIf(!playwright)('clearing find while a reveal waits for a removed row in the unified editor stops it there', async () => {
+  // The editor on screen, and off screen, where the reveal would first scroll to it.
+  const run = (spacer: number) => page.evaluate(async (spacer: number) => {
+    const { revealMatch, clearHighlight, mountedEditors } = (window as any).under
+    const frames = (count: number) => new Promise<void>((resolve) => {
+      const tick = () => (count-- ? requestAnimationFrame(tick) : resolve())
+      tick()
+    })
+    // An editor whose removed block has not drawn yet, so the reveal waits for the row frame by frame.
+    document.getElementById('root')!.innerHTML = `
+      <div class="diff-pane" style="height: 200px; overflow: auto">
+        <div class="diff"><div data-file-index="0"><div style="height: ${spacer}px"></div><div class="diff-editor" style="height: 400px"></div></div></div>
+      </div>`
+    const pane = document.querySelector<HTMLElement>('.diff-pane')!
+    const container = document.querySelector<HTMLElement>('.diff')!
+    const calls: string[] = []
+    mountedEditors.set(container.querySelector('.diff-editor'), {
+      unfold: () => calls.push('unfold'),
+      deletedLine: () => null,
+      reveal: () => calls.push('reveal'),
+      unmark: () => undefined,
+    })
+    const lines = [{ type: 'del', text: 'needle', oldNo: 1, newNo: null }, { type: 'context', text: 'line', oldNo: 2, newNo: 1 }]
+    const files = [{ oldPath: 'a.ts', newPath: 'a.ts', status: 'modified', binary: false, hunks: [{ header: '@@ -1,2 +1 @@', lines }] }]
+    void revealMatch({ container: { current: container }, files, openFile: () => undefined }, { file: 0, hunk: 0, line: 0, start: 0, end: 6 })
+    await frames(3)
+    clearHighlight()
+    await frames(40)
+    return { calls, scrollTop: pane.scrollTop, highlighted: (CSS as any).highlights.has('find-current') }
+  }, spacer)
+  // The fold opens before the wait; nothing is revealed, scrolled or marked after find is cleared.
+  expect(await run(0)).toEqual({ calls: ['unfold'], scrollTop: 0, highlighted: false })
+  expect(await run(5000)).toEqual({ calls: ['unfold'], scrollTop: 0, highlighted: false })
 })
