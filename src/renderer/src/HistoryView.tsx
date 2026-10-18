@@ -9,6 +9,7 @@ import { DiffView, countLines } from './DiffView'
 import { Icon } from './Icons'
 import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
+import { useRepoBusy } from './repo-busy'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { loadSession, savePlace, savedView, saveView, useScrollMemory } from './session'
@@ -51,7 +52,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const restoredCompare = useRef(false)
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [pending, setPending] = useState<string | null>(null)
+  // The write running in this repo, from any surface. The commit actions wait for it.
+  const pending = useRepoBusy(repo)
   // The commit context menu: the commit it is for, and the point it opened at.
   const [menu, setMenu] = useState<{ hash: string; x: number; y: number } | null>(null)
   const [upstream, setUpstream] = useState<string | null>(null)
@@ -361,7 +363,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <div className="commit-title">
                       <h2 className="commit-subject">{picked.subject}</h2>
                       {notice && <p className="commit-notice" role="status">{notice}</p>}
-                      {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} setPending={setPending} />}
+                      {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} />}
                     </div>
                   )}
                   {picked && (
@@ -401,7 +403,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
         <ActionMenu
           className="context-menu commit-menu"
           at={menu}
-          items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })}
+          items={commitItems(commitInput, { setPrompt, setNotice, pending })}
           onPick={(item) => { setMenu(null); item.onClick() }}
           onDismiss={() => setMenu(null)}
         />,

@@ -14,6 +14,7 @@ import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
 import { CloneDialog, SettingsDialog } from './Dialogs'
 import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { blockedReason, busyKey, connectRepoLocks, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 
@@ -60,6 +61,11 @@ export function App() {
     saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen })
   }, [selected, tab, sidebarOpen, listOpen, detailOpen])
 
+  useEffect(() => connectRepoLocks({
+    snapshot: () => api.repoLocks(),
+    subscribe: (listener) => api.onEvent('repo:locks', (payload) => listener(payload as RepoLockSnapshot)),
+  }, reportError), [])
+
   useEffect(() => {
     api.getConfig().then(setConfig).then(refreshTree).catch(reportError)
   }, [refreshTree])
@@ -85,27 +91,44 @@ export function App() {
   useEffect(() => {
     const off = api.onEvent('menu:action', (payload) => {
       const repo = selectedRef.current
-      const runRepo = (action: () => Promise<unknown>) => {
+      // Menu writes take the same repo slot as the toolbar. A refused write says what is running instead of starting.
+      const runRepo = (key: string, action: () => Promise<unknown>) => {
         if (!repo) return setError('Select a repository first.')
-        return action().then(() => setRevision((value) => value + 1)).catch(reportErrorRef.current)
+        const reason = blockedReason(busyKey(repo))
+        if (reason) return reportErrorRef.current(new Error(reason))
+        return void runRepoWrite(repo, key, action, { onError: reportErrorRef.current, reload: () => setRevision((value) => value + 1) })
       }
       switch (payload as MenuAction) {
         case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch(reportErrorRef.current)
         case 'clone': return setCloneOpen(true)
         case 'open-settings': return setSettingsOpen(true)
         case 'refresh': return void refreshTree().then(() => setRevision((value) => value + 1))
-        case 'fetch': return void runRepo(() => api.fetch(repo!))
-        case 'pull': return void runRepo(() => api.pull(repo!))
-        case 'push': return void runRepo(() => api.push(repo!))
-        case 'stash': return void runRepo(() => api.stash(repo!, 'BetterGit stash'))
+        case 'fetch': return void runRepo('fetch', () => api.fetch(repo!))
+        case 'pull': return void runRepo('pull-merge', () => api.pull(repo!))
+        case 'push': return void runRepo('push', () => api.push(repo!))
+        case 'stash': return void runRepo('stash', () => api.stash(repo!, 'BetterGit stash'))
         case 'show-changes': return setTab('changes')
         case 'show-history': return setTab('history')
         case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
         case 'toggle-sidebar': return setSidebarOpen((open) => !open)
         case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
         case 'fetch-all': return void (async () => {
-          for (const node of flatten(await api.getTree())) await api.fetch(node.path).catch(() => undefined)
+          // Each repo is fetched on its own. A busy repo is skipped and named, and every failure is reported with its repo.
+          const failures: string[] = []
+          const skipped: string[] = []
+          for (const node of flatten(await api.getTree())) {
+            if (busyKey(node.path)) {
+              skipped.push(node.name)
+              continue
+            }
+            await runRepoWrite(node.path, 'fetch', () => api.fetch(node.path), {
+              onError: (failure) => failures.push(`${node.name}: ${failure instanceof Error ? failure.message : String(failure)}`),
+              reload: () => undefined,
+            })
+          }
           setRevision((value) => value + 1)
+          const problems = [...failures, ...(skipped.length ? [`skipped while busy: ${skipped.join(', ')}`] : [])]
+          if (problems.length) reportErrorRef.current(new Error(`Fetch All: ${problems.join('; ')}`))
         })()
       }
     })
@@ -310,7 +333,8 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
 }) {
   const [status, setStatus] = useState<RepoStatus | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
-  const [busy, setBusy] = useState<string | null>(null)
+  // The write running in this repo, from any surface. It is held in the repo-busy store, not in this pane.
+  const busy = useRepoBusy(repo.path)
   const [note, setNote] = useState<string | null>(null)
   const [dialog, setDialog] = useState<RepoDialog | null>(null)
 
@@ -329,19 +353,14 @@ function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, li
     if (status) onCleanChange(tab === 'changes' && status.changes.length === 0)
   }, [status, tab, onCleanChange])
 
-  // Resolves to whether the action succeeded, so dialogs can stay open on failure.
-  const run = async (label: string, action: () => Promise<unknown>) => {
-    setBusy(label)
-    try {
-      await action()
-      onChanged()
-      return true
-    } catch (failure) {
-      onError(failure)
-      return false
-    } finally {
-      setBusy(null)
+  // Resolves to whether the write succeeded, so dialogs can stay open on failure. The reload runs only after a success.
+  const run = (label: string, action: () => Promise<unknown>): Promise<boolean> => {
+    const reason = blockedReason(busyKey(repo.path))
+    if (reason) {
+      onError(new Error(reason))
+      return Promise.resolve(false)
     }
+    return runRepoWrite(repo.path, label, action, { onError, reload: onChanged })
   }
 
   const headLabel = status ? (status.head ?? (status.headHash ? `detached at ${status.headHash.slice(0, 7)}` : 'no commits yet')) : '…'

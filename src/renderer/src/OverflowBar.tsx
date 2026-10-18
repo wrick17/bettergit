@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon, IconButton, type IconName } from './Icons'
 import './overflow-bar.css'
+import './action-progress.css'
 
 export interface BarItem {
   key: string
@@ -8,6 +9,10 @@ export interface BarItem {
   label: string
   onClick: () => void
   disabled?: boolean
+  // The action is running: its glyph becomes a spinner and aria-busy is set. The label names the running action.
+  busy?: boolean
+  // Why the action cannot run right now, such as another action in the same repo. It shows as a tooltip, and the click does nothing.
+  blocked?: string
   // Destructive actions render red, in the bar and in the overflow menu.
   danger?: boolean
   // Neighbours in the same group sit together. A divider separates two groups.
@@ -79,7 +84,7 @@ export function OverflowBar({ items, align = 'end' }: { items: BarItem[]; align?
   const renderItem = (item: BarItem, index: number, onClick: () => void) => (
     <span key={item.key} className="overflow-item">
       {index > 0 && items[index - 1].group !== item.group && <span className="toolbar-divider" aria-hidden="true" />}
-      <IconButton icon={item.icon} label={item.label} disabled={item.disabled} className={item.danger ? 'danger' : undefined} onClick={onClick} />
+      <IconButton icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked} className={item.danger ? 'danger' : undefined} onClick={onClick} />
     </span>
   )
 
@@ -119,7 +124,12 @@ export function OverflowBar({ items, align = 'end' }: { items: BarItem[]; align?
   )
 }
 
-const ENABLED_ITEM = '[role="menuitem"]:not(:disabled)'
+const ENABLED_ITEM = '[role="menuitem"]:not(:disabled):not([aria-disabled="true"])'
+
+// A running or blocked action keeps its place and tooltip, but does nothing when picked.
+function inertItem(item: BarItem): boolean {
+  return !!item.busy || !!item.blocked
+}
 
 // A popover of actions, with a divider between groups. Arrow keys, Home, and End move between enabled items.
 // With `at`, the menu opens at that point and is kept inside the window. Focus leaving the menu, by Tab or a click
@@ -133,7 +143,7 @@ export function ActionMenu({ items, onPick, onDismiss, className, at }: {
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
 
-  // Focus goes to the first enabled item when the menu opens.
+  // Focus goes to the first enabled item when the menu opens. Blocked items are skipped by focus and arrow keys.
   useEffect(() => {
     rootRef.current?.querySelector<HTMLElement>(ENABLED_ITEM)?.focus()
   }, [])
@@ -169,11 +179,14 @@ export function ActionMenu({ items, onPick, onDismiss, className, at }: {
           {index > 0 && items[index - 1].group !== item.group && <div className="popover-sep" role="separator" />}
           <button
             role="menuitem"
-            className={item.danger ? 'danger' : undefined}
+            className={[item.danger ? 'danger' : '', item.blocked ? 'blocked' : ''].filter(Boolean).join(' ') || undefined}
             disabled={item.disabled}
-            onClick={() => onPick(item)}
+            aria-disabled={inertItem(item) || undefined}
+            aria-busy={item.busy || undefined}
+            title={item.blocked}
+            onClick={() => { if (!inertItem(item)) onPick(item) }}
           >
-            <Icon name={item.icon} />
+            <Icon name={item.busy ? 'loader' : item.icon} className={item.busy ? 'action-spin' : undefined} />
             {item.label}
           </button>
         </Fragment>

@@ -8,6 +8,7 @@ import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savePlace, useScrollMemory } from './session'
 
 const api = window.bettergit
@@ -26,9 +27,6 @@ type Working = { files: DiffFile[]; moves: MovedBlock[] }
 type Stats = { add: number; del: number }
 type Section = 'staged' | 'unstaged'
 type View = 'list' | 'tree'
-// The commit, discard, or stage in flight. Conflicting actions stay disabled until it settles.
-type Pending = { kind: 'commit' } | { kind: 'discard'; path: string } | { kind: 'stage' }
-
 interface Selection {
   path: string
   staged: boolean
@@ -46,7 +44,10 @@ interface SectionProps {
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
-  pending: Pending | null
+  // Stages or unstages every file in this section. Omitted for the conflicts section.
+  onToggleAll?: () => void
+  // The write running in this repo, or null. Conflicting controls stay blocked until it settles.
+  busy: string | null
 }
 
 const VIEW_KEY = 'bettergit.changesView'
@@ -56,7 +57,7 @@ const draftEdits = new Map<string, number>()
 
 export function ChangesView({ repo, status, revision, listOpen, detailOpen, onChanged, onError }: Props) {
   const [selection, setSelection] = useState<Selection | null>(() => savedSelection(repo, status))
-  const [pending, setPending] = useState<Pending | null>(null)
+  const busy = useRepoBusy(repo)
   // The draft is kept in the session, so a reload keeps what was typed.
   const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
   const paneRef = useRef<HTMLDivElement>(null)
@@ -154,25 +155,25 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path)))
   }, [diff])
 
-  const act = async (action: () => Promise<unknown>) => {
-    try {
-      await action()
-      onChanged()
-    } catch (failure) {
-      onError(failure)
-    }
-  }
+  // Git writes take the repo's single slot. The reload runs only after a successful write, so a failed reload cannot fail it.
+  const write = (key: string, action: () => Promise<unknown>) => runRepoWrite(repo, key, action, {
+    onError: (failure) => errorRef.current(failure),
+    reload: onChanged,
+  })
 
   // The checkboxes and the diff header share this. A click during another Git action is ignored, so stages do not race on the index.
   const togglePath = (path: string, stage: boolean) => {
-    if (pending) return
-    setPending({ kind: 'stage' })
-    void act(() => (stage
-      ? api.stage(repo, [path])
-      : api.unstage(repo, [path]))).finally(() => setPending(null))
+    if (busy) return
+    void write(stage ? 'stage' : 'unstage', () => (stage ? api.stage(repo, [path]) : api.unstage(repo, [path])))
   }
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
+
+  // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
+  const togglePaths = (paths: string[], stage: boolean) => {
+    if (busy || !paths.length) return
+    void write(stage ? 'stage:all' : 'unstage:all', () => (stage ? api.stage(repo, paths) : api.unstage(repo, paths)))
+  }
 
   const choose = (change: FileChange, isStaged: boolean) => {
     revealRef.current = change.path
@@ -180,9 +181,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   const discard = (change: FileChange) => {
-    if (pending || !window.confirm(`Discard unstaged changes to ${change.path}? This cannot be undone.`)) return
-    setPending({ kind: 'discard', path: change.path })
-    void act(() => api.discard(repo, [change.path])).finally(() => setPending(null))
+    if (busy || !window.confirm(`Discard unstaged changes to ${change.path}? This cannot be undone.`)) return
+    void write(`discard:${change.path}`, () => api.discard(repo, [change.path]))
   }
 
   const toggleFolder = (key: string) => setCollapsed((prev) => {
@@ -221,16 +221,18 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   const canCommit = staged.length > 0 && message.trim().length > 0
 
+  // The commit button says why it cannot run. Its own run shows a spinner and is not blocked by a reason.
+  const commitBlocked = busy === null || busy === 'commit' ? undefined : blockedReason(busy)
+
   const commit = () => {
-    if (pending || !canCommit) return
-    setPending({ kind: 'commit' })
+    if (busy || !canCommit) return
     const edit = draftEdits.get(repo)
-    void act(async () => {
+    void write('commit', async () => {
       await api.commitChanges(repo, message, false)
       // A draft typed while the commit ran was not committed, so it stays, even if it was typed in a remounted pane.
       if (draftEdits.get(repo) === edit) editMessage('')
       setSelection(null)
-    }).finally(() => setPending(null))
+    })
   }
 
   // Reloads each widened file at its own level, so a global reload does not undo an expansion.
@@ -279,7 +281,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, true)}
               onToggle={(change) => toggle(change, false)}
-              pending={pending}
+              onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
+              busy={busy}
             />
             <List
               title="Unstaged"
@@ -292,7 +295,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onSelect={(change) => choose(change, false)}
               onToggle={(change) => toggle(change, true)}
               onDiscard={discard}
-              pending={pending}
+              onToggleAll={() => togglePaths(unstaged.map((change) => change.path), true)}
+              busy={busy}
             />
             {conflicted.length > 0 && (
               <List
@@ -305,7 +309,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 onToggleFolder={toggleFolder}
                 onSelect={(change) => choose(change, false)}
                 onToggle={(change) => toggle(change, true)}
-                pending={pending}
+                busy={busy}
               />
             )}
           </div>
@@ -322,9 +326,17 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               placeholder="Commit message"
               aria-label="Commit message"
             />
-            <button className="commit-action" disabled={!canCommit || !!pending} onClick={commit}>
-              {pending?.kind === 'commit' ? 'Committing…' : staged.length ? `Commit ${staged.length} file${staged.length === 1 ? '' : 's'}` : 'Commit'}
-              {canCommit && !pending && <kbd aria-hidden="true">⌘↩</kbd>}
+            <button
+              className="commit-action"
+              disabled={!canCommit}
+              aria-disabled={busy !== null || undefined}
+              aria-busy={busy === 'commit' || undefined}
+              title={commitBlocked}
+              onClick={commit}
+            >
+              {busy === 'commit' && <Icon name="loader" className="action-spin" />}
+              {busy === 'commit' ? REPO_WORKING_LABELS.commit : staged.length ? `Commit ${staged.length} file${staged.length === 1 ? '' : 's'}` : 'Commit'}
+              {canCommit && busy === null && <kbd aria-hidden="true">⌘↩</kbd>}
             </button>
           </div>
         </div>
@@ -340,7 +352,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 <DiffView
                   files={all.staged.files}
                   moves={all.staged.moves}
-                  stage={{ staged: true, disabled: !!pending, onToggle: togglePath }}
+                  stage={{ staged: true, disabled: !!busy, onToggle: togglePath }}
                   onExpand={(file) => expandFile('staged', file)}
                   persist={{ id: `${repo}|changes-staged`, key: 'all' }}
                 />
@@ -350,7 +362,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 <DiffView
                   files={all.unstaged.files}
                   moves={all.unstaged.moves}
-                  stage={{ staged: false, disabled: !!pending, onToggle: togglePath }}
+                  stage={{ staged: false, disabled: !!busy, onToggle: togglePath }}
                   onExpand={(file) => expandFile('unstaged', file)}
                   persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
                 />
@@ -361,7 +373,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             <DiffView
               files={diff.files}
               moves={diff.moves}
-              stage={{ staged: selection.staged, disabled: !!pending, onToggle: togglePath }}
+              stage={{ staged: selection.staged, disabled: !!busy, onToggle: togglePath }}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
             />
@@ -413,17 +425,17 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, pending }: SectionProps) {
+function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
   if (!changes.length) return null
   return (
     <section className="group">
-      <h3>{title} <span className="count">{changes.length}</span></h3>
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <ul>
         {changes.map((change) => {
           const active = selection?.path === change.path && selection.staged === staged
           return (
             <li key={`${staged}-${change.path}`} className={active ? 'active' : ''}>
-              <FileRow change={change} staged={staged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} pending={pending} />
+              <FileRow change={change} staged={staged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
             </li>
           )
         })}
@@ -433,7 +445,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, pending }: SectionProps) {
+function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
   const folder = useMemo(() => buildTree(changes), [changes])
   if (!changes.length) return null
   const renderFile = (change: FileChange) => {
@@ -441,18 +453,45 @@ function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFol
     return (
       <div key={change.path} role="treeitem" aria-selected={active}>
         <div className={`tree-row${active ? ' selected' : ''}`}>
-          <FileRow change={change} staged={staged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} pending={pending} />
+          <FileRow change={change} staged={staged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
         </div>
       </div>
     )
   }
   return (
     <section className="group">
-      <h3>{title} <span className="count">{changes.length}</span></h3>
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <div className="tree" role="tree">
         <TreeLevel folder={folder} section={title} collapsed={collapsed} onToggleFolder={onToggleFolder} renderFile={renderFile} />
       </div>
     </section>
+  )
+}
+
+// The section title with its count. The header button stages every file in an unstaged section, or unstages a staged one.
+function SectionHeader({ title, count, staged, onToggleAll, busy }: {
+  title: string
+  count: number
+  staged: boolean
+  onToggleAll?: () => void
+  busy: string | null
+}) {
+  const key = staged ? 'unstage:all' : 'stage:all'
+  return (
+    <h3>
+      {title} <span className="count">{count}</span>
+      {onToggleAll && (
+        <span style={{ marginLeft: 'auto' }}>
+          <IconButton
+            icon={staged ? 'undo' : 'plus'}
+            label={staged ? 'Unstage all changes' : 'Stage all changes'}
+            busy={busy === key}
+            blocked={busy !== null && busy !== key ? blockedReason(busy) : undefined}
+            onClick={onToggleAll}
+          />
+        </span>
+      )}
+    </h3>
   )
 }
 
@@ -533,7 +572,7 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
 }
 
 // The checkbox, name, counts, and status shared by both views. Tree rows drop the folder part of the path.
-function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard, pending }: {
+function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
   change: FileChange
   staged: boolean
   stats: Map<string, Stats>
@@ -541,9 +580,11 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
-  pending: Pending | null
+  busy: string | null
 }) {
   const { name, dir } = splitPath(change.path)
+  const discardAction = !staged && change.kind !== 'untracked' && !change.conflicted ? onDiscard : undefined
+  const discardKey = `discard:${change.path}`
   const counts = stats.get(`${staged ? 'staged' : 'unstaged'}:${change.path}`)
   return (
     <>
@@ -552,17 +593,29 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
           type="checkbox"
           checked={staged}
           aria-label={`Stage ${change.path}`}
-          disabled={!!pending}
+          disabled={!!busy}
           onChange={() => onToggle(change)}
         />
       </label>
-      <button className="file" onClick={() => onSelect(change)}>
-        <FileIcon name={name} />
-        <span className="path" title={change.path}>
-          <span className="path-name">{name}</span>
-          {showDir && dir && <span className="path-dir">{dir}</span>}
-        </span>
-      </button>
+      <span className={`file-with-action${discardAction ? ' has-row-action' : ''}`}>
+        <button className="file" onClick={() => onSelect(change)}>
+          <FileIcon name={name} />
+          <span className="path" title={change.path}>
+            <span className="path-name">{name}</span>
+            {showDir && dir && <span className="path-dir">{dir}</span>}
+          </span>
+        </button>
+        {discardAction && (
+          <IconButton
+            icon="trash"
+            label={busy === discardKey ? `Discarding ${change.path}…` : `Discard changes to ${change.path}`}
+            busy={busy === discardKey}
+            blocked={busy !== null && busy !== discardKey ? blockedReason(busy) : undefined}
+            className="discard"
+            onClick={() => discardAction(change)}
+          />
+        )}
+      </span>
       {counts && (counts.add > 0 || counts.del > 0) && (
         <span className="row-stat" aria-label={`${counts.add} added, ${counts.del} removed`}>
           <span className="add">+{counts.add}</span>
@@ -570,15 +623,6 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
         </span>
       )}
       <span className={`kind kind-${change.kind}`} title={change.kind}>{badge(change.kind)}</span>
-      {onDiscard && !staged && change.kind !== 'untracked' && (
-        <IconButton
-          icon="trash"
-          label={pending?.kind === 'discard' && pending.path === change.path ? `Discarding ${change.path}…` : `Discard changes to ${change.path}`}
-          className="discard"
-          disabled={!!pending}
-          onClick={() => onDiscard(change)}
-        />
-      )}
     </>
   )
 }

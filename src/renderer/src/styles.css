@@ -253,8 +253,6 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .chevron svg { width: 10px; height: 10px; stroke-width: 2.6; }
 .row-icon { width: 14px; height: 14px; color: var(--muted-on); }
 .row-icon svg { width: 14px; height: 14px; }
-.tree-row .row-tools { display: none; flex: none; }
-.tree-row:hover .row-tools, .tree-row:focus-within .row-tools, [role='treeitem']:focus-visible > .tree-row .row-tools { display: inline-flex; }
 .tree-row .icon-button { width: 20px; height: 20px; color: var(--muted-on); }
 .tree-row .icon-button svg { width: 14px; height: 14px; }
 
@@ -361,14 +359,26 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--accent-fill); color: var(--on-accent);
   --muted-on: rgba(255, 255, 255, 0.9);
 }
-.group li .icon-button, .group .tree-row .icon-button { opacity: 0; transition: opacity 120ms var(--ease); }
-.group li:hover .icon-button, .group li:focus-within .icon-button, .group .tree-row:hover .icon-button, .group .tree-row:focus-within .icon-button, .group [role='treeitem']:focus-visible > .tree-row .icon-button { opacity: 1; }
 /* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
 .group > .tree { padding-left: 8px; }
 .group li .check { display: inline-flex; }
 /* Tree file rows: checkbox, icon, and name share one centre line. */
 .tree-row .check { display: inline-flex; flex: none; align-items: center; }
 .tree-row .file { flex: 1; min-width: 0; align-items: center; }
+.file-with-action { display: flex; flex: 1; min-width: 0; }
+/* The action overlays the 14px leading icon; only its hit area extends 3px around it. */
+.has-row-action { position: relative; }
+.has-row-action > .icon-button {
+  position: absolute; left: -3px; top: 50%; margin-top: -10px; width: 20px; height: 20px;
+  opacity: 0; pointer-events: none; transition: opacity 120ms var(--ease);
+}
+.has-row-action :is(.file-icon, .folder-icon) { transition: opacity 120ms var(--ease); }
+/* A blocked row action still hides at rest; its 0.4 dim would otherwise overlap the leading icon. */
+.has-row-action > .icon-button.blocked:not(.busy) { opacity: 0; }
+:is(.tree-row:hover, .tree-row:focus-within, .group li:hover, .group li:focus-within, [role='treeitem']:focus > .tree-row) > .has-row-action > .icon-button,
+.has-row-action > .icon-button.busy { opacity: 1; pointer-events: auto; }
+:is(.tree-row:hover, .tree-row:focus-within, .group li:hover, .group li:focus-within, [role='treeitem']:focus > .tree-row) > .has-row-action :is(.file-icon, .folder-icon),
+.has-row-action:has(> .icon-button.busy) :is(.file-icon, .folder-icon) { opacity: 0; }
 .file { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; text-align: left; color: inherit; }
 .file:hover:not(:disabled) { background: transparent; }
 .path { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13.5px; }
@@ -743,9 +753,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .dialog-note { color: var(--text-2); font-size: 13px; line-height: 1.5; }
 .dialog-note p { margin: 0 0 6px; }
 
-/* Fixer B: the traffic-light inset, row tools that show on focus (visibility keeps them out of the Tab order until then), and the row focus ring. */
-.tree-row .row-tools { display: inline-flex; visibility: hidden; }
-.tree-row:hover .row-tools, .tree-row:focus-within .row-tools { visibility: visible; }
+/* Roving sidebar rows keep their focus ring while the icon action is available to Tab. */
 [role='treeitem']:focus-visible > .tree-row { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* On a selected row the accent ring would sit on the accent fill, so it turns on-accent. Inactive windows keep the accent ring. */
 :root:not([data-window='inactive']) [role='treeitem']:focus-visible > .tree-row.selected,
