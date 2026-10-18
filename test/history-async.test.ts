@@ -274,6 +274,76 @@ await reply('B', true, 'b-hidden')
 assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-hidden.ts'] })
 setIgnoreWhitespace(false)
 unmount()
+
+// A reload that fails for the commit on screen keeps the commit, its compare and the toolbar. Hunks fetched with the
+// other option stay hidden, and the failure replaces Loading… until a load succeeds. A failure for a load already
+// left changes nothing, and a first load that fails still clears the selection.
+{
+  const errors = []
+  const throwing = props.onError
+  props.onError = (error) => errors.push(error.message)
+  const fail = (hash, option) => {
+    const call = calls.commit.find((c) => !c.done && c.args[1] === hash && c.args[3] === option)
+    call.done = true
+    call.reject(new Error('git failed'))
+    return flush()
+  }
+  const place = () => JSON.parse(stored.get('bettergit.session')).places['/repo'].commit
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await reply('A', false, 'shown')
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await answer(calls.compare, 'A', () => ({ files: files('vs-shown'), moves: [] }))
+  setIgnoreWhitespace(true); render(); await flush()
+  setIgnoreWhitespace(false); render(); await flush()
+  await fail('A', true)
+  assert.deepEqual(errors, [], 'a failure for an option already left was reported')
+  assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-shown.ts'] })
+  setIgnoreWhitespace(true); render(); await flush()
+  await fail('A', true)
+  assert.deepEqual(errors, ['git failed'])
+  assert.equal(place(), 'A', 'the failed reload cleared the selection')
+  assert.deepEqual(savedCompare(), { key: 'A', value: { label: 'merge base BASE-A', ref: 'BASE-A' } })
+  // The compare asked for is still on its way, so the pane waits for it.
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] })
+  assert.equal(diffView().emptyHint, 'Loading…')
+  await answer(calls.compare, 'A', () => ({ files: files('vs-hidden'), moves: [] }))
+  assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-hidden.ts'] })
+  // Without the compare, the commit's own diff shows the failure, never the hunks fetched with the other option.
+  find(tree, (p) => p.children === 'Exit comparison').onClick()
+  render(); await flush()
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] })
+  assert.deepEqual(stat(), [])
+  assert.equal(diffView().emptyHint, 'Could not load this diff.')
+  // The app renders again with a new error callback when its banner clears. The failure stays, and no reload starts.
+  const loads = calls.commit.length
+  props.onError = (error) => errors.push(error.message)
+  render(); await flush()
+  assert.equal(diffView().emptyHint, 'Could not load this diff.')
+  assert.equal(calls.commit.length, loads, 'a parent render reloaded the failed commit')
+  // The toolbar retries: the other option shows its own diff again, and coming back loads this one afresh.
+  setIgnoreWhitespace(false); render(); await flush()
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['shown.ts'] })
+  setIgnoreWhitespace(true); render(); await flush()
+  assert.equal(diffView().emptyHint, 'Loading…')
+  await reply('A', true, 'hidden')
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden.ts'] })
+  // A failure that lands after another commit was selected changes nothing either.
+  setIgnoreWhitespace(false); render(); await flush()
+  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  render(); await reply('B', false, 'b-shown')
+  await fail('A', false)
+  assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-shown.ts'] })
+  assert.deepEqual(errors, ['git failed'])
+  unmount()
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await fail('A', false)
+  assert.equal(find(tree, (p) => p.className === 'commit-subject'), undefined)
+  assert.equal(place(), undefined)
+  assert.deepEqual(errors, ['git failed', 'git failed'])
+  unmount()
+  props.onError = throwing
+}
 console.log('whitespace toggle cases passed')
 
 // A scrolled diff keeps its place through a whitespace reload. The pane below models the browser: its height follows the
@@ -455,6 +525,37 @@ console.log('whitespace toggle cases passed')
   assert.deepEqual(await savedTop(), { key: 'A', value: 0 }, 'the failed comparison position was kept for the commit')
   setIgnoreWhitespace(false)
   unmount()
+
+  // A failed reload of the commit's own diff saves nothing either, and a retry from the toolbar returns to the position.
+  {
+    const throwing = props.onError
+    props.onError = () => {}
+    await mount({ places: { '/repo': { commit: 'A' } } })
+    await reply('A', false, 'tall')
+    const retryPane = makePane()
+    find(tree, (p) => p.className === 'diff-pane').ref.current = retryPane
+    render(); frame(retryPane); frame(retryPane)
+    retryPane.scrollTop = 900; scrollEvent(retryPane)
+    setIgnoreWhitespace(true); render(); await flush()
+    frame(retryPane)
+    const rejected = calls.commit.find((c) => !c.done && c.args[1] === 'A' && c.args[3] === true)
+    rejected.done = true; rejected.reject(new Error('git failed')); await flush()
+    frame(retryPane); frame(retryPane)
+    assert.equal(diffView().emptyHint, 'Could not load this diff.')
+    assert.deepEqual(await savedTop(), { key: 'A', value: 900 }, 'the failed reload saved the clamp')
+    setIgnoreWhitespace(false); render(); await flush()
+    frame(retryPane); frame(retryPane)
+    assert.equal(retryPane.scrollTop, 900)
+    setIgnoreWhitespace(true); render(); await flush()
+    frame(retryPane)
+    await reply('A', true, 'tall-hidden')
+    frame(retryPane); frame(retryPane)
+    assert.equal(retryPane.scrollTop, 900, 'the retry lost the position')
+    assert.deepEqual(await savedTop(), { key: 'A', value: 900 })
+    setIgnoreWhitespace(false)
+    unmount()
+    props.onError = throwing
+  }
 }
 console.log('whitespace scroll cases passed')
 `
