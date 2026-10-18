@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { layoutGraph, type GraphRow } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
@@ -6,7 +7,7 @@ import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Promp
 import { CommitStat } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
 import { Icon } from './Icons'
-import { OverflowBar } from './OverflowBar'
+import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
 import { useResizable } from './Splitter'
 import { loadSession, savePlace } from './session'
@@ -41,12 +42,16 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  // The commit context menu: the commit it is for, and the point it opened at.
+  const [menu, setMenu] = useState<{ hash: string; x: number; y: number } | null>(null)
   const [upstream, setUpstream] = useState<string | null>(null)
   const [webBase, setWebBase] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
-  const { size: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100)
+  const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
+  const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
   const diffRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
   // Each list (repo, search, or refresh) has a generation. Replies from an older one are dropped.
   const generation = useRef(0)
@@ -114,7 +119,30 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     setCompare(null)
     setPrompt(null)
     setNotice(null)
+    // A right-click selects its commit and opens the menu for it, so the menu survives only for the selected commit.
+    setMenu((current) => (current?.hash === selected ? current : null))
   }, [selected])
+
+  // The commit menu closes on an outside press or Escape, like the other popovers. Escape returns focus to the list.
+  const menuOpen = menu !== null
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (event: MouseEvent) => {
+      if (!(event.target as Element).closest('.commit-menu')) setMenu(null)
+    }
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenu(null)
+        listRef.current?.focus()
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   const compareWith = (label: string, ref: string) => {
     const hash = selected
@@ -145,7 +173,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     head,
     upstream,
     webBase,
-    onOpenChanges: () => diffRef.current?.scrollIntoView({ block: 'start' }),
+    onOpenChanges: () => diffRef.current?.scrollTo({ top: 0 }),
     onCompare: compareWith,
     onChanged,
     onError,
@@ -187,11 +215,16 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       step(event.key === 'ArrowDown' ? 1 : -1)
+    } else if (selected && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
+      // The keyboard route to the commit menu. It opens beside the selected row.
+      event.preventDefault()
+      const box = document.getElementById(optionId(selected))?.getBoundingClientRect()
+      if (box) setMenu({ hash: selected, x: box.left + 24, y: box.bottom })
     }
   }
 
   return (
-    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `${historyWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `${historyWidth} 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
       {listOpen && (
         <div className="history-list">
           <div className="search">
@@ -204,6 +237,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             />
           </div>
           <ul
+            ref={listRef}
             className="commits"
             role="listbox"
             tabIndex={0}
@@ -219,6 +253,10 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                 active={selected === row.commit.hash}
                 isHead={row.commit.hash === head}
                 onSelect={() => setSelected(row.commit.hash)}
+                onMenu={(x, y) => {
+                  setSelected(row.commit.hash)
+                  setMenu({ hash: row.commit.hash, x, y })
+                }}
               />
             ))}
           </ul>
@@ -228,53 +266,64 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
       )}
       {listOpen && detailOpen && <div className="splitter" {...historyHandle} />}
       {detailOpen && (
-        <div className="commit-detail">
+        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `${detailWidth} 9px minmax(0, 1fr)` } : undefined}>
           {!selected && (empty
             ? <p className="hint">This repository has no commits yet.</p>
             : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}
           {selected && !current && <p className="hint">Loading…</p>}
           {selected && current && (
             <>
-              {commitInput && (
-                <div className="commit-bar">
-                  <OverflowBar items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })} align="start" />
-                </div>
-              )}
-              <header className="commit-head">
-                {picked && (
-                  <div className="commit-title">
-                    <h2 className="commit-subject">{picked.subject}</h2>
-                    {notice && <p className="commit-notice" role="status">{notice}</p>}
-                    {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} setPending={setPending} />}
+              <div className="commit-info">
+                <header className="commit-head">
+                  {picked && (
+                    <div className="commit-title">
+                      <h2 className="commit-subject">{picked.subject}</h2>
+                      {notice && <p className="commit-notice" role="status">{notice}</p>}
+                      {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} setPending={setPending} />}
+                    </div>
+                  )}
+                  {picked && (
+                    <div className="commit-meta-line">
+                      <span className="avatar" aria-hidden="true">{picked.author.charAt(0).toUpperCase()}</span>
+                      <span>{picked.author}</span>
+                      <span className="dot-sep" aria-hidden="true" />
+                      <span>{new Date(picked.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      <span className="dot-sep" aria-hidden="true" />
+                      <code className="hash">{picked.hash.slice(0, 7)}</code>
+                    </div>
+                  )}
+                  {body && <pre className="commit-body">{body}</pre>}
+                </header>
+                <CommitStat files={compare?.files ?? current.files} onSelect={(path) => {
+                  Array.from(diffRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
+                    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
+                }} />
+              </div>
+              <div className="splitter" aria-label="Commit details width" {...detailHandle} />
+              <div className="diff-pane" ref={diffRef}>
+                {compare && totals && (
+                  <div className="compare-bar">
+                    <span>
+                      Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats at left are for this comparison.
+                    </span>
+                    <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
                   </div>
                 )}
-                {picked && (
-                  <div className="commit-meta-line">
-                    <span className="avatar" aria-hidden="true">{picked.author.charAt(0).toUpperCase()}</span>
-                    <span>{picked.author}</span>
-                    <span className="dot-sep" aria-hidden="true" />
-                    <span>{new Date(picked.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
-                    <span className="dot-sep" aria-hidden="true" />
-                    <code className="hash">{picked.hash.slice(0, 7)}</code>
-                  </div>
-                )}
-                {body && <pre className="commit-body">{body}</pre>}
-                <CommitStat files={current.files} />
-              </header>
-              {compare && totals && (
-                <div className="compare-bar">
-                  <span>
-                    Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats above are for the selected commit.
-                  </span>
-                  <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
-                </div>
-              )}
-              <div ref={diffRef}>
                 <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} />
               </div>
             </>
           )}
         </div>
+      )}
+      {menu && commitInput && menu.hash === selected && createPortal(
+        <ActionMenu
+          className="context-menu commit-menu"
+          at={menu}
+          items={commitItems(commitInput, { setPrompt, setNotice, pending, setPending })}
+          onPick={(item) => { setMenu(null); item.onClick() }}
+          onDismiss={() => setMenu(null)}
+        />,
+        document.body,
       )}
     </div>
   )
@@ -340,12 +389,9 @@ function bodyBelow(message: string, subject: string) {
   return message.startsWith(subject) && (rest === '' || rest.startsWith('\n')) ? rest.trim() : message
 }
 
-// Short dates keep the subject readable in a narrow list. The year shows only for commits from other years.
+// Compact DD/MM keeps the subject readable in a narrow list. The full local timestamp is in the tooltip.
 function formatListDate(seconds: number) {
-  const date = new Date(seconds * 1000)
-  const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  if (date.getFullYear() !== new Date().getFullYear()) options.year = 'numeric'
-  return date.toLocaleDateString(undefined, options)
+  return new Date(seconds * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })
 }
 
 // Adds and removes across a diff, with its file count, for the compare bar.
@@ -358,12 +404,13 @@ function totalLines(files: DiffFile[]) {
   }
 }
 
-function CommitRow({ row, graphWidth, active, isHead, onSelect }: {
+function CommitRow({ row, graphWidth, active, isHead, onSelect, onMenu }: {
   row: GraphRow<Commit>
   graphWidth: number
   active: boolean
   isHead: boolean
   onSelect: () => void
+  onMenu: (x: number, y: number) => void
 }) {
   const { commit } = row
   const x = LANE_WIDTH * (row.lane + 1)
@@ -371,7 +418,7 @@ function CommitRow({ row, graphWidth, active, isHead, onSelect }: {
   const nodeColor = COLORS[row.color % COLORS.length]
   const refs = commit.refs.map((ref) => ref.replace('HEAD -> ', ''))
   return (
-    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} onClick={onSelect}>
+    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} onClick={onSelect} onContextMenu={(event) => { event.preventDefault(); onMenu(event.clientX, event.clientY) }}>
       <svg className="lanes" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
         {graphSegments(row).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
@@ -391,7 +438,7 @@ function CommitRow({ row, graphWidth, active, isHead, onSelect }: {
         {isHead && <span className="ref head">HEAD</span>}
         <span className="subject">{commit.subject}</span>
       </span>
-      <span className="commit-meta date">{formatListDate(commit.date)}</span>
+      <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
       <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
     </li>
   )

@@ -278,9 +278,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .branch-pill:focus-within { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
 .sync { display: inline-flex; gap: 8px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .sync b { font-weight: 600; color: var(--text-2); }
-/* Fills the toolbar after the title and can shrink below its content, so OverflowBar measures the width it really has. */
+/* Sized to its icons at the right end of the toolbar. It shrinks when the window is narrow, and OverflowBar fills the width it is given. */
 .toolbar-actions {
-  display: flex; align-items: center; gap: 2px; flex: 1 1 0; min-width: 0; padding: 4px; border-radius: var(--radius-pill);
+  display: flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 4px; border-radius: var(--radius-pill);
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
@@ -485,6 +485,23 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .more { display: block; margin: 10px auto 16px; background: transparent; box-shadow: none; color: var(--text-2); }
 
 .commit-detail { display: flex; flex-direction: column; }
+.commit-detail.has-commit { display: grid; overflow: hidden; }
+.commit-info { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; z-index: 1; }
+.commit-info .commit-head { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overflow-wrap: anywhere; }
+.commit-info .commit-stat-block { flex: 1; min-height: 0; padding: 12px; grid-template-rows: minmax(0, 1fr) auto; }
+.commit-info .commit-stat-list { overflow: auto; }
+.commit-detail .compare-bar { flex-wrap: wrap; }
+.commit-detail .diff-pane { container-type: inline-size; }
+@container (max-width: 280px) {
+  .commit-stat-row .path-dir { display: none; }
+  .commit-info .commit-head { padding: 12px; }
+}
+@container (max-width: 520px) {
+  .diff-toolbar { --diff-toolbar-height: 72px; flex-wrap: wrap; align-content: center; gap: 4px; padding: 4px 12px; }
+  .diff-toolbar-controls { flex-wrap: wrap; }
+  .diff { --diff-toolbar-height: 72px; }
+  .context-toggle button { padding-inline: 7px; }
+}
 .commit-head { display: grid; gap: 12px; padding: 20px; border-bottom: 1px solid var(--line); }
 .commit-subject { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.3; }
 .commit-meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-2); font-size: 13px; }
@@ -637,12 +654,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Commit detail stat: one row per changed file (CommitStat.tsx). Rows match the Changes list: 28px, 13.5px names, 12px counts. */
 .commit-stat-block { display: grid; gap: 6px; }
 .commit-stat-list { margin: 0; padding: 0; list-style: none; }
-.commit-stat-row { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; }
+.commit-stat-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: 28px; padding: 0 4px; background: transparent; box-shadow: none; text-align: left; }
+.commit-stat-row:hover { background: var(--hover); }
 .commit-stat-row .path { flex: 1 1 auto; }
 .commit-stat-row .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.commit-stat-bar { display: flex; flex: 0 1 120px; min-width: 40px; height: 6px; border-radius: 3px; overflow: hidden; }
-.commit-stat-bar .add { background: var(--add); }
-.commit-stat-bar .del { background: var(--del); }
 .commit-stat-note { flex: none; font: 500 12px/1 var(--font-code); color: var(--text-3); }
 .commit-stat-summary { margin: 0; font: 500 12px/1.4 var(--font-code); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .commit-stat-summary .add { color: var(--add); }
