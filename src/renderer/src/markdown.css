@@ -1,7 +1,11 @@
 .diff .markdown-toggle button { white-space: nowrap; }
 .diff .diff-toolbar-controls { justify-content: flex-end; }
+/* The sticky toolbar and file headers are translucent glass. Blurring what scrolls under them keeps large formatted text from reading through. */
+.diff .diff-toolbar, .diff .diff-file > header { backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); }
 .diff .md-fragment-note { padding: 3px 12px; color: var(--text-3); font: 11px/18px var(--font-ui); }
 .diff .md-diff-block { display: flex; min-width: 0; min-height: 22px; }
+/* Each side keeps its own height, so the shorter side ends with its content instead of a tall empty tinted block. */
+.diff .md-block-pair > .md-diff-block { align-self: start; }
 .diff .md-source-rail { flex: none; display: flex; flex-direction: column; font: 12px/22px var(--font-code); }
 .diff .md-source-row { display: flex; flex: 1; min-height: 22px; }
 .diff .md-source-row.add { background: var(--add-bg); box-shadow: inset 2px 0 var(--add); }
