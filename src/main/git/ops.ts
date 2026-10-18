@@ -204,9 +204,11 @@ async function assertNoUpstreamConfig(repo: string, name: string, remote?: strin
   // include right where its directive is listed, so a directive applied when the next entry Git lists comes from its file.
   const listed = new Map<string, Promise<string[]>>()
   const gitdirApplies = async (origin: string, entry: string, file: string) => {
-    const including = origin.slice('file:'.length)
+    // A command-line directive (-c or GIT_CONFIG_COUNT) has no file to replay, so Git's whole listing is read for it.
+    const including = origin.startsWith('file:') ? origin.slice('file:'.length) : ''
     if (!listed.has(including)) {
-      listed.set(including, read(['--file', including, '--includes', '-z', '--show-origin', '--list']).then((output) => (output ?? '').split('\0')))
+      const source = including ? ['--file', including] : []
+      listed.set(including, read([...source, '--includes', '-z', '--show-origin', '--list']).then((output) => (output ?? '').split('\0')))
     }
     const items = await listed.get(including)!
     // Identical directives share their condition and file. A directive that is not listed counts as applying.
@@ -258,7 +260,8 @@ async function assertNoUpstreamConfig(repo: string, name: string, remote?: strin
       const including = origin.slice('file:'.length)
       const file = path.isAbsolute(value) ? value : including.slice(0, including.lastIndexOf('/') + 1) + value
       const viaIncludeIf = conditional || entry.startsWith('includeif.')
-      const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && origin.startsWith('file:') && !(await gitdirApplies(origin, entry, file)))
+      const childInert = inert || (/^includeif\.gitdir(\/i)?:/.test(entry) && (origin.startsWith('file:') || origin === 'command line:')
+        && !(await gitdirApplies(origin, entry, file)))
       // The same path at the same depth and kind of edge leads to the same checks. Otherwise it can hit the depth limit
       // or the remote URL rule, so it is read again.
       const visit = `${depth + 1}\0${viaIncludeIf}\0${childInert}\0${file}`

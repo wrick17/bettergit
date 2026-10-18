@@ -526,6 +526,29 @@ test('formatting parses only open Markdown files; expanding builds the plan, raw
   }
 })
 
+test('a Markdown hunk too large to format, counting its context, shows the raw diff without parsing, in both layouts', () => {
+  const pair = [line('const total = count + 1', 'del', 2), line('const total = amount + 1', 'add', 2)]
+  // One by row count (short context rows), one by characters (few long context rows). Each has a single replacement.
+  const byRows = [...Array.from({ length: 5_001 }, (_, index) => line(`row ${index}`, 'context', index + 3)), ...pair]
+  const byChars = [...Array.from({ length: 41 }, (_, index) => line(`${index} ${'x'.repeat(5_000)}`, 'context', index + 3)), ...pair]
+  for (const [name, lines] of [['rows', byRows], ['chars', byChars]] as const) for (const layout of ['unified', 'split'] as const) {
+    const { html, parsed } = render([file(`large-${name}.md`, lines)], layout)
+    expect(parsed).toEqual([])
+    expect(html).toContain('Too large to format as Markdown. Showing the source diff.')
+    expect(html).toContain('aria-label="Format Markdown" aria-pressed="true"')
+    expect(html).not.toContain('md-hunk')
+    expect(html).toContain(`<code>${lines[0].text}</code>`)
+    expect(html).toContain(`<code>${lines.at(-3)!.text}</code>`)
+    expect((html.match(/class="intra"/g) ?? []).length).toBe(2)
+    if (layout === 'unified') for (const sign of ['+', '-']) expect(html).toContain(`<span class="sign">${sign}</span>`)
+  }
+  // A hunk under the limit is still formatted.
+  const small = render([file('small.md', [line('# Heading'), ...pair])], 'split')
+  expect(small.parsed).toEqual([['# Heading', ...pair.map(entry => entry.text)]])
+  expect(small.html).toContain('<h1')
+  expect(small.html).not.toContain('Too large to format')
+})
+
 test('unsafe HTML, SVG, URL schemes and image destinations produce only inert text with no resource attributes', () => {
   const payloads = [
     '<script>globalThis.pwned = true</script>', '<svg onload="fetch(\'/secret\')"><image href="/private" /></svg>',

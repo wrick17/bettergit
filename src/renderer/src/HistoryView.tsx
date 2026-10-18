@@ -40,6 +40,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
   const [detail, setDetail] = useState<{ hash: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
+  // The load key of a failed reload of the commit on screen. Its diff shows the failure until a load succeeds.
+  const [failed, setFailed] = useState<string | null>(null)
   // The compare the user asked for: the commit, and the ref it compares with. Its diff is fetched with the whitespace option on screen.
   const [target, setTarget] = useState<{ hash: string; label: string; ref: string; quiet?: boolean } | null>(null)
   // The last fetched compare, with the option it was fetched with. It is shown only while that option and target are current.
@@ -61,6 +63,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
+  // A detail load asks for a commit with the context and whitespace option on screen.
+  const detailKey = JSON.stringify([selected, context, ignoreWhitespace])
   // Shown only for the target and option on screen. While a new fetch runs, the commit's own diff is shown.
   const compare = loaded && target && target.hash === selected && loaded.hash === target.hash && loaded.ref === target.ref && loaded.ignoreWhitespace === ignoreWhitespace ? loaded : null
   const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
@@ -99,24 +103,31 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     })
   }, [repo, query, revision])
 
+  // Errors go through the ref, so a parent render with a new callback starts no reload that could fail again.
   useEffect(() => {
     if (!selected) {
       setDetail(null)
       return
     }
     let stale = false
+    const key = detailKey
+    // The commit is already on screen, so this load is a reload for another option or context.
+    const reload = detail?.hash === selected
+    setFailed(null)
     api.commit(repo, selected, context, ignoreWhitespace).then((next) => {
       // Tagged with its hash, so a reply that lands after the selection moved is never shown, and with its option,
       // so its hunks are never shown under the other one.
       if (!stale) setDetail({ hash: selected, ignoreWhitespace, ...next })
     }).catch((failure: unknown) => {
-      // A saved commit that no longer exists (rebased away, for example) must not leave the detail on "Loading…".
       if (stale) return
-      setSelected(null)
-      onError(failure)
+      // A saved commit that no longer exists (rebased away, for example) must not leave the detail on "Loading…".
+      // A failed reload keeps the commit, its compare and the toolbar. The failure stays after the error banner clears.
+      if (reload) setFailed(key)
+      else setSelected(null)
+      errorRef.current(failure)
     })
     return () => { stale = true }
-  }, [repo, selected, context, ignoreWhitespace, onError])
+  }, [repo, selected, context, ignoreWhitespace])
 
   // Remembers the open commit and the search per repo, so a reload returns to them.
   useEffect(() => {
@@ -264,6 +275,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // A repo with no commits gets its own message in place of the selection hint.
   const empty = exhausted && !commits.length && !query.trim()
   const totals = compare ? totalLines(compare.files) : null
+  // With no diff to show, the pane is loading, unless the commit's own diff failed to reload and no compare is on its way.
+  const emptyHint = patch ? undefined : failed === detailKey && wanted === 'own' ? 'Could not load this diff.' : 'Loading…'
   // The commit actions need the selected commit's body, so they wait for its detail.
   const commitInput: CommitInput | null = picked && current ? {
     repo,
@@ -437,7 +450,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     <button className="ghost" onClick={() => setTarget(null)}>Exit comparison</button>
                   </div>
                 )}
-                <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={patch ? undefined : 'Loading…'} />
+                <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
               </div>
             </>
           )}
