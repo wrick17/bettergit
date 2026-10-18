@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync,
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
-import { commitDiff, detectMoves, workingDiff } from '../src/main/git/diff'
+import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
@@ -86,6 +86,71 @@ describe('history and diffs', () => {
     const root0 = (await readHistory(repo('work/personal/detached-head'), 0, 10)).at(-1)!
     const files = await commitDiff(repo('work/personal/detached-head'), root0.hash)
     expect(files[0].status).toBe('added')
+  })
+})
+
+describe('ignore whitespace', () => {
+  let dir: string
+  const names = (files: { newPath: string | null; oldPath: string | null }[]) => files.map((file) => file.newPath ?? file.oldPath)
+  const sha = async (rev: string) => (await git(dir, ['rev-parse', rev])).trim()
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'bettergit-ws-'))
+    await git(dir, ['init', '-q'])
+    await git(dir, ['config', 'user.email', 'test@example.com'])
+    await git(dir, ['config', 'user.name', 'Test'])
+    const write = (name: string, text: string) => writeFileSync(path.join(dir, name), text)
+    write('indent.ts', 'export const one = 1\nexport const two = 2\n')
+    write('mixed.ts', 'export function run() {\n  return 1\n}\n')
+    write('source.ts', 'export function a() {\n  return 1\n}\n\nexport function block() {\n  const x = compute(1)\n  const y = compute(2)\n  const z = compute(3)\n  return x + y + z\n}\n')
+    write('target.ts', 'export const keep = true\n')
+    await git(dir, ['add', '-A'])
+    await git(dir, ['commit', '-qm', 'base'])
+    // Whitespace-only reindent, a real edit beside a whitespace-only edit, and a block moved to another file with deeper indentation.
+    write('indent.ts', '  export const one = 1\n  export const two = 2\n')
+    write('mixed.ts', 'export function run(flag) {\n\treturn 1\n}\n')
+    write('source.ts', 'export function a() {\n  return 1\n}\n')
+    write('target.ts', 'export const keep = true\n\nexport function block() {\n    const x = compute(1)\n    const y = compute(2)\n    const z = compute(3)\n    return x + y + z\n}\n')
+  })
+  afterAll(() => cleanup(dir))
+
+  test('working tree: whitespace-only files drop out, real lines stay with correct numbers, and moves still resolve', async () => {
+    expect(names(await workingDiff(dir, false))).toEqual(['indent.ts', 'mixed.ts', 'source.ts', 'target.ts'])
+    const on = await workingDiff(dir, false, 3, undefined, true)
+    expect(names(on)).toEqual(['mixed.ts', 'source.ts', 'target.ts'])
+
+    const mixed = on.find((file) => file.newPath === 'mixed.ts')!
+    const lines = mixed.hunks.flatMap((hunk) => hunk.lines)
+    expect(lines.filter((line) => line.type !== 'context').map((line) => `${line.type}:${line.text}`))
+      .toEqual(['del:export function run() {', 'add:export function run(flag) {'])
+    expect(lines.find((line) => line.text === '\treturn 1')).toMatchObject({ type: 'context', newNo: 2 })
+
+    const moves = detectMoves(on)
+    expect(moves).toHaveLength(1)
+    const [move] = moves
+    expect(on[move.from[0].file].newPath).toBe('source.ts')
+    expect(on[move.to[0].file].newPath).toBe('target.ts')
+    const fromLine = on[move.from[0].file].hunks[move.from[0].hunk].lines[move.from[0].line]
+    expect(fromLine.text).toBe('export function block() {')
+    expect(detectMoves(await workingDiff(dir, false))).toHaveLength(1)
+  })
+
+  test('staged: the same option hides a whitespace-only staged file', async () => {
+    await git(dir, ['add', 'indent.ts'])
+    expect(names(await workingDiff(dir, true))).toEqual(['indent.ts'])
+    expect(await workingDiff(dir, true, 3, undefined, true)).toEqual([])
+  })
+
+  test('commit and compare apply the same option', async () => {
+    await git(dir, ['commit', '-qm', 'real edits', '--', 'mixed.ts', 'source.ts', 'target.ts'])
+    await git(dir, ['commit', '-qm', 'whitespace only', '--', 'indent.ts'])
+    const real = await sha('HEAD~1')
+    const whitespace = await sha('HEAD')
+    expect(await commitDiff(dir, whitespace, 3, true)).toEqual([])
+    expect(names(await commitDiff(dir, whitespace))).toEqual(['indent.ts'])
+    expect(names(await commitDiff(dir, real, 3, true))).toEqual(['mixed.ts', 'source.ts', 'target.ts'])
+    expect((await compare(dir, real, whitespace, true)).files).toEqual([])
+    expect(names((await compare(dir, real, whitespace)).files)).toEqual(['indent.ts'])
   })
 })
 
@@ -264,6 +329,7 @@ describe('dirty counter', () => {
     }
   })
 })
+
 
 describe('branch picker operations with real Git', () => {
   const repos: string[] = []

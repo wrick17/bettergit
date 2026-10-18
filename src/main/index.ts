@@ -165,13 +165,14 @@ function registerIpc() {
   ipcMain.handle('repo:status', async (_event, repoPath: string) => readStatus(assertKnownRepo(repoPath)))
   ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number) =>
     readHistory(assertKnownRepo(repoPath), skip, limit))
-  ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number) => {
+  // The whitespace flag is strict: only a literal true turns it on, so a malformed IPC argument cannot change the diff.
+  ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)
-    const files = await commitDiff(repo, hash, context)
+    const files = await commitDiff(repo, hash, context, ignoreWhitespace === true)
     return { files, moves: detectMoves(files), details: await commitDetails(repo, hash) }
   })
-  ipcMain.handle('repo:working', async (_event, repoPath: string, staged: boolean, context: number, path?: string) => {
-    const files = await workingDiff(assertKnownRepo(repoPath), staged, context, path)
+  ipcMain.handle('repo:working', async (_event, repoPath: string, staged: boolean, context: number, path?: string, ignoreWhitespace?: boolean) => {
+    const files = await workingDiff(assertKnownRepo(repoPath), staged, context, path, ignoreWhitespace === true)
     return { files, moves: detectMoves(files) }
   })
   handleWrite('repo:stage', (_event, repoPath: string, paths: string[]) => ops.stagePaths(repoPath, paths))
@@ -204,9 +205,9 @@ function registerIpc() {
     ops.amendMessage(repoPath, message, expectedHash))
   ipcMain.handle('repo:merge-base', (_event, repoPath: string, a: string, b: string) =>
     ops.mergeBase(assertKnownRepo(repoPath), a, b))
-  ipcMain.handle('repo:compare', async (_event, repoPath: string, from: string, to: string) => {
+  ipcMain.handle('repo:compare', async (_event, repoPath: string, from: string, to: string, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)
-    return compare(repo, await ops.resolveCommit(repo, from), await ops.resolveCommit(repo, to))
+    return compare(repo, await ops.resolveCommit(repo, from), await ops.resolveCommit(repo, to), ignoreWhitespace === true)
   })
   ipcMain.handle('system:open-url', (_event, url: string) => {
     // Only https links leave the app; file:, javascript:, and custom schemes stay closed.

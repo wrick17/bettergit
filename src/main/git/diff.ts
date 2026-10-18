@@ -166,21 +166,24 @@ function contextArg(context: number): string {
   return `-U${Math.min(MAX_CONTEXT, Math.max(0, Math.trunc(context)))}`
 }
 
-export async function commitDiff(repo: string, hash: string, context = 3): Promise<DiffFile[]> {
-  const output = await git(repo, ['diff-tree', '-p', '--root', '-m', '--first-parent', '--find-renames', contextArg(context), '--no-color', hash])
+// `ignoreWhitespace` is git's --ignore-all-space. A file with only whitespace edits drops out of the patch, and
+// whitespace-only lines inside a hunk become context. It also hides a space removed inside a line ("a b" to "ab").
+export async function commitDiff(repo: string, hash: string, context = 3, ignoreWhitespace = false): Promise<DiffFile[]> {
+  const output = await git(repo, ['diff-tree', '-p', '--root', '-m', '--first-parent', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', hash])
   return parseDiff(output)
 }
 
 // Callers pass resolved commit hashes, so refs never reach git as raw input.
-export async function compare(repo: string, from: string, to: string): Promise<{ files: DiffFile[]; moves: MovedBlock[] }> {
-  const files = parseDiff(await git(repo, ['diff', '--find-renames', '-U3', '--no-color', from, to]))
+export async function compare(repo: string, from: string, to: string, ignoreWhitespace = false): Promise<{ files: DiffFile[]; moves: MovedBlock[] }> {
+  const files = parseDiff(await git(repo, ['diff', '--find-renames', '-U3', ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', from, to]))
   return { files, moves: detectMoves(files) }
 }
 
 // Unstaged changes include untracked files. git diff never shows them, so each one becomes a file of added lines.
 // `path` limits the diff to one file, so the view can widen its context without refetching everything.
-export async function workingDiff(repo: string, staged: boolean, context = 3, path?: string): Promise<DiffFile[]> {
-  const args = ['diff', '--find-renames', contextArg(context), '--no-color', '--no-ext-diff']
+// Untracked files are whole-file additions, so `ignoreWhitespace` never hides them.
+export async function workingDiff(repo: string, staged: boolean, context = 3, path?: string, ignoreWhitespace = false): Promise<DiffFile[]> {
+  const args = ['diff', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', '--no-ext-diff']
   if (staged) args.push('--cached')
   if (path) args.push('--', path)
   const files = parseDiff(await git(repo, args))

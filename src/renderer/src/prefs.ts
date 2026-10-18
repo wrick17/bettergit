@@ -34,6 +34,32 @@ export function useContextLines(): number {
   return useSyncExternalStore(contextStore.subscribe, contextStore.get)
 }
 
+// Hides whitespace-only edits in every diff (git --ignore-all-space). Off by default.
+const IGNORE_WHITESPACE_KEY = 'bettergit.ignoreWhitespace'
+const ignoreWhitespaceStore = createStore(localStorage.getItem(IGNORE_WHITESPACE_KEY) === 'true')
+
+export function setIgnoreWhitespace(next: boolean) {
+  localStorage.setItem(IGNORE_WHITESPACE_KEY, String(next))
+  ignoreWhitespaceStore.set(next)
+}
+
+export function useIgnoreWhitespace(): boolean {
+  return useSyncExternalStore(ignoreWhitespaceStore.subscribe, ignoreWhitespaceStore.get)
+}
+
+// One raw/formatted choice for every diff, restored when the renderer reloads.
+const FORMAT_MARKDOWN_KEY = 'bettergit.formatMarkdown'
+const formatMarkdownStore = createStore(localStorage.getItem(FORMAT_MARKDOWN_KEY) === 'true')
+
+export function setFormatMarkdown(next: boolean) {
+  localStorage.setItem(FORMAT_MARKDOWN_KEY, String(next))
+  formatMarkdownStore.set(next)
+}
+
+export function useFormatMarkdown(): boolean {
+  return useSyncExternalStore(formatMarkdownStore.subscribe, formatMarkdownStore.get)
+}
+
 // Extension to Shiki language, from Settings. Set by the app whenever the config changes.
 const languageStore = createStore<Record<string, string>>({})
 
