@@ -241,7 +241,8 @@ function registerIpc() {
   handleWrite('repo:conflict-reset', (_event, repoPath: string, filePath: string, request: unknown) =>
     resetConflict(repoPath, filePath, parseConflictReset(request)))
   // The diff's inline editor. The write holds the repo lock, so it never lands in the middle of a Git write.
-  ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownRepo(repoPath), filePath))
+  // The read takes no lock, but it checks the repo's real path against the sources, as the write does through handleWrite.
+  ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownWriteRepo(repoPath), filePath))
   handleWrite('repo:file-write', (_event, repoPath: string, filePath: string, expected: string, text: string) =>
     writeWorkingFile(repoPath, filePath, expected, text))
   // Launching an editor does not write Git state, so it stays available while the repo is busy.
