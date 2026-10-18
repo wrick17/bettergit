@@ -2,9 +2,9 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, Columns2, Columns3,
-  CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, GitBranch, GitCompare,
+  CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
-  PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, Settings, Shuffle, Tag, Trash2, Undo2, UnfoldVertical, X, type LucideIcon,
+  MousePointerClick, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, Tag, Trash2, Undo2, UnfoldVertical, Users, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
@@ -57,6 +57,13 @@ const ICONS = {
   unfold: UnfoldVertical,
   close: X,
   save: Save,
+  users: Users,
+  // Empty-state marks.
+  clean: Sparkles,
+  commit: GitCommitHorizontal,
+  pick: MousePointerClick,
+  noResults: SearchX,
+  addFolder: FolderPlus,
 } satisfies Record<string, LucideIcon>
 
 export type IconName = keyof typeof ICONS

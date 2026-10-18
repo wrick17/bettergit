@@ -7,6 +7,7 @@ import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Promp
 import { CommitStat } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
 import { Icon } from './Icons'
+import { EmptyState } from './EmptyState'
 import { ActionMenu } from './OverflowBar'
 import { useContextLines, useIgnoreWhitespace } from './prefs'
 import { useRepoBusy } from './repo-busy'
@@ -38,6 +39,8 @@ interface Props {
 export function HistoryView({ repo, head, revision, listOpen, detailOpen, onError, onChanged }: Props) {
   const [commits, setCommits] = useState<Commit[]>([])
   const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
+  // Author names the list is limited to. Empty shows every author.
+  const [authors, setAuthors] = useState<string[]>([])
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
   const [detail, setDetail] = useState<{ hash: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
   // The load key of a failed reload of the commit on screen. Its diff shows the failure until a load succeeds.
@@ -89,8 +92,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     pageBusy.current = true
     setExhausted(false)
     const load = query.trim()
-      ? api.searchHistory(repo, query.trim())
-      : api.history(repo, 0, PAGE)
+      ? api.searchHistory(repo, query.trim(), authors)
+      : api.history(repo, 0, PAGE, authors)
     load.then((rows: Commit[]) => {
       // A reply for an older query, repo, or refresh must not overwrite the current list.
       if (gen !== generation.current) return
@@ -101,7 +104,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     }).finally(() => {
       if (gen === generation.current) pageBusy.current = false
     })
-  }, [repo, query, revision])
+  }, [repo, query, authors, revision])
 
   // Errors go through the ref, so a parent render with a new callback starts no reload that could fail again.
   useEffect(() => {
@@ -191,6 +194,13 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   const rows = useMemo(() => layoutGraph(commits), [commits])
+  // History opens on the newest commit when nothing is selected. Only once per open: a commit that fails to load is not picked again.
+  const opened = useRef(false)
+  useEffect(() => {
+    if (opened.current || !rows.length) return
+    opened.current = true
+    if (!selected) setSelected(rows[0].commit.hash)
+  }, [rows, selected])
   // One fixed graph column for every row, so the commit text lines up down the list.
   const laneCount = Math.min(MAX_LANES, Math.max(1, ...rows.map((row) => row.laneCount)))
   const graphWidth = LANE_WIDTH * (laneCount + 1)
@@ -273,7 +283,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // The heading already shows the subject, so the body under it leaves the subject out.
   const body = current ? bodyBelow(current.details.body, picked?.subject ?? '') : ''
   // A repo with no commits gets its own message in place of the selection hint.
-  const empty = exhausted && !commits.length && !query.trim()
+  const empty = exhausted && !commits.length && !query.trim() && !authors.length
   const totals = compare ? totalLines(compare.files) : null
   // With no diff to show, the pane is loading, unless the commit's own diff failed to reload and no compare is on its way.
   const emptyHint = patch ? undefined : failed === detailKey && wanted === 'own' ? 'Could not load this diff.' : 'Loading…'
@@ -300,7 +310,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     if (pageBusy.current) return
     const gen = generation.current
     pageBusy.current = true
-    api.history(repo, commits.length, PAGE).then((more: Commit[]) => {
+    api.history(repo, commits.length, PAGE, authors).then((more: Commit[]) => {
       if (gen !== generation.current) return
       setCommits((shown) => {
         const seen = new Set(shown.map((commit) => commit.hash))
@@ -363,6 +373,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
               placeholder="Search commit messages"
               aria-label="Search commit messages"
             />
+            <AuthorFilter repo={repo} authors={authors} onChange={setAuthors} onError={onError} />
           </div>
           <ul
             ref={listRef}
@@ -389,7 +400,9 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             ))}
           </ul>
           {!exhausted && !query.trim() && <button className="more" onClick={loadMore}>Load more</button>}
-          {!rows.length && !empty && <p className="hint">No commits to show.</p>}
+          {!rows.length && !empty && exhausted && (
+            <EmptyState compact icon="noResults" title="No matching commits" hint={authors.length ? 'Try another search, or clear the author filter.' : 'Try a different search.'} />
+          )}
         </div>
       )}
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />}
@@ -399,8 +412,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
           style={selected && current ? { gridTemplateColumns: `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` } as CSSProperties : undefined}
         >
           {!selected && (empty
-            ? <p className="hint">This repository has no commits yet.</p>
-            : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}
+            ? <EmptyState icon="commit" title="No commits yet" hint="Make the first commit from the Changes tab and it shows up here." />
+            : <EmptyState icon="pick" title="No commit selected" hint="Pick a commit from the list. The up and down arrows move between commits." />)}
           {selected && !current && <p className="hint">Loading…</p>}
           {selected && current && (
             <>
@@ -582,5 +595,98 @@ function CommitRow({ row, graphWidth, active, isHead, onSelect, onMenu }: {
       <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
       <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
     </li>
+  )
+}
+
+// The author filter beside the search field: a button that opens a checklist of the repo's authors, and a chip per picked author.
+function AuthorFilter({ repo, authors, onChange, onError }: {
+  repo: string
+  authors: string[]
+  onChange: (authors: string[]) => void
+  onError: (error: unknown) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [choices, setChoices] = useState<{ name: string; count: number }[] | null>(null)
+  const [find, setFind] = useState('')
+  const box = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+
+  // The names are read on each open, so authors from a fetch since the last open are listed.
+  useEffect(() => {
+    if (!open) return
+    let stale = false
+    api.authors(repo).then((next) => { if (!stale) setChoices(next) }).catch((failure: unknown) => { if (!stale) onError(failure) })
+    const close = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false) }
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      trigger.current?.focus()
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      stale = true
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, repo, onError])
+
+  const toggle = (name: string) => onChange(authors.includes(name) ? authors.filter((item) => item !== name) : [...authors, name])
+  const shown = choices?.filter((choice) => choice.name.toLowerCase().includes(find.trim().toLowerCase())) ?? []
+  const label = authors.length ? `Authors: ${authors.join(', ')}` : 'Filter by author'
+
+  return (
+    <>
+      <div className="author-anchor" ref={box}>
+        <button
+          ref={trigger}
+          type="button"
+          className={`icon-button author-trigger${authors.length || open ? ' on' : ''}`}
+          aria-label={label}
+          title={label}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Icon name="users" />
+          {authors.length > 0 && <span className="author-count" aria-hidden="true">{authors.length}</span>}
+        </button>
+        {open && (
+          <div className="popover author-popover" role="dialog" aria-label="Filter by author">
+            <input
+              type="search"
+              value={find}
+              onChange={(event) => setFind(event.target.value)}
+              placeholder="Find an author"
+              aria-label="Find an author"
+              autoFocus
+              spellCheck={false}
+            />
+            <div className="author-options">
+              {!choices && <p className="author-note">Loading…</p>}
+              {choices && !shown.length && <p className="author-note">No matching authors</p>}
+              {shown.map((choice) => (
+                <label key={choice.name} className="author-option">
+                  <input type="checkbox" checked={authors.includes(choice.name)} onChange={() => toggle(choice.name)} />
+                  <span className="author-name">{choice.name}</span>
+                  <span className="count">{choice.count}</span>
+                </label>
+              ))}
+            </div>
+            {authors.length > 0 && <button type="button" onClick={() => onChange([])}>Clear author filter</button>}
+          </div>
+        )}
+      </div>
+      {authors.length > 0 && (
+        <div className="author-chips">
+          {authors.map((name) => (
+            <button key={name} type="button" className="author-chip" aria-label={`Remove author ${name}`} title={`Remove ${name}`} onClick={() => toggle(name)}>
+              <span>{name}</span>
+              <Icon name="close" />
+            </button>
+          ))}
+        </div>
+      )}
+    </>
   )
 }

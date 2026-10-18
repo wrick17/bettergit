@@ -355,6 +355,16 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
     load().catch(onError)
   }, [load, revision])
 
+  // A clean repo opens on History, and Changes hands over to History when its last change goes (after a commit, say).
+  // A user who picks Changes on a clean repo stays there: only the first status and a dirty-to-clean change switch.
+  const changeCount = useRef<number | null>(null)
+  useEffect(() => {
+    if (!status) return
+    const before = changeCount.current
+    changeCount.current = status.changes.length
+    if (status.changes.length === 0 && before !== 0) onTab('history')
+  }, [status, onTab])
+
   // Only a loaded status counts, so switching repos keeps the last answer until the new status arrives.
   useEffect(() => {
     if (status) onCleanChange(tab === 'changes' && status.changes.length === 0)

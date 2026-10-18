@@ -30,11 +30,18 @@ export function parseLog(output: string): Commit[] {
     })
 }
 
-// Commits from every local and remote ref, newest topological first. Pages are offset-based.
-export async function readHistory(repo: string, skip: number, limit: number): Promise<Commit[]> {
+// One --author pattern per name, matching that exact author name. Git ORs repeated --author options.
+// --basic-regexp overrides a grep.patternType config, so the escaping below always applies.
+function authorArgs(authors: string[]): string[] {
+  if (!authors.length) return []
+  return ['--basic-regexp', ...authors.map((name) => `--author=^${name.replace(/[\\.[\]*^$]/g, '\\$&')} <`)]
+}
+
+// Commits from every local and remote ref, newest topological first. Pages are offset-based and count only matching commits.
+export async function readHistory(repo: string, skip: number, limit: number, authors: string[] = []): Promise<Commit[]> {
   const format = `%H${FIELD}%P${FIELD}%D${FIELD}%an${FIELD}%at${FIELD}%s${RECORD}`
   // Branches only: checkpoint and backup refs stay out of the list.
-  const output = await git(repo, ['log', '--branches', '--remotes', '--topo-order', `--skip=${skip}`, `-n`, String(limit), `--format=${format}`], {
+  const output = await git(repo, ['log', '--branches', '--remotes', '--topo-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${format}`], {
     optionalLocks: true,
   })
   return parseLog(output)
@@ -55,11 +62,21 @@ export async function fileHistory(repo: string, path: string, limit = 200): Prom
   return parseLog(output)
 }
 
-export async function searchHistory(repo: string, query: string, limit = 200): Promise<Commit[]> {
+export async function searchHistory(repo: string, query: string, authors: string[] = [], limit = 200): Promise<Commit[]> {
   const format = `%H${FIELD}%P${FIELD}%D${FIELD}%an${FIELD}%at${FIELD}%s${RECORD}`
   // -F/--fixed-strings keeps user text literal; -i matches case-insensitively in messages.
-  const output = await git(repo, ['log', '--branches', '--remotes', '-i', '-F', `--grep=${query}`, `-n`, String(limit), `--format=${format}`], {
+  // With an author filter, the message is matched as an escaped basic regexp instead, since -F would also apply to the author patterns.
+  const grep = authors.length ? ['--regexp-ignore-case', `--grep=${query.replace(/[\\.[\]*^$]/g, '\\$&')}`, ...authorArgs(authors)] : ['-i', '-F', `--grep=${query}`]
+  const output = await git(repo, ['log', '--branches', '--remotes', ...grep, `-n`, String(limit), `--format=${format}`], {
     optionalLocks: true,
   })
   return parseLog(output)
+}
+
+// Every author name on the branches History lists, most commits first.
+export async function readAuthors(repo: string): Promise<{ name: string; count: number }[]> {
+  const output = await git(repo, ['log', '--branches', '--remotes', '--format=%an'], { optionalLocks: true })
+  const counts = new Map<string, number>()
+  for (const name of output.split('\n')) if (name) counts.set(name, (counts.get(name) ?? 0) + 1)
+  return [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 }

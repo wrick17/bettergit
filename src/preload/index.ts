@@ -17,8 +17,9 @@ const api = {
   removeSource: (path: string) => invoke('sources:remove', path),
   repoLocks: () => invoke('repo:locks') as Promise<RepoLockSnapshot>,
   status: (repo: string) => invoke('repo:status', repo),
-  history: (repo: string, skip: number, limit: number) => invoke('repo:history', repo, skip, limit),
-  searchHistory: (repo: string, query: string) => invoke('repo:search', repo, query),
+  history: (repo: string, skip: number, limit: number, authors: string[] = []) => invoke('repo:history', repo, skip, limit, authors),
+  searchHistory: (repo: string, query: string, authors: string[] = []) => invoke('repo:search', repo, query, authors),
+  authors: (repo: string) => invoke('repo:authors', repo) as Promise<{ name: string; count: number }[]>,
   commit: (repo: string, hash: string, context: number, ignoreWhitespace = false) => invoke('repo:commit', repo, hash, context, ignoreWhitespace),
   working: (repo: string, staged: boolean, context: number, path?: string, ignoreWhitespace = false) =>
     invoke('repo:working', repo, staged, context, path, ignoreWhitespace),
