@@ -5,10 +5,11 @@ import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-laun
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides } from './prefs'
-import { highlightFile, type Segment } from './highlight'
+import { highlightFile, languageFor, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
+import { DraftActions, EditableDiff, type EditBridge } from './DiffEditor'
 import './intraline.css'
 
 interface Props {
@@ -24,18 +25,8 @@ interface Props {
   conflict?: ConflictDecor
   // Replaces the text shown when there are no files. Set when the caller has nothing to show because a load failed.
   emptyHint?: string
-  // Set in the Changes view for working-tree diffs. Each text file header then gets an Edit button for its working copy.
+  // Set in the Changes view for working-tree diffs. Each text file then edits in place, with save and discard in its header.
   edit?: EditBridge
-}
-
-// Reads and saves a repo-relative working file. `save` resolves false when the write failed and was already reported.
-export interface EditBridge {
-  // The repo the paths belong to. An open edit shows only in diffs of its own repo.
-  repo: string
-  load: (path: string) => Promise<string>
-  save: (path: string, loaded: string, text: string) => Promise<boolean>
-  onError: (error: unknown) => void
-  disabled?: boolean
 }
 
 // A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
@@ -81,36 +72,6 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-// The one open inline edit. It lives outside every DiffView, so a reload, remount or view switch never loses the draft.
-interface OpenEdit { repo: string; path: string; loaded: string | null; draft: string }
-let openEdit: OpenEdit | null = null
-const editListeners = new Set<() => void>()
-function setOpenEdit(next: OpenEdit | null) {
-  openEdit = next
-  for (const listener of editListeners) listener()
-}
-function useOpenEdit() {
-  return useSyncExternalStore((listener) => {
-    editListeners.add(listener)
-    return () => { editListeners.delete(listener) }
-  }, () => openEdit)
-}
-
-// A textarea reports every line break as LF, so the file's CRLF endings are put back before saving.
-// shortcut: a file with mixed endings is saved with one kind; upgrade if mixed-ending files need editing here.
-function editText({ loaded, draft }: OpenEdit) {
-  return loaded?.includes('\r\n') ? draft.replace(/\r?\n/g, '\r\n') : draft
-}
-
-// Closes the open edit, asking first when it has unsaved text. False when the user keeps it. Editing `keep` (repo and
-// path) again is not a switch, so it never asks.
-export function confirmDropEdit(keep?: { repo: string; path: string }): boolean {
-  if (!openEdit || (keep && openEdit.repo === keep.repo && openEdit.path === keep.path)) return true
-  if (openEdit.loaded !== null && editText(openEdit) !== openEdit.loaded && !window.confirm(`Discard your edits to ${openEdit.path}?`)) return false
-  setOpenEdit(null)
-  return true
-}
-
 export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint, edit }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
@@ -128,7 +89,8 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   const formatMarkdown = useFormatMarkdown()
   // Conflict markers are source, so a conflicted file is never formatted.
   const formatted = formatMarkdown && !conflict
-  const tokens = useTokens(files, useLanguageOverrides())
+  const overrides = useLanguageOverrides()
+  const tokens = useTokens(files, overrides)
   // A conflict row shows only its own text: colours made for other lines, such as before a choice changed the file, are dropped.
   const decorate = (line: DiffLine, segments?: Segment[]) => {
     const row = conflict?.row(line)
@@ -148,24 +110,6 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   }, [persistId, persistKey, choices])
 
   useSourceAnchor(containerRef, current, formatMarkdown, files)
-  const opened = useOpenEdit()
-  const editing = edit && opened?.repo === edit.repo ? opened : null
-  // A file that left this diff, such as one staged or reverted on disk, keeps its editor at the top until it is closed.
-  const orphan = editing && !files.some((file) => pathOf(file) === editing.path) ? editing : null
-  const startEdit = (path: string) => {
-    if (!edit || !confirmDropEdit()) return
-    const { repo } = edit
-    const pending = { repo, path, loaded: null, draft: '' }
-    setOpenEdit(pending)
-    edit.load(path).then(
-      (text) => { if (openEdit === pending) setOpenEdit({ ...pending, loaded: text, draft: text }) },
-      (error) => {
-        if (openEdit === pending) setOpenEdit(null)
-        edit.onError(error)
-      },
-    )
-  }
-
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
   useLayoutEffect(() => {
@@ -299,7 +243,6 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
       {!files.length && (
         <p className="hint">{emptyHint ?? (ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.')}</p>
       )}
-      {orphan && edit && <FileEditor open={orphan} edit={edit} orphan />}
       {files.map((file, fileIndex) => {
         const path = pathOf(file)
         const stat = stats[fileIndex]
@@ -307,11 +250,16 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         // A conflict being resolved starts open, even in a lock file, since its markers and actions are the point. A choice made by hand wins.
         const open = choices[path] ?? (!!conflict || !startsCollapsed(file, changed))
         const toggle = () => setChoices((prev) => ({ ...prev, [path]: !open }))
+        const text = edit && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
+        // Formatted Markdown is not source, so it stays read-only; the raw view edits it.
+        const editor = text && !(formatted && isMarkdownPath(path)) ? text : undefined
+        const withEditor = (fallback: ReactNode) => editor
+          ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={current} language={languageFor(path, overrides)} fallback={fallback} />
+          : fallback
         return (
-          <section key={`${fileIndex}-${path}`} className="diff-file" data-path={path}>
+          <section key={`${fileIndex}-${path}`} className={`diff-file${editor ? ' editable' : ''}`} data-path={path}>
             <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage}
-              onEdit={edit && !file.binary && file.status !== 'deleted' && editing?.path !== path ? () => startEdit(path) : undefined} />
-            {edit && editing?.path === path && <FileEditor open={editing} edit={edit} />}
+              actions={text && <DraftActions edit={text} path={path} />} />
             {file.binary && <p className="hint">Binary file.</p>}
             {!open && file.hunks.length > 0 && (
               <div className="collapsed-note">
@@ -320,7 +268,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
               </div>
             )}
             {open && conflict && current === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
-            {open && file.hunks.map((hunk, hunkIndex) => {
+            {open && withEditor(file.hunks.map((hunk, hunkIndex) => {
               const markdown = formatted && isMarkdownPath(path)
               const format = markdown && fitsMarkdown(hunk.lines)
               return (
@@ -393,7 +341,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                 {onExpand && <ExpandRow label={`Show more context below line ${edgeLines(hunk.lines).last}`} onExpand={() => onExpand(file)} />}
               </Fragment>
               )
-            })}
+            }))}
           </section>
         )
       })}
@@ -639,13 +587,13 @@ function MarkdownHunkView({ lines, changes, layout, prefix, labels, anchors }: M
 
 // The sticky header for one file: optional stage checkbox, collapse toggle, status, name with its folder,
 // and how many lines were added and removed.
-function FileHeader({ file, stat, open, onToggle, stage, onEdit }: {
+function FileHeader({ file, stat, open, onToggle, stage, actions }: {
   file: DiffFile
   stat: { adds: number; dels: number }
   open: boolean
   onToggle: () => void
   stage?: Props['stage']
-  onEdit?: () => void
+  actions?: ReactNode
 }) {
   const path = pathOf(file)
   const { name, dir } = splitPath(path)
@@ -675,54 +623,9 @@ function FileHeader({ file, stat, open, onToggle, stage, onEdit }: {
         <span className="add">+{stat.adds}</span>
         <span className="del">−{stat.dels}</span>
       </span>
-      {onEdit && <span className="diff-file-open"><IconButton icon="edit" label={`Edit ${path}`} onClick={onEdit} /></span>}
+      {actions}
       {editor && <OpenInEditorButton file={file} bridge={editor} />}
     </header>
-  )
-}
-
-// Edits the whole working file in place, above its diff. Saving writes it and the diff reloads under it.
-function FileEditor({ open, edit, orphan }: { open: OpenEdit; edit: EditBridge; orphan?: boolean }) {
-  const { path, loaded, draft } = open
-  const [saving, setSaving] = useState(false)
-  const text = editText(open)
-  const dirty = loaded !== null && text !== loaded
-  const save = async () => {
-    if (!dirty || saving || edit.disabled || loaded === null) return
-    setSaving(true)
-    const ok = await edit.save(path, loaded, text)
-    setSaving(false)
-    // Text typed while the save ran stays in the draft, and stays unsaved.
-    if (ok && openEdit?.repo === open.repo && openEdit.path === path) setOpenEdit({ ...openEdit, loaded: text })
-  }
-  const cancel = () => { confirmDropEdit() }
-  if (loaded === null) return <p className="hint">Loading {path}…</p>
-  return (
-    <div className="diff-file-editor">
-      <textarea
-        value={draft}
-        onChange={(event) => setOpenEdit({ ...open, draft: event.target.value })}
-        onKeyDown={(event) => {
-          if (event.key === 's' && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault()
-            void save()
-          } else if (event.key === 'Escape') {
-            event.preventDefault()
-            cancel()
-          }
-        }}
-        aria-label={`Contents of ${path}`}
-        spellCheck={false}
-        autoFocus
-      />
-      <div className="diff-file-editor-actions">
-        {orphan && <span className="note">{path} is no longer in this diff.</span>}
-        <button type="button" onClick={cancel}>{dirty ? 'Cancel' : 'Close'}</button>
-        <button type="button" className="primary" onClick={() => void save()} disabled={!dirty || saving || edit.disabled} aria-busy={saving || undefined}>
-          {saving ? 'Saving…' : 'Save'} <kbd aria-hidden="true">⌘S</kbd>
-        </button>
-      </div>
-    </div>
   )
 }
 

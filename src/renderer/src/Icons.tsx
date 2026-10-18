@@ -4,7 +4,7 @@ import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, Columns2, Columns3,
   CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, GitBranch, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
-  PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Search, Settings, Shuffle, Tag, Trash2, Undo2, UnfoldVertical, X, type LucideIcon,
+  PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, Settings, Shuffle, Tag, Trash2, Undo2, UnfoldVertical, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
@@ -56,6 +56,7 @@ const ICONS = {
   trash: Trash2,
   unfold: UnfoldVertical,
   close: X,
+  save: Save,
 } satisfies Record<string, LucideIcon>
 
 export type IconName = keyof typeof ICONS

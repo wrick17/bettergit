@@ -53,12 +53,20 @@ const cache = new Map<string, Segment[][]>()
 
 // Returns one list of coloured segments per input line. Falls back to plain text whenever colouring fails.
 export async function highlightLines(lines: string[], language: string | null): Promise<Segment[][]> {
-  const plain = lines.map((text) => [{ text }])
   const code = lines.join('\n')
-  if (!language || code.length > MAX_HIGHLIGHT_CHARS) return plain
   const key = `${language}\n${code}`
   const cached = cache.get(key)
   if (cached) return cached
+  const segments = await tokenize(code, language)
+  if (!segments) return lines.map((text) => [{ text }])
+  if (cache.size >= CACHE_LIMIT) cache.clear()
+  cache.set(key, segments)
+  return segments
+}
+
+// Uncached, for text that changes on every keystroke. Null when the code is not coloured.
+export async function tokenize(code: string, language: string | null): Promise<Segment[][] | null> {
+  if (!language || code.length > MAX_HIGHLIGHT_CHARS) return null
   try {
     const shiki = await getHighlighter()
     if (!shiki.getLoadedLanguages().includes(language)) {
@@ -68,16 +76,13 @@ export async function highlightLines(lines: string[], language: string | null): 
       lang: language,
       themes: { light: 'github-light', dark: 'github-dark' },
     })
-    const segments = tokens.map((line) => line.map((token) => ({
+    return tokens.map((line) => line.map((token) => ({
       text: token.content,
       light: token.variants.light?.color,
       dark: token.variants.dark?.color,
     })))
-    if (cache.size >= CACHE_LIMIT) cache.clear()
-    cache.set(key, segments)
-    return segments
   } catch {
-    return plain
+    return null
   }
 }
 
