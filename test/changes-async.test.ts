@@ -295,6 +295,37 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
     unmount()
   }
+} else if (process.env.CHECK_MODE === 'initial-failure') {
+  // The first load fails before any result has shown. The failure stays in place of the changes, with the toolbar
+  // mounted, after the error banner clears; a later load for the same view replaces it.
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  for (const selected of [false, true]) {
+    stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+    setContextLines(3); setIgnoreWhitespace(false)
+    if (selected) stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
+    props = {
+      repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+      listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+    }
+    render()
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) { request.done = true; request.reject(new Error('first load failed')) }
+    await flush()
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: first load failed'))
+    for (let pass = 0; pass < 2; pass++) {
+      for (const view of views(selected)) {
+        assert.ok(view, 'no diff toolbar after a failed first load')
+        assert.deepEqual(view.files, [])
+        assert.equal(view.emptyHint, 'Could not load these changes.')
+      }
+      render()
+    }
+    props = { ...props, revision: 2 }; render(); await load('recovered')
+    for (const view of views(selected)) {
+      assert.equal(view.emptyHint, undefined)
+      assert.equal(view.files[0].hunks[0].lines.at(-1).text, 'recovered')
+    }
+    unmount()
+  }
 } else if (process.env.CHECK_MODE === 'status-loads') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
     await start(false)
@@ -471,4 +502,5 @@ test('a widen requested under the current revision remains valid after its base 
 test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
 test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
 test('a failed load with new whitespace options shows the failure in place of the old hunks and keeps the toolbar', () => check('whitespace-failure'))
+test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))
