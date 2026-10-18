@@ -1,7 +1,4 @@
-import { createHighlighterCore, type HighlighterCore } from 'shiki/core'
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
-import { bundledLanguages, type BundledLanguage } from 'shiki/langs'
-import { bundledThemes } from 'shiki/themes'
+import { bundledLanguages } from 'shiki/langs'
 import type { DiffFile } from '../../main/git/diff'
 
 // One colour per theme. The diff's CSS picks the right one for the current appearance.
@@ -25,18 +22,6 @@ const DEFAULT_LANGUAGES: Record<string, string> = {
 // Past this size, colouring costs more than it helps. Those diffs render as plain text.
 const MAX_HIGHLIGHT_CHARS = 400_000
 
-let highlighter: Promise<HighlighterCore> | null = null
-
-// The JavaScript regex engine avoids WebAssembly, which the page's content security policy does not allow.
-function getHighlighter(): Promise<HighlighterCore> {
-  highlighter ??= createHighlighterCore({
-    themes: [bundledThemes['github-dark'](), bundledThemes['github-light']()],
-    langs: [],
-    engine: createJavaScriptRegexEngine(),
-  })
-  return highlighter
-}
-
 export function languageFor(filePath: string, overrides: Record<string, string>): string | null {
   const name = filePath.slice(filePath.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
@@ -52,16 +37,63 @@ const CACHE_LINES = 200_000
 const cache = new Map<string, Segment[][]>()
 let cachedLines = 0
 
+// The colours of code already tokenised, without waiting, so a view built from cached code is coloured on its first frame.
+export function cachedTokens(code: string, language: string | null): Segment[][] | undefined {
+  return language ? cache.get(`${language}\n${code}`) : undefined
+}
+
 // Returns one list of coloured segments per input line. Falls back to plain text whenever colouring fails.
 export async function highlightLines(lines: string[], language: string | null, stale?: () => boolean): Promise<Segment[][]> {
   return (await tokenize(lines.join('\n'), language, stale)) ?? lines.map((text) => [{ text }])
 }
 
-// Lines tokenised between yields. Tokenising runs on the main thread, so it stops every few milliseconds to let input
-// and frames through: a whole large file takes the same total time, but the window stays responsive meanwhile.
-const SLICE_LINES = 40
-const SLICE_MS = 6
-const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+// Tokenising runs in a worker, so a slow grammar rule (some backtrack badly on some lines) never holds the window.
+// Where a worker cannot start, it runs in the page, in slices (tokenize-core.ts). Requests for the same code share one run.
+let worker: Worker | null | undefined
+let nextJob = 0
+// Undefined hands a job back for the page to run, when the worker fails.
+const jobs = new Map<number, (lines: Segment[][] | null | undefined) => void>()
+const running = new Map<string, Promise<Segment[][] | null>>()
+
+function tokenizer(): Worker | null {
+  if (worker !== undefined) return worker
+  try {
+    worker = new Worker(new URL('./highlight-worker.ts', import.meta.url))
+    // Bun (the tests) keeps a process alive while a worker runs; browsers have no unref.
+    ;(worker as Worker & { unref?: () => void }).unref?.()
+    worker.onmessage = ({ data }: MessageEvent<{ id: number; lines: Segment[][] | null }>) => {
+      jobs.get(data.id)?.(data.lines)
+      jobs.delete(data.id)
+    }
+    // A worker that fails to load hands its waiting jobs back to the page.
+    worker.onerror = () => {
+      worker = null
+      for (const finish of jobs.values()) finish(undefined)
+      jobs.clear()
+    }
+  } catch {
+    worker = null
+  }
+  return worker
+}
+
+function run(code: string, language: string, stale?: () => boolean): Promise<Segment[][] | null> {
+  const thread = tokenizer()
+  if (!thread) return import('./tokenize-core').then(({ tokenizeCode }) => tokenizeCode(code, language, stale))
+  const id = ++nextJob
+  return new Promise<Segment[][] | null | undefined>((resolve) => {
+    jobs.set(id, resolve)
+    thread.postMessage({ id, code, language })
+    // A request nobody waits for any more is dropped from the worker's queue.
+    const poll = setInterval(() => {
+      if (!jobs.has(id)) return clearInterval(poll)
+      if (stale?.()) {
+        clearInterval(poll)
+        thread.postMessage({ cancel: id })
+      }
+    }, 50)
+  }).then((lines) => (lines === undefined ? run(code, language, stale) : lines))
+}
 
 // Null when the code is not coloured, or when `stale` turns true before it finishes (such as text typed since).
 export async function tokenize(code: string, language: string | null, stale?: () => boolean): Promise<Segment[][] | null> {
@@ -69,44 +101,22 @@ export async function tokenize(code: string, language: string | null, stale?: ()
   const key = `${language}\n${code}`
   const cached = cache.get(key)
   if (cached) return cached
-  try {
-    const shiki = await getHighlighter()
-    if (!shiki.getLoadedLanguages().includes(language)) {
-      await shiki.loadLanguage(bundledLanguages[language as BundledLanguage]())
-    }
-    const lines = code.split('\n')
-    const out: Segment[][] = []
-    let grammarState: ReturnType<typeof shiki.getLastGrammarState> | undefined
-    let sliceStart = performance.now()
-    for (let index = 0; index < lines.length; index += SLICE_LINES) {
-      if (performance.now() - sliceStart > SLICE_MS) {
-        await nextTask()
-        if (stale?.()) return null
-        sliceStart = performance.now()
-      }
-      // The grammar state carries open strings and comments across slices, so colours match one whole-file pass.
-      const tokens = shiki.codeToTokensWithThemes(lines.slice(index, index + SLICE_LINES).join('\n'), {
-        lang: language,
-        themes: { light: 'github-light', dark: 'github-dark' },
-        grammarState,
-      })
-      grammarState = shiki.getLastGrammarState(tokens)
-      for (const line of tokens) out.push(line.map((token) => ({
-        text: token.content,
-        light: token.variants.light?.color,
-        dark: token.variants.dark?.color,
-      })))
-    }
+  let pending = running.get(key)
+  if (!pending) {
+    pending = run(code, language, stale).finally(() => running.delete(key))
+    running.set(key, pending)
+  }
+  const out = await pending
+  if (!out) return null
+  if (!cache.has(key)) {
     if (cachedLines + out.length > CACHE_LINES) {
       cache.clear()
       cachedLines = 0
     }
     cache.set(key, out)
     cachedLines += out.length
-    return out
-  } catch {
-    return null
   }
+  return out
 }
 
 // Colours every line of a file, grouped the same way as its hunks. Hunks are coloured as one block,

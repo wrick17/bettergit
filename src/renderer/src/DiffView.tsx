@@ -4,13 +4,16 @@ import { EDITORS } from '../../shared/editors'
 import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
 import { Icon, IconButton, TextToggle, toggleLabel } from './Icons'
 import { splitPath } from './paths'
-import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides } from './prefs'
+import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, setWordWrap, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides, useWordWrap } from './prefs'
+import { charWidth, columns, hscrollOf } from './hscroll'
 import { highlightFile, languageFor, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
 import { DraftActions, EditableDiff, type EditBridge } from './DiffEditor'
 import { useFindSource } from './find'
+import { chunked, range, RowChunk } from './row-chunk'
+import { holdPlace, suspendHold } from './scroll-anchor'
 import './intraline.css'
 
 interface Props {
@@ -78,6 +81,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   const formatNow = useFormatMarkdown()
+  const wrap = useWordWrap()
   // The toolbar shows a toggle at once. The diff under it re-renders from these deferred copies, in the background and
   // interruptibly, so a click, scroll or second toggle never waits for a large diff to rebuild.
   const shown = useDeferredValue(useMemo(() => ({ files, moves, layout: layoutNow, format: formatNow }), [files, moves, layoutNow, formatNow]))
@@ -89,6 +93,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   const formatted = formatMarkdown && !conflict
   const overrides = useLanguageOverrides()
   useTokens(shown.files, overrides)
+  usePreparedMarkdown(shown.files, labels, formatted || !!conflict)
   const containerRef = useRef<HTMLDivElement>(null)
   const headId = `move-head-${useId().replace(/\W/g, '')}`
   const [arrows, setArrows] = useState<Arrow[]>([])
@@ -115,7 +120,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
     onError: (error) => latest.current.edit!.onError(error),
   }, [!!edit, edit?.repo, edit?.disabled])
 
-  useSourceAnchor(containerRef, current, formatMarkdown, shown.files)
+  useSourceAnchor(containerRef, current, formatMarkdown, shown.files, wrap)
   useFindSource(containerRef, shown.files, (path) => setChoices((prev) => ({ ...prev, [path]: true })))
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
@@ -189,7 +194,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   // Optional controls sit left of the fixed ones, so showing or hiding them never moves unified/split or whitespace.
   const hasMarkdown = !conflict && files.some((file) => isMarkdownPath(pathOf(file)))
   return (
-    <div className="diff" ref={containerRef}>
+    <div className={`diff${wrap ? '' : ' nowrap'}`} ref={containerRef}>
       {arrows.length > 0 && (
         <svg className="move-arrows" width="100%" height={height} aria-hidden="true">
           <defs>
@@ -208,23 +213,23 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         </span>
         <div className="diff-toolbar-controls">
           {!onExpand && (
-            <>
-              <span className="moves">Context</span>
-              <div className="context-toggle" role="group" aria-label="Lines of context">
-                {CONTEXT_OPTIONS.map((value) => {
-                  const lines = value === 100000 ? 'All lines' : `${value} lines`
-                  return (
-                    <TextToggle
-                      key={value}
-                      text={value === 100000 ? 'All' : String(value)}
-                      label={context === value ? `${lines} of context: on` : toggleLabel(`${lines} of context: off`, `show ${lines.toLowerCase()} of context`)}
-                      active={context === value}
-                      onClick={() => setContextLines(value)}
-                    />
-                  )
-                })}
-              </div>
-            </>
+            // Each option's tooltip names the group, since the options are what the pointer rests on.
+            <div className="context-toggle" role="group" aria-label="Lines of unchanged context around each change">
+              {CONTEXT_OPTIONS.map((value) => {
+                const lines = value === 100000 ? 'All lines' : `${value} lines`
+                return (
+                  <TextToggle
+                    key={value}
+                    text={value === 100000 ? 'All' : String(value)}
+                    label={context === value
+                      ? `${lines} of unchanged context around each change: on`
+                      : toggleLabel(`${lines} of unchanged context around each change: off`, `show ${lines.toLowerCase()}`)}
+                    active={context === value}
+                    onClick={() => setContextLines(value)}
+                  />
+                )
+              })}
+            </div>
           )}
           {hasMarkdown && (
             <div className="diff-layout-toggle markdown-toggle" role="group" aria-label="Markdown formatting">
@@ -243,6 +248,18 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
           <div className="diff-layout-toggle" role="group" aria-label="Diff layout">
             <IconButton icon="rows" label={layoutNow === 'unified' ? 'Unified layout: on' : toggleLabel('Unified layout: off', 'show one column')} active={layoutNow === 'unified'} onClick={() => setDiffLayout('unified')} />
             <IconButton icon="columns" label={layoutNow === 'split' ? 'Split layout: on' : toggleLabel('Split layout: off', 'show side by side')} active={layoutNow === 'split'} onClick={() => setDiffLayout('split')} />
+          </div>
+          {/* Long lines wrap, or scroll sideways per file. Formatted Markdown is prose, so it always wraps. */}
+          <div className="diff-layout-toggle" role="group" aria-label="Word wrap">
+            <IconButton
+              icon="wrap"
+              label={wrap ? toggleLabel('Word wrap: on', 'scroll long lines') : toggleLabel('Word wrap: off', 'wrap long lines')}
+              active={wrap}
+              onClick={() => {
+                captureSourceAnchors()
+                setWordWrap(!wrap)
+              }}
+            />
           </div>
           {/* Last in the row. It stays visible when the filtered patch is empty, so the user can turn the option off in place. */}
           <div className="diff-layout-toggle" role="group" aria-label="Whitespace">
@@ -314,6 +331,13 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
   const markdown = formatted && isMarkdownPath(path)
   // Formatted Markdown is not source, so it stays read-only; the raw view edits it.
   const editor = text && !markdown ? text : undefined
+  const sectionRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => (sectionRef.current ? holdPlace(sectionRef.current, true) : undefined), [])
+  // Set on the element rather than in the markup, which stays free of style attributes.
+  const estimate = estimateHeight(file, open, !!onExpand)
+  useLayoutEffect(() => { sectionRef.current?.style.setProperty('--file-estimate', `${estimate}px`) }, [estimate])
+  // The widest line an editable file shows, which can be outside the diff's hunks once folds open.
+  const [editorExtent, setEditorExtent] = useState(0)
   // A conflict row shows only its own text: colours made for other lines, such as before a choice changed the file, are dropped.
   const decorate = (line: DiffLine, segments?: Segment[]) => {
     const row = conflict?.row(line)
@@ -325,11 +349,8 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
     const row = decorate(line, tokens?.[hunkIndex]?.[lineIndex])
     const source = key(fileIndex, hunkIndex, lineIndex)
     return (
-      <Fragment key={lineIndex}>
-        {conflict?.controls(hunk, lineIndex)}
-        <UnifiedLine line={line} segments={row.segments} className={row.className} changed={spansOf(hunk).get(lineIndex)}
-          label={labels.get(source)} anchor={anchors.get(source)} source={source} />
-      </Fragment>
+      <UnifiedLine key={lineIndex} line={line} segments={row.segments} className={row.className} changed={spansOf(hunk).get(lineIndex)}
+        label={labels.get(source)} anchor={anchors.get(source)} source={source} />
     )
   }
   const splitRow = (hunk: DiffHunk, hunkIndex: number, row: SplitRow, rowIndex: number) => {
@@ -341,7 +362,6 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
     const right = row.right ? decorate(row.right.line, tokens?.[hunkIndex]?.[row.right.index]) : undefined
     return (
       <Fragment key={rowIndex}>
-        {conflict?.controls(hunk, row.controlIndex ?? (row.left ?? row.right)!.index)}
         {(leftLabel || rightLabel) && (
           <div className="split-row">
             {leftLabel ? <div className="move-note">{leftLabel}</div> : <div />}
@@ -364,25 +384,33 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
     const pinned = (lines: number[]) => lines.some((index) => anchors.has(key(fileIndex, hunkIndex, index)))
     let body: ReactNode
     if (format) {
-      body = <MarkdownHunkView lines={hunk.lines} changes={spansOf(hunk)} layout={layout} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
+      body = <MarkdownHunkView hunk={hunk} layout={layout} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
     } else if (layout === 'unified') {
-      body = conflict
-        ? hunk.lines.map((_, lineIndex) => unifiedRow(hunk, hunkIndex, lineIndex))
-        : chunked(hunk.lines.length, (start, end) => {
-          const lines = range(start, end)
-          return <RowChunk key={start} rows={end - start} lines={`${fileIndex}:${hunkIndex}:${start}:${end - 1}`} pinned={pinned(lines)}
-            render={() => lines.map((lineIndex) => unifiedRow(hunk, hunkIndex, lineIndex))} />
-        })
+      const controls = conflict ? controlsAt(hunk.lines.length, (index) => conflict.controls(hunk, index)) : NO_CONTROLS
+      body = chunked(hunk.lines.length, (start, end) => {
+        const lines = range(start, end)
+        return (
+          <Fragment key={start}>
+            {controls.get(start)}
+            <RowChunk rows={end - start} lines={`${fileIndex}:${hunkIndex}:${start}:${end - 1}`} pinned={pinned(lines)}
+              render={() => lines.map((lineIndex) => unifiedRow(hunk, hunkIndex, lineIndex))} />
+          </Fragment>
+        )
+      }, [...controls.keys()])
     } else {
       const rows = conflict ? conflict.splitRows(hunk) : toRows(hunk.lines)
-      body = conflict
-        ? rows.map((row, rowIndex) => splitRow(hunk, hunkIndex, row, rowIndex))
-        : chunked(rows.length, (start, end) => {
-          const slice = rows.slice(start, end)
-          const lines = slice.flatMap((row) => [row.left?.index, row.right?.index].filter((index): index is number => index !== undefined))
-          return <RowChunk key={start} rows={end - start} lines={`${fileIndex}:${hunkIndex}:${Math.min(...lines)}:${Math.max(...lines)}`} pinned={pinned(lines)}
-            render={() => slice.map((row, offset) => splitRow(hunk, hunkIndex, row, start + offset))} />
-        })
+      const controls = conflict ? controlsAt(rows.length, (index) => conflict.controls(hunk, rows[index].controlIndex ?? (rows[index].left ?? rows[index].right)!.index)) : NO_CONTROLS
+      body = chunked(rows.length, (start, end) => {
+        const slice = rows.slice(start, end)
+        const lines = slice.flatMap((row) => [row.left?.index, row.right?.index].filter((index): index is number => index !== undefined))
+        return (
+          <Fragment key={start}>
+            {controls.get(start)}
+            <RowChunk rows={end - start} lines={`${fileIndex}:${hunkIndex}:${Math.min(...lines)}:${Math.max(...lines)}`} pinned={pinned(lines)}
+              render={() => slice.map((row, offset) => splitRow(hunk, hunkIndex, row, start + offset))} />
+          </Fragment>
+        )
+      }, [...controls.keys()])
     }
     return (
       <Fragment key={hunkIndex}>
@@ -398,7 +426,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
     )
   })
   return (
-    <section className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
+    <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
       <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage}
         actions={text && <DraftActions edit={text} path={path} />} />
       {file.binary && <p className="hint">Binary file.</p>}
@@ -410,84 +438,46 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
       )}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
-        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} />
+        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} />
         : hunks())}
+      {open && !markdown && file.hunks.length > 0 && <HScrollBar file={file} extra={editor ? editorExtent : 0} />}
     </section>
   )
 })
 
-// Rows mount in chunks, and only near the screen: a large diff costs about one screen of rows to render, toggle or
-// scroll. Chunks above and below keep their last measured height, so the scrollbar and scroll position hold still.
-const CHUNK_ROWS = 50
-// Unified and split rows are one 22px line unless a long line wraps; the first mount replaces this estimate.
-const ROW_ESTIMATE = 22
-
-function chunked(rows: number, render: (start: number, end: number) => ReactNode): ReactNode[] {
-  const out: ReactNode[] = []
-  for (let start = 0; start < rows; start += CHUNK_ROWS) out.push(render(start, Math.min(rows, start + CHUNK_ROWS)))
-  return out
-}
-
-function range(start: number, end: number) {
-  return Array.from({ length: end - start }, (_, index) => start + index)
-}
-
-// One observer for every chunk. `scrollMargin` extends the diff pane's clip as well as the viewport, so chunks mount
-// about a screen before they scroll in.
-const NEAR = '1200px 0px'
-let chunkObserver: IntersectionObserver | null = null
-const chunkCallbacks = new WeakMap<Element, (near: boolean) => void>()
-function observeChunk(element: Element, onChange: (near: boolean) => void) {
-  chunkObserver ??= new IntersectionObserver((entries) => {
-    for (const entry of entries) chunkCallbacks.get(entry.target)?.(entry.isIntersecting)
-  }, { rootMargin: NEAR, scrollMargin: NEAR } as IntersectionObserverInit)
-  chunkCallbacks.set(element, onChange)
-  chunkObserver.observe(element)
-  return () => {
-    chunkObserver?.unobserve(element)
-    chunkCallbacks.delete(element)
+// A conflict's controls by the row they sit above. They stay mounted between the row chunks, so Tab reaches every
+// conflict and a focused control is never unmounted by scrolling.
+const NO_CONTROLS = new Map<number, ReactNode>()
+function controlsAt(rows: number, at: (index: number) => ReactNode) {
+  const found = new Map<number, ReactNode>()
+  for (let index = 0; index < rows; index++) {
+    const node = at(index)
+    if (node) found.set(index, node)
   }
-}
-
-// `lines` (file:hunk:first:last source lines) lets find scroll an unmounted chunk into view so its rows mount.
-// A chunk holding a move's end stays mounted, so its connector always has both ends to measure.
-function RowChunk({ rows, lines, pinned, render }: { rows: number; lines: string; pinned: boolean; render: () => ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null)
-  // Without an observer (server rendering, tests) every row renders.
-  const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
-  const height = useRef(rows * ROW_ESTIMATE)
-  // The first frame already shows the rows on screen: the chunk measures itself before paint instead of waiting for the observer.
-  useLayoutEffect(() => {
-    const element = ref.current
-    if (!element || typeof IntersectionObserver === 'undefined') return
-    const box = element.getBoundingClientRect()
-    if (box.bottom > -1200 && box.top < window.innerHeight + 1200) setNear(true)
-    return observeChunk(element, (next) => {
-      if (!next && element.firstChild) height.current = element.offsetHeight
-      setNear(next)
-    })
-  }, [])
-  const show = near || pinned
-  return <div ref={ref} className="row-chunk" data-lines={lines} style={show ? undefined : { height: height.current }}>{show ? render() : null}</div>
+  return found
 }
 
 // Only the selected view restores its pane, even when staged and unstaged diffs share that pane.
 // The pane keeps its existing scroll handler, so session persistence records the corrected position too.
-function useSourceAnchor(containerRef: React.RefObject<HTMLDivElement | null>, layout: DiffLayout, formatted: boolean, files: DiffFile[]) {
+function useSourceAnchor(containerRef: React.RefObject<HTMLDivElement | null>, layout: DiffLayout, formatted: boolean, files: DiffFile[], wrap: boolean) {
   const saved = useRef<{ source: string; side?: string; offset: number } | null>(null)
-  const previous = useRef({ layout, formatted, files })
+  const previous = useRef({ layout, formatted, files, wrap })
   useLayoutEffect(() => {
     const container = containerRef.current
     const pane = container?.closest<HTMLElement>('.diff-pane')
     if (!container || !pane) return
-    const changed = previous.current.layout !== layout || previous.current.formatted !== formatted
+    const changed = previous.current.layout !== layout || previous.current.formatted !== formatted || previous.current.wrap !== wrap
     if (changed && previous.current.files === files && saved.current) {
       const rows = [...container.querySelectorAll<HTMLElement>('[data-source-row]')].filter((element) => element.dataset.sourceRow === saved.current!.source)
       const row = rows.find(element => element.dataset.sourceSide === saved.current!.side) ?? rows.find(element => !element.dataset.sourceSide || element.dataset.sourceSide === 'both') ?? rows[0]
-      if (row) pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - saved.current.offset
+      if (row) {
+        pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top - saved.current.offset
+        // The row is placed already, so chunks resizing in this switch do not move the pane again.
+        suspendHold(pane)
+      }
     }
     saved.current = null
-    previous.current = { layout, formatted, files }
+    previous.current = { layout, formatted, files, wrap }
     const remember = () => {
       saved.current = null
       const box = pane.getBoundingClientRect()
@@ -501,7 +491,7 @@ function useSourceAnchor(containerRef: React.RefObject<HTMLDivElement | null>, l
     }
     sourceAnchors.add(remember)
     return () => { sourceAnchors.delete(remember) }
-  }, [containerRef, layout, formatted, files])
+  }, [containerRef, layout, formatted, files, wrap])
 }
 
 interface Arrow {
@@ -555,16 +545,19 @@ function spansOf(hunk: DiffHunk) {
 }
 
 // Text is rendered as React text nodes, so code never reaches the DOM as markup. Changed spans wrap their pieces in `.intra`.
-function Code({ text, segments, changed }: { text: string; segments?: Segment[]; changed?: Span[] }) {
-  if (!segments && !changed?.length) return <code>{text}</code>
+// The inner `.sx` span carries the text: with word wrap off it is what slides sideways, so the row itself never lays out again.
+export function Code({ text, segments, changed, changedClass = 'intra' }: { text: string; segments?: Segment[]; changed?: Span[]; changedClass?: string }) {
+  if (!segments && !changed?.length) return <code><span className="sx">{text}</span></code>
   const pieces: Piece[] = changed?.length
     ? emphasize(text, segments ?? [{ text }], changed)
     : (segments ?? []).map((segment) => ({ ...segment, changed: false }))
   return (
     <code>
-      {pieces.map((piece, index) => (piece.light || piece.dark || piece.changed
-        ? <span key={index} className={`${piece.light || piece.dark ? 'tok' : ''} ${piece.changed ? 'intra' : ''}`.trim()} style={{ '--tok-light': piece.light, '--tok-dark': piece.dark } as CSSProperties}>{piece.text}</span>
-        : <span key={index}>{piece.text}</span>))}
+      <span className="sx">
+        {pieces.map((piece, index) => (piece.light || piece.dark || piece.changed
+          ? <span key={index} className={`${piece.light || piece.dark ? 'tok' : ''} ${piece.changed ? changedClass : ''}`.trim()} style={{ '--tok-light': piece.light, '--tok-dark': piece.dark } as CSSProperties}>{piece.text}</span>
+          : <span key={index}>{piece.text}</span>))}
+      </span>
     </code>
   )
 }
@@ -660,8 +653,7 @@ export function SplitCell({ cell, side, segments, changed, label, anchor, source
 }
 
 interface MarkdownHunkProps {
-  lines: DiffLine[]
-  changes: Map<number, Span[]>
+  hunk: DiffHunk
   layout: DiffLayout
   prefix: string
   labels: Map<string, string>
@@ -681,52 +673,109 @@ function fitsMarkdown(lines: DiffLine[]) {
   return true
 }
 
-// The plan is built here, so only hunks of open files are parsed. A collapsed file parses when it is opened.
-function MarkdownHunkView({ lines, changes, layout, prefix, labels, anchors }: MarkdownHunkProps) {
-  const plan = useMemo(() => markdownHunk(lines, changes, toRows(lines).map(row => [row.left?.index ?? null, row.right?.index ?? null]),
-    new Set(lines.flatMap((_, index) => labels.has(`${prefix}:${index}`) ? [index] : []))), [lines, changes, prefix, labels])
+// Parsed Markdown per hunk, kept with the hunk, so the formatted view built in idle time (or shown before) is ready at
+// once. Keyed by the hunk's moved lines too, since the plan marks them.
+const plans = new WeakMap<DiffLine[], { moved: string; plan: ReturnType<typeof markdownHunk> }>()
+function planOf(hunk: DiffHunk, prefix: string, labels: Map<string, string>) {
+  const { lines } = hunk
+  const moved = lines.flatMap((_, index) => (labels.has(`${prefix}:${index}`) ? [index] : []))
+  const key = moved.join(',')
+  const cached = plans.get(lines)
+  if (cached?.moved === key) return cached.plan
+  const plan = markdownHunk(lines, spansOf(hunk), toRows(lines).map(row => [row.left?.index ?? null, row.right?.index ?? null]), new Set(moved))
+  plans.set(lines, { moved: key, plan })
+  return plan
+}
+
+// While raw Markdown shows, its formatted plans are built in idle time, one hunk per slice, so the first switch to
+// formatted only renders. A new diff or switching formatting on stops the run.
+function usePreparedMarkdown(files: DiffFile[], labels: Map<string, string>, active: boolean) {
+  useEffect(() => {
+    if (active || !window.requestIdleCallback) return
+    const work: Array<() => void> = []
+    files.forEach((file, fileIndex) => {
+      if (!isMarkdownPath(pathOf(file))) return
+      file.hunks.forEach((hunk, hunkIndex) => { if (fitsMarkdown(hunk.lines)) work.push(() => planOf(hunk, `${fileIndex}:${hunkIndex}`, labels)) })
+    })
+    let handle = 0
+    const next = (deadline: IdleDeadline) => {
+      while (work.length && deadline.timeRemaining() > 2) work.shift()!()
+      if (work.length) handle = window.requestIdleCallback(next)
+    }
+    if (work.length) handle = window.requestIdleCallback(next)
+    return () => window.cancelIdleCallback(handle)
+  }, [files, labels, active])
+}
+
+// Formatted groups mount in chunks of about this many source lines, near the screen, like raw rows.
+const MARKDOWN_CHUNK_LINES = 50
+
+// The plan is built here (or comes from idle time), so only hunks of open files are parsed. A collapsed file parses when
+// it is opened.
+function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHunkProps) {
+  const { lines } = hunk
+  const plan = useMemo(() => planOf(hunk, prefix, labels), [hunk, prefix, labels])
+  // Groups in chunks; a chunk holding a move's end stays mounted, so its connector has both ends.
+  const parts = useMemo(() => {
+    const out: Array<{ start: number; end: number; lines: number; pinned: boolean }> = []
+    plan.groups.forEach((group, index) => {
+      const last = out[out.length - 1]
+      const size = group.end - group.start + 1
+      const pinned = Array.from({ length: size }, (_, offset) => anchors.has(`${prefix}:${group.start + offset}`)).some(Boolean)
+      if (last && last.lines < MARKDOWN_CHUNK_LINES) {
+        last.end = index + 1
+        last.lines += size
+        last.pinned ||= pinned
+      } else out.push({ start: index, end: index + 1, lines: size, pinned })
+    })
+    return out
+  }, [plan, anchors, prefix])
+  const renderGroup = (group: (typeof plan.groups)[number]) => {
+    const indices = Array.from({ length: group.end - group.start + 1 }, (_, index) => group.start + index)
+    const before = indices.filter(index => lines[index].type !== 'add')
+    const after = indices.filter(index => lines[index].type !== 'del')
+    const paired = group.rows
+    const pane = (side: 'old' | 'new', slots: Array<number | null>) => {
+      const nodes = side === 'old' ? group.old : group.new
+      const parsed: MarkdownSide = side === 'old' ? plan.old : plan.new
+      if (!slots.some(index => index !== null)) return <div className="split-cell empty md-empty-block" aria-hidden="true" />
+      return (
+        <div className={`md-diff-block${!group.unchanged ? ` md-${side === 'old' ? 'before' : 'after'}` : ''}`} role={group.unchanged ? undefined : 'group'} aria-label={group.unchanged ? undefined : side === 'old' ? 'Previous Markdown source' : 'Current Markdown source'}>
+          <div className="md-source-rail">
+            {slots.map((index, slot) => {
+              if (index === null) return <div key={`gap-${slot}`} className="split-cell empty md-source-gap" aria-hidden="true" />
+              const line = lines[index]
+              const source = `${prefix}:${index}`
+              const move = labels.get(source)
+              return (
+                <div key={index} className={`md-source-row ${line.type}${move ? ' moved' : ''}`} data-move-id={anchors.get(source)} data-source-row={source} data-source-side={group.unchanged && layout === 'unified' ? 'both' : side} title={move ?? `Source line ${line.oldNo ?? line.newNo ?? 'note'}. Gutters map source lines to this formatted block.`}>
+                  {layout === 'unified' && <span className="lane" aria-hidden="true" />}
+                  {layout === 'unified' ? <><span className="gutter">{line.oldNo ?? ''}</span><span className="gutter">{line.newNo ?? ''}</span></> : <span className="gutter">{(side === 'old' ? line.oldNo : line.newNo) ?? ''}</span>}
+                  <span className="sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="md-content">
+            {slots.flatMap(index => index !== null && labels.has(`${prefix}:${index}`) ? [<div key={index} className="move-note">{labels.get(`${prefix}:${index}`)}</div>] : [])}
+            <MarkdownContent nodes={nodes} side={parsed} />
+            {slots.flatMap(index => index !== null && lines[index].type === 'note' ? [<p key={index} className="md-note">{lines[index].text}</p>] : [])}
+          </div>
+        </div>
+      )
+    }
+    return <Fragment key={group.start}>{layout === 'split'
+      ? <div className="split-row md-block-pair">{pane('old', paired.map(row => row[0]))}{pane('new', paired.map(row => row[1]))}</div>
+      : group.unchanged ? pane('new', after)
+        : <>{before.length > 0 && pane('old', before)}{after.length > 0 && pane('new', after)}</>}</Fragment>
+  }
   return (
     <div className={`md-hunk md-${layout}`}>
       {lines.length > 0 && <div className="md-fragment-note">Visible Markdown fragment. Source gutters identify original lines.</div>}
-      {plan.groups.map(group => {
-        const indices = Array.from({ length: group.end - group.start + 1 }, (_, index) => group.start + index)
-        const before = indices.filter(index => lines[index].type !== 'add')
-        const after = indices.filter(index => lines[index].type !== 'del')
-        const paired = group.rows
-        const pane = (side: 'old' | 'new', slots: Array<number | null>) => {
-          const nodes = side === 'old' ? group.old : group.new
-          const parsed: MarkdownSide = side === 'old' ? plan.old : plan.new
-          if (!slots.some(index => index !== null)) return <div className="split-cell empty md-empty-block" aria-hidden="true" />
-          return (
-            <div className={`md-diff-block${!group.unchanged ? ` md-${side === 'old' ? 'before' : 'after'}` : ''}`} role={group.unchanged ? undefined : 'group'} aria-label={group.unchanged ? undefined : side === 'old' ? 'Previous Markdown source' : 'Current Markdown source'}>
-              <div className="md-source-rail">
-                {slots.map((index, slot) => {
-                  if (index === null) return <div key={`gap-${slot}`} className="split-cell empty md-source-gap" aria-hidden="true" />
-                  const line = lines[index]
-                  const source = `${prefix}:${index}`
-                  const move = labels.get(source)
-                  return (
-                    <div key={index} className={`md-source-row ${line.type}${move ? ' moved' : ''}`} data-move-id={anchors.get(source)} data-source-row={source} data-source-side={group.unchanged && layout === 'unified' ? 'both' : side} title={move ?? `Source line ${line.oldNo ?? line.newNo ?? 'note'}. Gutters map source lines to this formatted block.`}>
-                      {layout === 'unified' && <span className="lane" aria-hidden="true" />}
-                      {layout === 'unified' ? <><span className="gutter">{line.oldNo ?? ''}</span><span className="gutter">{line.newNo ?? ''}</span></> : <span className="gutter">{(side === 'old' ? line.oldNo : line.newNo) ?? ''}</span>}
-                      <span className="sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="md-content">
-                {slots.flatMap(index => index !== null && labels.has(`${prefix}:${index}`) ? [<div key={index} className="move-note">{labels.get(`${prefix}:${index}`)}</div>] : [])}
-                <MarkdownContent nodes={nodes} side={parsed} />
-                {slots.flatMap(index => index !== null && lines[index].type === 'note' ? [<p key={index} className="md-note">{lines[index].text}</p>] : [])}
-              </div>
-            </div>
-          )
-        }
-        return <Fragment key={group.start}>{layout === 'split'
-          ? <div className="split-row md-block-pair">{pane('old', paired.map(row => row[0]))}{pane('new', paired.map(row => row[1]))}</div>
-          : group.unchanged ? pane('new', after)
-            : <>{before.length > 0 && pane('old', before)}{after.length > 0 && pane('new', after)}</>}</Fragment>
-      })}
+      {parts.map((part) => (
+        <RowChunk key={part.start} rows={part.lines} pinned={part.pinned} lines={`${prefix}:${plan.groups[part.start].start}:${plan.groups[part.end - 1].end}`}
+          render={() => plan.groups.slice(part.start, part.end).map(renderGroup)} />
+      ))}
     </div>
   )
 }
@@ -795,6 +844,52 @@ function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBr
       />
     </span>
   )
+}
+
+// A file's sideways scrollbar while word wrap is off. It sticks to the bottom of the pane while the file is on screen.
+// Its range is the widest line (from the diff text, so rows not mounted count) less the code column's width.
+function HScrollBar({ file, extra }: { file: DiffFile; extra: number }) {
+  const wrap = useWordWrap()
+  const ref = useRef<HTMLDivElement>(null)
+  const spacer = useRef<HTMLDivElement>(null)
+  // Only measured while lines scroll sideways.
+  const extent = useMemo(() => (wrap ? 0 : columns(file.hunks.flatMap((hunk) => hunk.lines.map((line) => line.text)), 8)), [file, wrap])
+  useLayoutEffect(() => {
+    const bar = ref.current
+    const section = bar?.parentElement
+    if (wrap || !bar || !section) return
+    const controller = hscrollOf(section)
+    const size = () => {
+      const code = section.querySelector<HTMLElement>('.line > code, .split-cell > code, .ed-line > code, .cm-content')
+      const width = code?.clientWidth ?? 0
+      // Code pads 20px on the right; editor-look rows pad more on the left, which `extra` already counts.
+      const widest = Math.max(extent * charWidth() + 20, extra)
+      const range = Math.max(0, Math.ceil(widest - width))
+      bar.hidden = false
+      spacer.current!.style.width = `${bar.clientWidth + range}px`
+      // Hidden with nothing to scroll, so it never sits over the last row.
+      bar.hidden = range === 0
+      bar.scrollLeft = controller.x
+    }
+    size()
+    const observer = new ResizeObserver(size)
+    observer.observe(section)
+    const onScroll = () => controller.set(bar.scrollLeft, bar)
+    bar.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      observer.disconnect()
+      bar.removeEventListener('scroll', onScroll)
+    }
+  }, [wrap, extent, extra])
+  if (wrap) return null
+  return <div className="hscroll" ref={ref} aria-hidden="true"><div ref={spacer} /></div>
+}
+
+// A file's height before it is laid out: its header, and while open each hunk's header, 22px rows and expand rows.
+// Wrapped lines make the real one taller; the browser keeps the real height once the file has been on screen.
+function estimateHeight(file: DiffFile, open: boolean, expandable: boolean) {
+  if (!open || !file.hunks.length) return 80
+  return 41 + file.hunks.reduce((sum, hunk) => sum + 28 + hunk.lines.length * 22 + (expandable ? 40 : 0), 0)
 }
 
 // One letter per file status, matching the badges in the file list.

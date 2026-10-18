@@ -21,7 +21,7 @@ import { openCommand, readWorkingFile, resolveFileTarget, resolveRepoTarget, wri
 import type { EditorId } from '../src/shared/editors'
 import { git } from '../src/main/git/exec'
 import { workingDiff } from '../src/main/git/diff'
-import { originalText } from '../src/renderer/src/DiffEditor'
+import { originalText } from '../src/renderer/src/original-text'
 
 // Tests stop at the native process boundary. No test starts an editor.
 const dirs: string[] = []

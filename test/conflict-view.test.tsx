@@ -528,7 +528,7 @@ describe('ConflictView', () => {
       .map((match) => (match[1] ? { kind: match[1] } : { controls: match[2] }))
     expect(shape(items)).toEqual(['text', 'controls 1', 'incoming', 'text', 'controls 2', 'marker-open', 'current', 'marker-base', 'base', 'marker-split', 'incoming', 'marker-close', 'text', 'controls 3'])
     // One copy of each line, in DiffView's own file and hunk: no separate sides, no second result pane.
-    for (const line of linesOf(inlineText)) expect(inline.split(`<code>${escape(line)}</code>`).length - 1).toBe(1)
+    for (const line of linesOf(inlineText)) expect(inline.split(`<code><span class="sx">${escape(line)}</span></code>`).length - 1).toBe(1)
     expect(inline).toContain('class="diff-file"')
     expect(inline).toContain('class="hunk-header"')
     expect(inline).not.toContain('split-cell')
@@ -695,4 +695,41 @@ test('split Both, Combination and Undo stay synchronized across columns and unif
   expect(selected(emptyEndActions[2])).toEqual([['Accept incoming'], []])
   expect(undo(emptyEndActions[2])).toEqual([[false], [false]])
   expect(unifiedActions).toEqual(Array.from({ length: 3 }, () => ['Accept current', 'Accept incoming', 'Accept both']))
+})
+
+// Rows mount in chunks only near the screen, but each conflict's controls sit between the chunks, so Tab reaches every
+// conflict while its rows are unmounted. An observer that never reports keeps every chunk unmounted here.
+const UNMOUNTED_CHECK = String.raw`
+const stored = { 'bettergit.contextLines': '100000' }
+Object.assign(globalThis, {
+  localStorage: { getItem: (key) => stored[key] ?? null, setItem: () => undefined },
+  window: { innerHeight: 800, addEventListener: () => undefined, removeEventListener: () => undefined, setTimeout, clearTimeout },
+  IntersectionObserver: class { observe() {} unobserve() {} },
+})
+const react = require('react')
+react.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { ConflictView } = await import('./src/renderer/src/ConflictView')
+const { setDiffLayout } = await import('./src/renderer/src/DiffView')
+` + MODEL + String.raw`
+const text = Array.from({ length: 30 }, (_, i) => range('gap' + i, 60)
+  + '<<<<<<< HEAD\nexport const v' + i + ' = 1;\n=======\nexport const v' + i + ' = 2;\n>>>>>>> topic\n').join('')
+const render = () => renderToStaticMarkup(react.createElement(ConflictView, { path: 'big.ts', model: modelFor(text), choices: [], onChoose() {}, onSave() {}, onReset() {}, busy: null }))
+const count = (markup, pattern) => markup.split(pattern).length - 1
+const unified = render()
+setDiffLayout('split')
+const split = render()
+console.log(JSON.stringify({
+  unified: { controls: count(unified, 'aria-label="Resolution for conflict '), rows: count(unified, '// gap'), chunks: count(unified, 'row-chunk') },
+  split: { controls: count(split, 'conflict-split-controls'), rows: count(split, '// gap'), chunks: count(split, 'row-chunk') },
+}))
+`
+
+test('a large conflict mounts rows in chunks but keeps every conflict reachable', () => {
+  const { unified, split } = runChild(UNMOUNTED_CHECK)
+  for (const layout of [unified, split]) {
+    expect(layout.controls).toBe(30)
+    expect(layout.rows).toBe(0)
+    expect(layout.chunks).toBeGreaterThanOrEqual(30)
+  }
 })

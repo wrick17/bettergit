@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { IconButton } from './Icons'
-import { clearHighlight, findMatches, revealMatch, useFindSources, type FindSource, type Match } from './find'
+import { clearHighlight, findMatches, revealMatch, setFindQuery, useFindSources, type FindSource, type Match } from './find'
 
 // One find for every diff on screen, read-only rows and editors alike. ⌘F opens it (also from the Edit menu), Enter and
 // ⌘G go to the next match, Shift+Enter and ⇧⌘G to the previous one, and Escape closes it.
@@ -23,6 +23,11 @@ export function FindBar({ open, onClose, focusKey }: { open: boolean; onClose: (
   useEffect(() => {
     if (open) requestAnimationFrame(() => input.current?.select())
   }, [open, focusKey])
+
+  // Every match on screen is highlighted while the bar is open; closing it clears them.
+  useEffect(() => {
+    setFindQuery(open ? query : '')
+  }, [open, query])
 
   useEffect(() => {
     if (!open) return

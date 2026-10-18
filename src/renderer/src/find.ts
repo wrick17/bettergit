@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from 'react'
 import type { DiffFile } from '../../main/git/diff'
-import { mountedEditors } from './DiffEditor'
+import { mountedEditors, previewReveals } from './DiffEditor'
+import { suspendHold } from './scroll-anchor'
 import type { Mounted } from './cm-editor'
 
 // In-app find over the diffs on screen. It searches the diff data, not the DOM, so rows that are not mounted (chunks
@@ -57,6 +58,130 @@ export function useFindSource(container: RefObject<HTMLDivElement | null>, files
       changed()
     }
   }, [container, files])
+  // Highlights follow the container, not the files: a new diff in the same container is re-marked as its rows mount.
+  useLayoutEffect(() => (container.current ? watchFind(container.current) : undefined), [container])
+}
+
+// Highlights every match in a diff container while a query is set, including rows that mount later. Returns the stop.
+export function watchFind(element: HTMLElement) {
+  containers.add(element)
+  watch(element)
+  return () => {
+    containers.delete(element)
+    observers.get(element)?.disconnect()
+    observers.delete(element)
+  }
+}
+
+// Every occurrence of the query in the rows on screen, drawn with the CSS Custom Highlight API, so no row re-renders.
+// Rows mount and unmount as chunks scroll, editors redraw their lines, so each diff is watched while a query is set and
+// only the lines that mounted or changed are searched again. Lines not mounted cost nothing until they mount.
+// Each element here holds one line of text, except formatted Markdown, whose text nodes are searched one by one.
+const SEARCHABLE = '.line > code, .split-cell > code, .ed-line > code, .cm-line, .cm-deletedLine, .md-content'
+let needle = ''
+const containers = new Set<HTMLElement>()
+const observers = new Map<HTMLElement, MutationObserver>()
+const marks = new Map<Element, Range[]>()
+
+type HighlightSet = { add: (range: Range) => void; delete: (range: Range) => void; clear: () => void; priority: number }
+let everyMatch: HighlightSet | null | undefined
+function matchHighlight(): HighlightSet | null {
+  if (everyMatch !== undefined) return everyMatch
+  const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights
+  const Highlight = (globalThis as { Highlight?: new () => HighlightSet }).Highlight
+  everyMatch = highlights && Highlight ? new Highlight() : null
+  if (everyMatch) highlights!.set('find-match', everyMatch)
+  return everyMatch
+}
+
+// Sets the query every diff highlights. Empty clears the highlights and stops watching.
+export function setFindQuery(query: string) {
+  const next = query.toLowerCase()
+  if (next === needle) return
+  needle = next
+  for (const element of [...marks.keys()]) unmark(element)
+  for (const element of containers) watch(element)
+}
+
+function watch(container: HTMLElement) {
+  if (!needle || !matchHighlight()) {
+    observers.get(container)?.disconnect()
+    observers.delete(container)
+    return
+  }
+  if (!observers.has(container)) {
+    const observer = new MutationObserver(remark)
+    observer.observe(container, { childList: true, subtree: true, characterData: true })
+    observers.set(container, observer)
+  }
+  container.querySelectorAll(SEARCHABLE).forEach(mark)
+}
+
+function remark(records: MutationRecord[]) {
+  const touched = new Set<Element>()
+  for (const record of records) {
+    const target = record.target instanceof Element ? record.target : record.target.parentElement
+    const line = target?.closest(SEARCHABLE)
+    if (line) touched.add(line)
+    for (const node of record.addedNodes) {
+      if (!(node instanceof Element)) continue
+      if (node.matches(SEARCHABLE)) touched.add(node)
+      node.querySelectorAll(SEARCHABLE).forEach((element) => touched.add(element))
+    }
+  }
+  // Lines that left the page drop their ranges, so the highlight holds only what can still show.
+  for (const element of marks.keys()) if (!element.isConnected) unmark(element)
+  touched.forEach(mark)
+}
+
+function unmark(element: Element) {
+  const ranges = marks.get(element)
+  if (!ranges) return
+  for (const range of ranges) everyMatch?.delete(range)
+  marks.delete(element)
+}
+
+function mark(element: Element) {
+  unmark(element)
+  const highlight = matchHighlight()
+  if (!needle || !highlight || !element.isConnected) return
+  const ranges: Range[] = []
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text)
+  // shortcut: formatted Markdown is searched per text node, so a match that crosses bold or a link is not drawn; upgrade
+  // if that is missed in practice.
+  const groups = element.matches('.md-content') ? nodes.map((node) => [node]) : [nodes]
+  for (const group of groups) {
+    const text = group.map((node) => node.data).join('').toLowerCase()
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+      const range = rangeIn(group, at, at + needle.length)
+      if (range) ranges.push(range)
+    }
+  }
+  if (!ranges.length) return
+  ranges.forEach((range) => highlight.add(range))
+  marks.set(element, ranges)
+}
+
+// The range covering text offsets [start, end) across consecutive text nodes.
+function rangeIn(nodes: Text[], start: number, end: number): Range | null {
+  const range = document.createRange()
+  let offset = 0
+  let started = false
+  for (const node of nodes) {
+    const length = node.data.length
+    if (!started && start < offset + length) {
+      range.setStart(node, start - offset)
+      started = true
+    }
+    if (started && end <= offset + length) {
+      range.setEnd(node, end - offset)
+      return range
+    }
+    offset += length
+  }
+  return null
 }
 
 // The sources on screen, in page order. Re-read whenever a diff mounts, unmounts or gets new files.
@@ -71,6 +196,12 @@ export function useFindSources(): FindSource[] {
 }
 
 const nextFrame = () => new Promise<number>((resolve) => requestAnimationFrame(resolve))
+// Find places rows itself, measuring the layout as it is, so the pane's own anchoring must not move them again.
+function place(element: Element, block: ScrollLogicalPosition) {
+  const pane = element.closest<HTMLElement>('.diff-pane')
+  if (pane) suspendHold(pane)
+  element.scrollIntoView({ block })
+}
 let revealing = 0
 
 // Scrolls a match into view and highlights it. A collapsed file opens; a chunk that is not mounted is scrolled to, so it
@@ -91,6 +222,19 @@ export async function revealMatch(source: FindSource, match: Match) {
     if (editor) {
       const lines = file.hunks[match.hunk].lines
       const old = line.type === 'del'
+      const unifiedEditor = host.querySelector('.cm-mergeView') === null
+      // A folded line opens first. A removed line in the unified editor is found in its removed block.
+      editor.unfold(old ? 'old' : 'new', (old ? line.oldNo : line.newNo) ?? 1)
+      if (old && unifiedEditor && line.oldNo) {
+        clearHighlight()
+        let row: HTMLElement | null = null
+        for (let step = 0; step < 30 && run === revealing && !(row = editor.deletedLine(line.oldNo)); step++) await nextFrame()
+        if (row && run === revealing) {
+          place(row, 'center')
+          highlight(row, match)
+          return
+        }
+      }
       const near = lines.slice(match.line).find((other) => other.newNo != null) ?? [...lines.slice(0, match.line)].reverse().find((other) => other.newNo != null)
       clearHighlight()
       marked = editor
@@ -103,7 +247,7 @@ export async function revealMatch(source: FindSource, match: Match) {
       const hostBox = host.getBoundingClientRect()
       const paneBox = pane?.getBoundingClientRect()
       if (paneBox && (hostBox.bottom < paneBox.top || hostBox.top > paneBox.bottom)) {
-        host.scrollIntoView({ block: hostBox.top > paneBox.bottom ? 'start' : 'end' })
+        place(host, hostBox.top > paneBox.bottom ? 'start' : 'end')
         await nextFrame()
         await nextFrame()
       }
@@ -127,15 +271,16 @@ export async function revealMatch(source: FindSource, match: Match) {
             if (++steady >= 3) return
           } else {
             steady = 0
-            element.scrollIntoView({ block: 'center' })
+            place(element, 'center')
           }
         } else {
           steady = 0
           const drawn = gutter().map((item) => ({ line: Number(item.textContent), box: item.getBoundingClientRect() }))
           const after = drawn.filter((entry) => entry.line > target).sort((x, y) => x.line - y.line)[0]
           const before = drawn.filter((entry) => entry.line < target).sort((x, y) => y.line - x.line)[0]
-          const place = after && after.box.top <= bounds.top ? -1 : before && before.box.bottom >= bounds.bottom ? 1 : 0
-          pane.scrollTop += place * pane.clientHeight
+          const step = after && after.box.top <= bounds.top ? -1 : before && before.box.bottom >= bounds.bottom ? 1 : 0
+          suspendHold(pane)
+          pane.scrollTop += step * pane.clientHeight
         }
         await nextFrame()
       }
@@ -145,15 +290,24 @@ export async function revealMatch(source: FindSource, match: Match) {
     // A context line shows on both sides of a split row: the new side is used.
     const row = line.type === 'del' ? rows[0] : rows[rows.length - 1]
     if (row) {
-      row.scrollIntoView({ block: 'center' })
+      place(row, 'center')
       highlight(row, match)
       return
+    }
+    // A file shown as editor-look rows opens the fold holding the line, or scrolls its part of the file into view.
+    const preview = section()?.querySelector<HTMLElement>('.ed-preview')
+    const open = preview && previewReveals.get(preview)
+    if (open) {
+      const old = line.type === 'del'
+      open(old ? 'old' : 'new', (old ? line.oldNo : line.newNo) ?? 1)
+      continue
     }
     const chunk = [...container.querySelectorAll<HTMLElement>('[data-lines]')].find((element) => {
       const [fileIndex, hunkIndex, first, last] = element.dataset.lines!.split(':').map(Number)
       return fileIndex === match.file && hunkIndex === match.hunk && first <= match.line && match.line <= last
     })
-    ;(chunk ?? section())?.scrollIntoView({ block: 'center' })
+    const target = chunk ?? section()
+    if (target) place(target, 'center')
   }
 }
 
@@ -163,7 +317,7 @@ function highlight(row: HTMLElement, match: Match) {
   clearHighlight()
   const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights
   const Highlight = (globalThis as { Highlight?: new (range: Range) => unknown }).Highlight
-  const code = row.querySelector('code')
+  const code = row.querySelector('code') ?? (row.matches('.cm-deletedLine') ? row : null)
   if (!code || !highlights || !Highlight) {
     row.classList.add('find-row')
     return
@@ -185,8 +339,12 @@ function highlight(row: HTMLElement, match: Match) {
 
 function setHighlight(range: Range) {
   const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights
-  const Highlight = (globalThis as { Highlight?: new (range: Range) => unknown }).Highlight
-  if (highlights && Highlight) highlights.set('find-current', new Highlight(range))
+  const Highlight = (globalThis as { Highlight?: new (range: Range) => { priority: number } }).Highlight
+  if (!highlights || !Highlight) return
+  const current = new Highlight(range)
+  // Drawn over the every-match highlight.
+  current.priority = 1
+  highlights.set('find-current', current)
 }
 
 // The editor holding the current match's mark, if the match is in an editable file.

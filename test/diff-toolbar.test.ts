@@ -74,7 +74,7 @@ test('Format Markdown shows only with a Markdown file, says its state, and sits 
     expect(content.replace(/<[^>]*>/g, '')).toBe('')
     const toolbar = html.slice(0, html.indexOf('<section'))
     const buttons = [...toolbar.matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map((match) => match[1].split(':')[0])
-    expect(buttons.slice(-4)).toEqual(['Formatted Markdown', 'Unified layout', 'Split layout', 'Whitespace changes'])
+    expect(buttons.slice(-5)).toEqual(['Formatted Markdown', 'Unified layout', 'Split layout', 'Word wrap', 'Whitespace changes'])
   }
 })
 

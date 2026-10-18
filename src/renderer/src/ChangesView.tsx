@@ -3,6 +3,7 @@ import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { DiffView } from './DiffView'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
+import { suspendHold } from './scroll-anchor'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { EmptyState } from './EmptyState'
@@ -610,14 +611,47 @@ const LOADING_HINT = 'Loading…'
 
 // A picked file glides to its header and its header flashes once, so the eye lands on it. Restores jump without motion.
 function revealFile(pane: HTMLElement | null, path: string, picked = false) {
-  const section = Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find((element) => element.dataset.path === path)
-  if (!section) return
+  const find = () => Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find((element) => element.dataset.path === path)
+  const section = find()
+  if (!section || !pane) return
   const still = !picked || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  if (still) suspendHold(pane)
   section.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' })
+  void settleOn(pane, find)
   if (!picked) return
   section.classList.remove('revealed')
   void section.offsetWidth // Restarts the flash when the same file is picked again.
   section.classList.add('revealed')
+}
+
+// Rows above the file mount with their real heights while the pane moves, and files load their editor-look rows in idle
+// time, which moves the file. So once the pane is at rest the file is put back at the top whenever it drifts, for a
+// short while. Scrolling by the user ends it.
+const SETTLE_MS = 1500
+let settling = 0
+async function settleOn(pane: HTMLElement, find: () => HTMLElement | undefined) {
+  const run = ++settling
+  let user = false
+  const stop = () => { user = true }
+  const events = ['wheel', 'pointerdown', 'keydown'] as const
+  events.forEach((name) => pane.addEventListener?.(name, stop, { passive: true, once: true }))
+  let last = Number.NaN
+  let rested = 0
+  const start = performance.now()
+  while (run === settling && !user && performance.now() - start < 5000 && (!rested || performance.now() - rested < SETTLE_MS)) {
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    // Still gliding.
+    if (!rested && pane.scrollTop !== last) {
+      last = pane.scrollTop
+      continue
+    }
+    rested ||= performance.now()
+    const section = find()
+    if (!section) break
+    suspendHold(pane)
+    section.scrollIntoView({ block: 'start' })
+  }
+  events.forEach((name) => pane.removeEventListener?.(name, stop))
 }
 
 // The path a file is listed and matched by: its new name, or its old one for a deletion.

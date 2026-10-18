@@ -26,6 +26,8 @@
 /* Liquid glass. Each surface is a stack: a tinted fill, a flat rim, a refracted backdrop, and a layered shadow.
    Code sits on denser fills so it stays sharp. */
 :root[data-theme='light'] {
+  --find-match: rgba(255, 204, 0, 0.38);
+  --find-hit: #ff9632;
   color-scheme: light;
   --glass-fill: rgba(255, 255, 255, 0.4);
   --glass-strong: rgba(252, 252, 255, 0.9);
@@ -69,6 +71,8 @@
   --scrim: rgba(18, 22, 34, 0.16);
 }
 :root[data-theme='dark'] {
+  --find-match: rgba(255, 214, 10, 0.3);
+  --find-hit: #ff9f43;
   color-scheme: dark;
   --glass-fill: rgba(16, 17, 22, 0.5);
   --glass-strong: rgba(20, 21, 27, 0.9);
@@ -349,6 +353,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .file-list, .history-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--list); overflow: hidden; }
 .history-list { overflow: auto; }
 .diff-pane, .commit-detail { min-width: 0; min-height: 0; overflow: auto; background: var(--content); }
+/* Diff panes keep their place with their own anchoring (scroll-anchor.ts), so the browser's must not adjust as well. */
+.diff-pane { overflow-anchor: none; }
 .changes > .diff-pane { border-radius: var(--panel-radius); margin: 0 var(--gutter) var(--gutter) 0; box-shadow: var(--shadow-raised); }
 /* History's right side is a container: its metadata card and diff card are separate panes with a divider between. */
 .history > .commit-detail { margin: 0 var(--gutter) var(--gutter) 0; background: transparent; }
@@ -468,9 +474,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .changes-view-toggle .icon-button.on { background: var(--segment-on); color: var(--text); box-shadow: var(--shadow-raised); }
 .file-list-empty { margin: 0; padding: 6px 16px; color: var(--text-3); font-size: 13px; }
 /* Files scrolled far off screen skip layout and paint; the last rendered height keeps the scrollbar stable. */
-.diff-file { content-visibility: auto; contain-intrinsic-size: auto 480px; scroll-margin-top: var(--diff-toolbar-height); }
-/* An editor measures its own lines, so its file is always laid out. */
+/* Files off screen skip layout. Each file sets its own placeholder height (DiffView `estimate`), close to its real one, so
+   a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
+.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); }
 .diff-file.editable { content-visibility: visible; }
+/* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
 .diff-file.revealed > header { animation: file-revealed 900ms ease-out; }
 @keyframes file-revealed { from { background: var(--accent-soft); } }
@@ -831,5 +839,15 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 .find-bar input { width: 220px; height: 26px; padding: 0 8px; }
 .find-count { min-width: 64px; color: var(--text-3); font-variant-numeric: tabular-nums; text-align: right; }
-::highlight(find-current) { background-color: var(--find-hit, #ffd54a); color: #111; }
-.find-row { outline: 2px solid var(--find-hit, #ffd54a); outline-offset: -2px; }
+/* Every match is soft yellow; the current one is a solid orange drawn over it. Both keep dark text readable in either theme. */
+::highlight(find-match) { background-color: var(--find-match); }
+::highlight(find-current) { background-color: var(--find-hit); color: #111; }
+.find-row { outline: 2px solid var(--find-hit); outline-offset: -2px; }
+
+/* Word wrap off: long lines stay on one line and slide sideways together by the file's `--sx` (see hscroll.ts), under
+   gutters that stay put. Formatted Markdown is prose and keeps wrapping. */
+.diff.nowrap :is(.line, .split-cell, .ed-line) > code { white-space: pre; overflow: hidden; overflow-wrap: normal; word-break: normal; }
+.diff.nowrap :is(.line, .split-cell, .ed-line) > code > .sx { display: inline-block; transform: translateX(calc(var(--sx, 0px) * -1)); }
+/* The file's sideways scrollbar overlays the last 10px instead of taking room, and sticks to the pane's bottom edge. */
+.hscroll { position: sticky; bottom: 0; z-index: 3; height: 10px; margin-top: -10px; overflow-x: auto; overflow-y: hidden; }
+.hscroll > div { height: 1px; }

@@ -57,7 +57,7 @@ for (const [name, source, tag] of [['paragraph', 'first\rsecond', 'p'], ['headin
     expect(files[0].hunks[0].lines).toHaveLength(1)
     expect(files[0].hunks[0].lines[0].text).toBe(source)
     const { html, reset } = render(files, layout)
-    expect(reset).toContain(`<code>${source}</code>`)
+    expect(reset).toContain(`<code><span class="sx">${source}</span></code>`)
     expect(html.includes('first')).toBe(true)
     expect(html.includes('second')).toBe(true)
     expect((html.match(new RegExp(`<${tag}[ >]`, 'g')) ?? []).length).toBe(tag === 'p' ? 1 : 2)
@@ -85,7 +85,7 @@ test('bare CR source ranges retain UTF16 boundaries and blank/note rails without
     expect(boundary).toContain('<h1 data-source-range="1:1">')
     expect(boundary).not.toContain('data-source-range="0:1"')
     expect(boundary).toContain(source)
-    expect(reset).toContain(`<code>${source}</code>`)
+    expect(reset).toContain(`<code><span class="sx">${source}</span></code>`)
     expect((boundary.match(/data-source-row=/g) ?? []).length).toBe(layout === 'unified' ? 4 : 5)
     expect((boundary.match(/data-source-row="0:0:0"/g) ?? []).length).toBe(1)
     expect((boundary.match(/data-source-row="0:0:2"/g) ?? []).length).toBe(1)
@@ -136,7 +136,7 @@ test('recognizes Markdown displayed paths and leaves non-Markdown source untouch
   expect(html).toContain('data-path="new.MD"')
   expect(html).toContain('data-path="gone.markdown"')
   expect((html.match(/<h1[ >]/g) ?? []).length).toBe(2)
-  expect(html).toContain('<code># Raw</code>')
+  expect(html).toContain('<code><span class="sx"># Raw</span></code>')
 })
 
 test('real DiffView renders multiline paragraphs, nested task lists, quotes, strike and inert destinations', () => {
@@ -215,8 +215,8 @@ test('word edits keep intraline tints while syntax-only edits stay formatted', (
     expect(html).toContain('<strong><span>same</span></strong>')
     expect(html).toContain('<code><span class="intra">before</span></code>')
     expect(html).not.toContain('Source syntax')
-    expect(html).not.toContain('<code>*same*</code>')
-    expect(html).not.toContain('<code>A **stable** phrase</code>')
+    expect(html).not.toContain('<code><span class="sx">*same*</span></code>')
+    expect(html).not.toContain('<code><span class="sx">A **stable** phrase</span></code>')
     const pureText = html.split('data-path="syntax-0.md"')[1].split('</section>')[0]
   }
 })
@@ -232,11 +232,11 @@ test('paired blocks retain exact side rails for alignment, fence, reference and 
     expect(rail('old')).toEqual([0, 1, 2, ...(layout === 'split' ? [6] : [])])
     expect(rail('new')).toEqual([0, 3, 4, 5, ...(layout === 'split' ? [6] : [])])
     expect(tables).not.toContain('Source syntax')
-    expect(tables).not.toContain('<code>| Name | Value |</code>')
+    expect(tables).not.toContain('<code><span class="sx">| Name | Value |</span></code>')
     const shape = html.split('data-path="shape.md"')[1].split('</section>')[0]
     expect(shape).toContain('<p')
     expect(shape).toContain('<ul')
-    expect(shape).not.toContain('<code>paragraph</code>')
+    expect(shape).not.toContain('<code><span class="sx">paragraph</span></code>')
     expect(html).toContain('/before')
     expect(html).toContain('/after')
     expect(html).not.toMatch(/\s(?:src|href)=/)
@@ -510,7 +510,7 @@ test('formatting keeps collapse persistence and restores raw content across both
   expect(html).not.toContain('Saved closed')
   expect(html).toContain('aria-label="remembered.md: collapsed — click to expand it"')
   expect(otherView).toBe(html)
-  expect(reset).toContain('<code># Visible</code>')
+  expect(reset).toContain('<code><span class="sx"># Visible</span></code>')
   expect(reset).not.toContain('<h1')
   expect(stored['bettergit.formatMarkdown']).toBe('false')
   expect(render(files, 'unified', false, [], stored).html).toContain('aria-label="Formatted Markdown: off — click to format Markdown" aria-pressed="false"')
@@ -533,7 +533,7 @@ test('formatting parses only open Markdown files; expanding builds the plan, raw
   expect(closed).toContain('data-source-row="1:0:400" data-source-side="new"')
   for (const control of [render(files, 'unified', false, [], opened), render(files, 'unified', true, [], opened, true)]) {
     expect(control.parsed).toEqual([])
-    expect(control.html).toContain('<code># Hidden 400</code>')
+    expect(control.html).toContain('<code><span class="sx"># Hidden 400</span></code>')
     expect(control.html).not.toContain('<h1')
   }
 })
@@ -549,8 +549,8 @@ test('a Markdown hunk too large to format, counting its context, shows the raw d
     expect(html).toContain('Too large to format as Markdown. Showing the source diff.')
     expect(html).toContain('aria-label="Formatted Markdown: on — click to show the raw source" aria-pressed="true"')
     expect(html).not.toContain('md-hunk')
-    expect(html).toContain(`<code>${lines[0].text}</code>`)
-    expect(html).toContain(`<code>${lines.at(-3)!.text}</code>`)
+    expect(html).toContain(`<code><span class="sx">${lines[0].text}</span></code>`)
+    expect(html).toContain(`<code><span class="sx">${lines.at(-3)!.text}</span></code>`)
     expect((html.match(/class="intra"/g) ?? []).length).toBe(2)
     if (layout === 'unified') for (const sign of ['+', '-']) expect(html).toContain(`<span class="sign">${sign}</span>`)
   }

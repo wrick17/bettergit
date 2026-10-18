@@ -29,4 +29,29 @@
 
 .diff-edit-note { padding: 8px 20px; }
 /* The current find match, the same colour as in the read-only diff. */
-.diff-editor .cm-find-current { background-color: var(--find-hit, #ffd54a); color: #111; }
+.diff-editor .cm-find-current { background-color: var(--find-hit); color: #111; }
+
+/* Static rows drawn like the editor (EditorPreview in DiffEditor.tsx), shown until a line is clicked. Each size matches a
+   CodeMirror rule above, so swapping in the editor moves nothing: .ed-num is .cm-lineNumbers (its width fits the widest
+   line number, at least 50px), .ed-bar is .cm-changeGutter, code is .cm-line with the editor's wrapping and tab size,
+   and .ed-fold is .cm-collapsedLines. */
+.ed-preview { font: 13px/22px var(--font-code); color: var(--text); tab-size: 4; outline: none; }
+.ed-preview:focus-visible { box-shadow: inset 2px 0 0 var(--accent); }
+.ed-line, .ed-fold { display: flex; min-width: 0; }
+.ed-num { flex: none; box-sizing: border-box; min-width: 50px; width: calc(var(--digits-b) * 1ch + 12px); padding: 0 12px 0 0; text-align: right; white-space: nowrap; color: var(--text-3); font-variant-numeric: tabular-nums; user-select: none; }
+.side-a > .ed-num { width: calc(var(--digits-a) * 1ch + 12px); }
+.ed-bar { flex: none; width: 2px; }
+.ed-line > code { flex: 1; min-width: 0; box-sizing: border-box; padding: 0 20px 0 8px; font: inherit; white-space: break-spaces; word-break: break-word; overflow-wrap: anywhere; }
+/* Editable lines read as text; removed lines and the old side keep the plain pointer. */
+.ed-line[data-new] > code { cursor: text; }
+.ed-line.add > code { background: var(--add-bg); }
+.ed-line.add > .ed-bar { background: var(--add); }
+.ed-line:is(.del, .old) > code { background: var(--del-bg); }
+.ed-line:is(.del, .old) > .ed-bar { background: var(--del); }
+/* The unified editor's removed block (.cm-deletedChunk) indents its text. */
+.ed-line.del > code { padding-left: 70px; }
+.ed-line.add .ed-changed { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.ed-line:is(.del, .old) .ed-changed { background: color-mix(in srgb, var(--del) 30%, transparent); }
+.ed-fold-bar { flex: 1; min-width: 0; height: 28px; margin: 0; padding: 0 20px; border: 0; border-radius: 0; box-shadow: none; background: var(--sunken); color: var(--text-3); font: 12px/28px var(--font-code); text-align: left; cursor: pointer; }
+/* Split: two equal columns like the merge view; a change's shorter side ends in blank space, as the editor's spacer does. */
+.ed-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
