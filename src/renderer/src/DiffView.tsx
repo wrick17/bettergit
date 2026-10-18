@@ -257,12 +257,16 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
               </div>
             )}
             {open && conflict && current === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
-            {open && file.hunks.map((hunk, hunkIndex) => (
+            {open && file.hunks.map((hunk, hunkIndex) => {
+              const markdown = formatted && isMarkdownPath(path)
+              const format = markdown && fitsMarkdown(hunk.lines)
+              return (
               <Fragment key={hunkIndex}>
                 {onExpand && <ExpandRow label={`Show more context above line ${edgeLines(hunk.lines).first}`} onExpand={() => onExpand(file)} />}
                 <div className="hunk">
                   <div className="hunk-header">{hunk.header}</div>
-                  {formatted && isMarkdownPath(path)
+                  {markdown && !format && <div className="md-fragment-note">Too large to format as Markdown. Showing the source diff.</div>}
+                  {format
                     ? <MarkdownHunkView lines={hunk.lines} changes={spansOf(hunk)} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
                     : current === 'unified'
                     ? hunk.lines.map((line, lineIndex) => {
@@ -325,7 +329,8 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                 </div>
                 {onExpand && <ExpandRow label={`Show more context below line ${edgeLines(hunk.lines).last}`} onExpand={() => onExpand(file)} />}
               </Fragment>
-            ))}
+              )
+            })}
           </section>
         )
       })}
@@ -504,6 +509,19 @@ interface MarkdownHunkProps {
   prefix: string
   labels: Map<string, string>
   anchors: Map<string, string>
+}
+
+// Formatting parses both whole sides of a hunk, its context included, so a hunk past these sizes shows the source diff
+// instead. They are a conservative bound on that work, not a measured threshold, and are counted before any source is built.
+const MARKDOWN_MAX_ROWS = 5_000
+const MARKDOWN_MAX_CHARS = 200_000
+
+function fitsMarkdown(lines: DiffLine[]) {
+  if (lines.length > MARKDOWN_MAX_ROWS) return false
+  let chars = 0
+  // Each row's UTF-16 length plus the line break that joins it to the next.
+  for (const line of lines) if ((chars += line.text.length + 1) > MARKDOWN_MAX_CHARS) return false
+  return true
 }
 
 // The plan is built here, so only hunks of open files are parsed. A collapsed file parses when it is opened.
