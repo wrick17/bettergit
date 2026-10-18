@@ -1,0 +1,30 @@
+/* The in-place editor of a working-tree diff (CodeMirror). It matches the read-only diff rows: same font, row height and tints. */
+.diff-editor .cm-editor { background: transparent; color: var(--text); font: 13px/22px var(--font-code); }
+.diff-editor .cm-editor.cm-focused { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+.diff-editor .cm-scroller { font: inherit; line-height: 22px; }
+.diff-editor .cm-content { padding: 0; caret-color: var(--text); }
+.diff-editor .cm-line { padding: 0 20px 0 8px; }
+.diff-editor .cm-gutters { background: transparent; border: 0; color: var(--text-3); }
+.diff-editor .cm-lineNumbers .cm-gutterElement { min-width: 50px; padding: 0 12px 0 0; font-variant-numeric: tabular-nums; }
+.diff-editor .cm-cursor { border-left-color: var(--text); }
+.diff-editor .cm-selectionBackground, .diff-editor .cm-focused .cm-selectionBackground { background: var(--accent-soft) !important; }
+
+/* Added and changed lines on the current side, removed lines and the old side. */
+.diff-editor .cm-editor .cm-changedLine, .diff-editor .cm-merge-b .cm-changedLine { background: var(--add-bg); }
+.diff-editor .cm-editor .cm-deletedChunk, .diff-editor .cm-merge-a .cm-changedLine { background: var(--del-bg); }
+.diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 70px; }
+.diff-editor .cm-editor .cm-changedText, .diff-editor .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.diff-editor .cm-editor .cm-deletedChunk .cm-deletedText, .diff-editor .cm-merge-a .cm-changedText { background: color-mix(in srgb, var(--del) 30%, transparent); }
+.diff-editor .cm-editor ins.cm-insertedLine, .diff-editor .cm-editor del.cm-deletedLine, .diff-editor .cm-editor .cm-deletedLine del { text-decoration: none; }
+.diff-editor .cm-editor .cm-changeGutter { width: 2px; padding: 0; }
+.diff-editor .cm-editor .cm-changedLineGutter { background: var(--add); }
+.diff-editor .cm-editor .cm-deletedLineGutter, .diff-editor .cm-merge-a .cm-changedLineGutter { background: var(--del); }
+
+/* Folded unchanged lines. A click shows them. */
+.diff-editor .cm-editor .cm-collapsedLines { padding: 0 20px; background: var(--sunken); color: var(--text-3); font: 12px/28px var(--font-code); cursor: pointer; }
+.diff-editor .cm-editor .cm-collapsedLines::before, .diff-editor .cm-editor .cm-collapsedLines::after { content: none; }
+
+/* Split layout: two columns with the read-only old side on the left. */
+.diff-editor .cm-mergeView .cm-mergeViewEditor { min-width: 0; }
+
+.diff-edit-note { padding: 8px 20px; }

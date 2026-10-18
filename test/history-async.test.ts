@@ -229,6 +229,21 @@ assert.deepEqual(savedCompare(), { key: 'A', value: null })
 unmount()
 console.log('compare selection and restore cases passed')
 
+// With nothing saved, History opens on the newest commit. The author filter reloads the list through git with those names.
+{
+  const pages = []
+  const history = window.bettergit.history
+  window.bettergit.history = (...args) => { pages.push(args); return history(...args) }
+  await mount({ places: {} })
+  assert.deepEqual(calls.commit.map((c) => c.args[1]), ['A'], 'the newest commit was not opened')
+  find(tree, (p) => p.authors && p.onChange).onChange(['x'])
+  render(); await flush()
+  assert.deepEqual(pages.at(-1), ['/repo', 0, 300, ['x']])
+  unmount()
+  window.bettergit.history = history
+}
+console.log('first commit and author filter cases passed')
+
 // A whitespace toggle refetches the commit. Until that reply, hunks fetched with the other option are not shown;
 // the heading and the diff toolbar stay. A reply for an option already left is dropped.
 const { setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
@@ -567,6 +582,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   expect(child.stdout.toString()).toContain('compare selection and restore cases passed')
+  expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
 })

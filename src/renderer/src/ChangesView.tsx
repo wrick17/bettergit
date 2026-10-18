@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
-import { confirmDropEdit, DiffView, type EditBridge } from './DiffView'
+import { DiffView } from './DiffView'
+import { confirmDropEdits, type EditBridge } from './DiffEditor'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton } from './Icons'
+import { EmptyState } from './EmptyState'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
@@ -92,7 +94,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
   // The view and options each loaded result belongs to. Only a result loaded for the view on screen is ready for its scroll position.
   const allKey = JSON.stringify([repo, context, ignoreWhitespace])
-  const diffKey = selection && JSON.stringify([repo, selection.staged, selection.path, context, ignoreWhitespace])
+  // The selected view shows the selection's whole section, so its load and scroll memory depend on the section, not the
+  // file. Picking another file in the same section only scrolls to it.
+  const section = selection ? selection.staged : null
+  const diffKey = section === null ? null : JSON.stringify([repo, section, context, ignoreWhitespace])
   const allFor = useRef<string | null>(null)
   const diffFor = useRef<string | null>(null)
   // A result, or the failure of its load, shows only for the view and options it was loaded for. While a load for the
@@ -101,7 +106,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const diffShown = diff && diffFor.current === diffKey ? diff : null
   const stagedShown = allShown?.staged
   const unstagedShown = allShown?.unstaged
-  const scrollKey = selection ? `${selection.staged}:${selection.path}` : 'all'
+  const scrollKey = section === null ? 'all' : `${section}`
   const diffReady = selection ? !!diffShown && diffShown !== LOAD_FAILED : !!stagedShown && stagedShown !== LOAD_FAILED
   const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, scrollKey, diffReady,
     selection ? (pane) => revealFile(pane, selection.path) : undefined)
@@ -149,7 +154,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // A widen belongs to this load and source file, even if the same path is selected again later.
   // Loaders publish here before setState so replies in one React batch see the newest file.
-  const request = useMemo(() => ({}), [repo, revision, status, selection, conflictSelected, context, ignoreWhitespace])
+  const request = useMemo(() => ({}), [repo, revision, status, section, conflictSelected, context, ignoreWhitespace])
   const snapshot = { request, diff, all }
   const currentRequest = useRef<typeof snapshot | null>(snapshot)
   currentRequest.current = snapshot
@@ -207,15 +212,15 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }, [repo, status, revision, context, ignoreWhitespace])
 
   useEffect(() => {
-    if (!selection || conflictSelected) {
+    if (section === null || conflictSelected) {
       diffFor.current = null
       setDiff(null)
       return
     }
     let stale = false
     const key = diffKey
-    api.working(repo, selection.staged, context, undefined, ignoreWhitespace)
-      .then((next: Working) => widen(repo, next, selection.staged, extraRef.current))
+    api.working(repo, section, context, undefined, ignoreWhitespace)
+      .then((next: Working) => widen(repo, next, section, extraRef.current))
       .then((next) => {
         if (!stale) {
           if (currentRequest.current) currentRequest.current.diff = next
@@ -232,7 +237,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
         setDiff(LOAD_FAILED)
       })
     return () => { stale = true }
-  }, [repo, status, selection, conflictSelected, revision, context, ignoreWhitespace])
+  }, [repo, status, section, conflictSelected, revision, context, ignoreWhitespace])
 
   // The resolver loads the file and its stage IDs together. A reload that finds the same fingerprint keeps the choices.
   useEffect(() => {
@@ -247,14 +252,15 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     return () => { stale = true }
   }, [repo, selection, conflictSelected, revision])
 
-  // Picking a file keeps the continuous diff and scrolls the file's header into view once its diff loads.
+  // Picking a file keeps the continuous diff and scrolls the file's header into view, at once when its section is on
+  // screen, or once that section's diff loads.
   useEffect(() => {
     const path = revealRef.current
     if (!path || !diff || diffFor.current !== diffKey) return
     revealRef.current = null
     // Files skipped by content-visibility use their estimated height until a frame has laid them out, so scroll after two frames.
-    requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path)))
-  }, [diff])
+    requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path, true)))
+  }, [diff, selection])
 
   // Git writes take the repo's single slot. The reload runs only after a successful write, so a failed reload cannot fail it.
   const write = (key: string, action: () => Promise<unknown>) => runRepoWrite(repo, key, action, {
@@ -264,13 +270,13 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // The checkboxes and the diff header share this. A click during another Git action is ignored, so stages do not race on the index.
   const togglePath = (path: string, stage: boolean) => {
-    if (busy) return
+    if (busy || (stage && !confirmDropEdits(repo, [path]))) return
     void write(stage ? 'stage' : 'unstage', () => (stage ? api.stage(repo, [path]) : api.unstage(repo, [path])))
   }
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
 
-  // The inline editor in working-tree diffs. Its save takes the repo slot like any write, and the diff reloads after it.
+  // Working-tree diffs edit their files in place. A save takes the repo slot like any write, and the diff reloads after it.
   const edit: EditBridge = {
     repo,
     load: (path) => api.readFile(repo, path),
@@ -314,19 +320,17 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
   const togglePaths = (paths: string[], stage: boolean) => {
-    if (busy || !paths.length) return
+    if (busy || !paths.length || (stage && !confirmDropEdits(repo, paths))) return
     void write(stage ? 'stage:all' : 'unstage:all', () => (stage ? api.stage(repo, paths) : api.unstage(repo, paths)))
   }
 
   const choose = (change: FileChange, isStaged: boolean) => {
-    // Opening another file hides the editor, so an unsaved edit is confirmed and closed first.
-    if (!confirmDropEdit({ repo, path: change.path })) return
     revealRef.current = change.path
     setSelection({ path: change.path, staged: isStaged })
   }
 
   const discard = (change: FileChange) => {
-    if (busy || !window.confirm(`Discard unstaged changes to ${change.path}? This cannot be undone.`)) return
+    if (busy || !window.confirm(`Discard unstaged changes to ${change.path}? This cannot be undone.`) || !confirmDropEdits(repo, [change.path])) return
     void write(`discard:${change.path}`, () => api.discard(repo, [change.path]))
   }
 
@@ -425,11 +429,15 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               <span className="fold-label">{selection ? splitPath(selection.path).name : `${staged.length} staged · ${unstaged.length} unstaged`}</span>
             </button>
           )}
-          <div className="changes-view-toggle">
-            <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
-            <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
+          <div className="file-list-head">
+            <span className="file-list-title">Files</span>
+            <div className="changes-view-toggle" role="group" aria-label="File list layout">
+              <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
+              <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
+            </div>
           </div>
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
+            {clean && <p className="file-list-empty">No changed files</p>}
             <List
               title="Staged"
               changes={staged}
@@ -503,7 +511,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
         <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll}>
-          {!selection && status.changes.length === 0 && <p className="hint">Working tree clean</p>}
+          {!selection && status.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
           {!selection && status.changes.length > 0 && (
             <>
               <h2 className="diff-section">Staged {stagedShown && stagedShown !== LOAD_FAILED && <span className="count">{stagedShown.files.length}</span>}</h2>
@@ -575,9 +583,16 @@ const LOAD_FAILED_HINT = 'Could not load these changes.'
 const NO_FILES: Working = { files: [], moves: [] }
 const LOADING_HINT = 'Loading…'
 
-function revealFile(pane: HTMLElement | null, path: string) {
-  Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
-    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
+// A picked file glides to its header and its header flashes once, so the eye lands on it. Restores jump without motion.
+function revealFile(pane: HTMLElement | null, path: string, picked = false) {
+  const section = Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find((element) => element.dataset.path === path)
+  if (!section) return
+  const still = !picked || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  section.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' })
+  if (!picked) return
+  section.classList.remove('revealed')
+  void section.offsetWidth // Restarts the flash when the same file is picked again.
+  section.classList.add('revealed')
 }
 
 // The path a file is listed and matched by: its new name, or its old one for a deletion.

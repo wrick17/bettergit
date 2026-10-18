@@ -18,13 +18,38 @@ export interface MarkdownSide {
   footnotes: Map<string, FootnoteDefinition>
   changes: Map<number, Span[]>
   moved: Set<number>
+  // Length of a synthetic table header put before the first row. It has no source rows and is never rendered.
+  prefix: number
 }
 export interface MarkdownGroup { start: number; end: number; old: RootContent[]; new: RootContent[]; rows: Array<[number | null, number | null]>; unchanged: boolean }
 export interface MarkdownPlan { old: MarkdownSide; new: MarkdownSide; groups: MarkdownGroup[] }
 
+const TABLE_ROW = /^ {0,3}\|/
+const TABLE_DELIMITER = /^ {0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
+const isDelimiter = (text: string) => text.includes('|') && TABLE_DELIMITER.test(text)
+const cellCount = (text: string) => text.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).length
+
+// A hunk often starts inside a table, below its header. Without a header and delimiter GFM reads the rows as a
+// paragraph of pipes, so an empty header (and delimiter, when that was cut too) is put back in front of them.
+// A lone pipe-led prose line (`| note`, `| --- |`) stays a paragraph: rows need two cells, or a delimiter a matching row.
+// shortcut: only pipe-led rows are recognised and one-column rows stay raw; widen context to show the header.
+function tablePrefix(texts: string[]): string {
+  const [first, second] = texts
+  if (first === undefined) return ''
+  const cells = cellCount(first)
+  if (isDelimiter(first)) {
+    const matched = cells >= 2 || (second !== undefined && TABLE_ROW.test(second) && cellCount(second) === cells)
+    return matched ? `|${' |'.repeat(cells)}\n` : ''
+  }
+  if (!TABLE_ROW.test(first) || cells < 2 || (second !== undefined && isDelimiter(second))) return ''
+  return `|${' |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`
+}
+
 function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<number, Span[]>): MarkdownSide {
   const entries: MarkdownSource[] = []
-  let source = ''
+  const kept = lines.filter(line => line.type !== excluded && line.type !== 'note')
+  let source = tablePrefix(kept.slice(0, 2).map(line => line.text))
+  const prefix = source.length
   lines.forEach((line, index) => {
     if (line.type === excluded || line.type === 'note') return
     if (entries.length) source += '\n'
@@ -41,7 +66,7 @@ function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<numb
     if ('children' in node) node.children.forEach(collect)
   }
   collect(tree)
-  return { source, entries, nodes: tree.children, definitions, footnotes, changes, moved: new Set() }
+  return { source, entries, nodes: tree.children, definitions, footnotes, changes, moved: new Set(), prefix }
 }
 
 function sourceRange(node: Nodes, side: MarkdownSide): [number, number] | undefined {
@@ -57,7 +82,8 @@ function sourceRange(node: Nodes, side: MarkdownSide): [number, number] | undefi
       if (side.entries[middle].start <= offset) low = middle + 1
       else high = middle
     }
-    return side.entries[low - 1]
+    // An offset inside the synthetic table prefix belongs to the first real row.
+    return side.entries[Math.max(low - 1, 0)]
   }
   const first = entryAt(start)
   const last = entryAt(Math.max(start, end - 1))
@@ -214,6 +240,7 @@ export function MarkdownContent({ nodes, side }: { nodes: RootContent[]; side: M
         : <ul key={index} data-source-range={association}>{children()}</ul>
       case 'listItem': return <li key={index} data-source-range={association}>{node.checked !== null && node.checked !== undefined && <input type="checkbox" checked={node.checked} disabled aria-label={node.checked ? 'Completed task' : 'Incomplete task'} />}{children()}</li>
       case 'table': {
+        const synthetic = (node.position?.start.offset ?? 0) < side.prefix
         const row = (row: (typeof node.children)[number], index: number, header: boolean) => {
           const Cell = header ? 'th' : 'td'
           return (
@@ -229,7 +256,7 @@ export function MarkdownContent({ nodes, side }: { nodes: RootContent[]; side: M
         return (
           <div key={index} className="md-table-scroll">
             <table data-source-range={association}>
-              <thead>{node.children.slice(0, 1).map((value, index) => row(value, index, true))}</thead>
+              {!synthetic && <thead>{node.children.slice(0, 1).map((value, index) => row(value, index, true))}</thead>}
               <tbody>{node.children.slice(1).map((value, index) => row(value, index, false))}</tbody>
             </table>
           </div>

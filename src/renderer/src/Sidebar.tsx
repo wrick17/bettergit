@@ -194,12 +194,15 @@ type ItemProps = SidebarProps & {
   onContext: (event: MouseEvent, node: TreeNode) => void
   tabStop: string | undefined
   onFocusRow: (path: string) => void
+  // Inside a hidden folder: shown greyed like a hidden row, though not hidden itself.
+  inHidden?: boolean
 }
 
 function TreeItem(props: ItemProps) {
   const { node, depth, config, selected, showHidden } = props
   const hidden = config.hidden.includes(node.path)
   if (hidden && !showHidden) return null
+  const greyed = hidden || !!props.inHidden
 
   if (node.kind === 'folder') {
     const collapsed = config.collapsed.includes(node.path)
@@ -226,7 +229,7 @@ function TreeItem(props: ItemProps) {
         }}
       >
         <div
-          className={`tree-row folder${hidden ? ' is-hidden' : ''}`}
+          className={`tree-row folder${greyed ? ' is-hidden' : ''}`}
           onClick={() => props.onToggleCollapsed(node.path)}
           onContextMenu={(event) => props.onContext(event, node)}
         >
@@ -246,7 +249,7 @@ function TreeItem(props: ItemProps) {
         {!collapsed && (
           <div role="group" className="tree-children">
             {node.children.map((child) => (
-              <TreeItem key={child.path} {...props} node={child} depth={depth + 1} />
+              <TreeItem key={child.path} {...props} node={child} depth={depth + 1} inHidden={greyed} />
             ))}
           </div>
         )}
@@ -274,7 +277,7 @@ function TreeItem(props: ItemProps) {
       }}
     >
       <div
-        className={`tree-row repo${selected === node.path ? ' selected' : ''}${hidden ? ' is-hidden' : ''}`}
+        className={`tree-row repo${selected === node.path ? ' selected' : ''}${greyed ? ' is-hidden' : ''}`}
         onClick={() => props.onSelect(node.path)}
         onContextMenu={(event) => props.onContext(event, node)}
       >

@@ -163,14 +163,13 @@ test('real DiffView renders multiline paragraphs, nested task lists, quotes, str
   }
 })
 
-test('hunk sides keep independent fence state and never infer missing headers or reference definitions', () => {
+test('hunk sides keep independent fence state and never infer missing reference definitions', () => {
   const lines = [line('```md', 'del'), line('# inside old fence', 'context', 2), line('```', 'del', 3)]
   const parsed = markdownHunk(lines)
   expect(parsed.old.nodes[0].type).toBe('code')
   expect(parsed.new.nodes[0].type).toBe('heading')
   expect(fragment('```\n# unfinished')).toContain('<pre')
   expect(fragment('```\n# unfinished')).not.toContain('<h1')
-  expect(fragment('| body |')).not.toContain('<table')
   expect(fragment('[label][missing]')).toContain('[label][missing]')
   const separated = file('fragment.md', [line('[label][ref]')])
   separated.hunks.push({ header: '@@ -20 +20 @@', lines: [line('[ref]: https://outside.test', 'context', 20), line('# separate', 'context', 21)] })
@@ -183,6 +182,25 @@ test('hunk sides keep independent fence state and never infer missing headers or
     expect(fenced).toContain('<pre')
     expect(fenced).toContain('<h1')
     expect(fenced).not.toContain('data-source-row="0:0:0" data-source-side="new"')
+  }
+})
+
+test('table rows cut below their header by the hunk still render as a headerless table', () => {
+  for (const rows of [['|---|---|', '| A | one |', '| B | two |'], ['| A | one |', '| B | two |']]) {
+    const html = fragment(rows.join('\n'))
+    expect(html).toContain('<table data-source-range="0:')
+    expect(html).not.toContain('<th')
+    expect((html.match(/<td[ >]/g) ?? []).length).toBe(4)
+    expect(html).not.toContain('|')
+  }
+  // A header that is in the hunk is kept, and a pipe row after a blank line is not a table in the file either.
+  expect(fragment('| H | I |\n|---|---|\n| A | one |')).toContain('<th')
+  expect(fragment('text\n\n| A | one |')).not.toContain('<table')
+  // Lone pipe-led prose lines are paragraphs, not one-column tables.
+  for (const prose of ['| note', '| --- |']) {
+    const html = fragment(prose)
+    expect(html).not.toContain('<table')
+    expect(html).toContain('<p')
   }
 })
 

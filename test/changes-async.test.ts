@@ -212,7 +212,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
   const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
   const revealed = []
-  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path) }))
+  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path), classList: { add() {}, remove() {} } }))
   const pane = { scrollTop: 400, querySelectorAll: () => sections }
   stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
   setContextLines(3); setIgnoreWhitespace(false)
@@ -231,13 +231,12 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   tick()
   assert.deepEqual(revealed, ['a.ts'])
   assert.equal(pane.scrollTop, 400)
-  // Picking another file waits for its own diff. The old file's diff on screen is not ready for it.
+  // Picking another file in the same section scrolls the diff already on screen to it. Nothing reloads.
+  const loads = requests.length
   find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
   tick(); tick()
-  assert.deepEqual(revealed, ['a.ts'])
-  await load('latest')
-  tick(); tick()
-  assert.equal(revealed.at(-1), 'b.ts')
+  assert.deepEqual(revealed, ['a.ts', 'b.ts'])
+  assert.equal(requests.length, loads, 'picking a file in the section on screen reloaded its diff')
   assert.equal(pane.scrollTop, 400)
   // The same pane leaves the file for all changes and restores the saved position for all, here 0.
   const session = JSON.parse(stored.get('bettergit.session'))
@@ -559,6 +558,8 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     if (transition === 'revision') props = { ...props, revision: 2 }
     if (transition === 'status') props = { ...props, status: { ...props.status, changes: [...props.status.changes] } }
     if (transition === 'repo') props = { ...props, repo: '/other' }
+    // Picking another file in the section on screen keeps that diff, so its widen still applies. Not a target change.
+    if (transition === 'file' && selected) { unmount(); continue }
     if (transition === 'file' || transition === 'section') {
       const section = transition === 'section' ? 'Staged' : 'Unstaged'
       find(tree, (p) => p.title === section && typeof p.onSelect === 'function').onSelect(change(transition === 'file' ? 'b.ts' : 'a.ts'))

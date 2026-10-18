@@ -7,7 +7,7 @@ import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
 import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
-import { readHistory, fileHistory } from '../src/main/git/history'
+import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
@@ -86,6 +86,21 @@ describe('history and diffs', () => {
     const root0 = (await readHistory(repo('work/personal/detached-head'), 0, 10)).at(-1)!
     const files = await commitDiff(repo('work/personal/detached-head'), root0.hash)
     expect(files[0].status).toBe('added')
+  })
+
+  test('filters history by exact author names, with paging, search, and regex characters kept literal', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-authors-'))
+    await git(dir, ['init', '-q', '-b', 'main'])
+    for (const [name, subject] of [['Ann', 'fix: one'], ['JoAnn', 'fix: two'], ['A.n (x)', 'feat: three'], ['Ann', 'feat: four']]) {
+      await git(dir, ['-c', `user.name=${name}`, '-c', 'user.email=a@example.com', '-c', 'grep.patternType=perl', 'commit', '-q', '--allow-empty', '-m', subject])
+    }
+    const subjects = (commits: { subject: string }[]) => commits.map((commit) => commit.subject)
+    // "Ann" must not match "JoAnn", and "A.n" must not match "Ann" as a regex would.
+    expect(subjects(await readHistory(dir, 0, 10, ['Ann']))).toEqual(['feat: four', 'fix: one'])
+    expect(subjects(await readHistory(dir, 1, 10, ['Ann']))).toEqual(['fix: one'])
+    expect(subjects(await readHistory(dir, 0, 10, ['A.n (x)', 'JoAnn']))).toEqual(['feat: three', 'fix: two'])
+    expect(subjects(await searchHistory(dir, 'FIX', ['Ann', 'A.n (x)']))).toEqual(['fix: one'])
+    expect(await readAuthors(dir)).toEqual([{ name: 'Ann', count: 2 }, { name: 'A.n (x)', count: 1 }, { name: 'JoAnn', count: 1 }])
   })
 })
 

@@ -19,6 +19,9 @@ import path from 'node:path'
 import { normalizeConfig } from '../src/main/config'
 import { openCommand, readWorkingFile, resolveFileTarget, resolveRepoTarget, writeWorkingFile } from '../src/main/editor'
 import type { EditorId } from '../src/shared/editors'
+import { git } from '../src/main/git/exec'
+import { workingDiff } from '../src/main/git/diff'
+import { originalText } from '../src/renderer/src/DiffEditor'
 
 // Tests stop at the native process boundary. No test starts an editor.
 const dirs: string[] = []
@@ -83,6 +86,36 @@ test('the inline editor saves only a file unchanged since it was loaded, inside 
   await expect(readWorkingFile(repo, 'src/alias.ts')).rejects.toThrow('symbolic link')
   await expect(writeWorkingFile(repo, 'src/alias.ts', 'export const a = 1\r\n', 'x')).rejects.toThrow('symbolic link')
   expect(await fs.readFile(file, 'utf8')).toBe('export const a = 1\r\n')
+})
+
+// The diff's editor holds the whole working file and rebuilds the old side from it and the hunks, so lines folded
+// between hunks must come back unchanged. Git's own index copy is the expected old side.
+test('the diff editor rebuilds the old file from the working file and its hunks, folded lines included', async () => {
+  const { repo } = await sandbox()
+  await git(repo, ['init', '-q'])
+  const lines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`)
+  await fs.writeFile(path.join(repo, 'list.txt'), `${lines.join('\n')}\n`)
+  await git(repo, ['add', 'list.txt'])
+  const edited = [...lines]
+  edited[4] = 'line 5 changed'
+  edited.splice(19, 2)
+  edited.splice(33, 0, 'new A', 'new B')
+  edited[0] = '  line 1'
+  const current = `${edited.join('\n')}\n`
+  await fs.writeFile(path.join(repo, 'list.txt'), current)
+  const index = await git(repo, ['show', ':list.txt'])
+  const [file] = await workingDiff(repo, false)
+  expect(file.hunks.length).toBeGreaterThan(1)
+  expect(originalText(current, file.hunks)).toBe(index)
+  // With whitespace hidden, a whitespace-only change stays hidden: that line keeps its current text.
+  const [quiet] = await workingDiff(repo, false, 3, undefined, true)
+  expect(originalText(current, quiet.hunks)).toBe(index.replace('line 1\n', '  line 1\n'))
+  // An untracked file is all added lines, so its old side is empty.
+  await fs.writeFile(path.join(repo, 'new.txt'), 'a\nb\n')
+  const untracked = (await workingDiff(repo, false)).find((entry) => entry.newPath === 'new.txt')!
+  expect(originalText('a\nb\n', untracked.hunks)).toBe('')
+  // A diff that no longer matches the file is refused, so the editor never shows a wrong old side.
+  expect(originalText(current.replace('new A', 'other'), file.hunks)).toBeNull()
 })
 
 test('file and folder targets must match their kind', async () => {

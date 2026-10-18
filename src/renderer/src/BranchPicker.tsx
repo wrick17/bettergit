@@ -53,7 +53,10 @@ export function BranchChoices({ branches, current, query, active, onQuery, onAct
         const entries = choices.map((choice, index) => ({ choice, index })).filter(({ choice }) => choice.group === group)
         if (!entries.length) return null
         return <div role="group" aria-label={group} key={group}>
-          <div className="branch-group" aria-hidden="true">{group === 'Current' ? 'Starting point' : group}</div>
+          <div className="branch-group" aria-hidden="true">
+            <span>{group === 'Current' ? 'Starting point' : group}</span>
+            {group !== 'Current' && <span className="count">{entries.length}</span>}
+          </div>
           {entries.map(({ choice, index }) => <div
             key={choice.selection?.fullRef ?? 'unborn-head'} id={`${id}-option-${index}`} role="option"
             aria-selected={index === selected} aria-disabled={!choice.selection || disabled || undefined}
