@@ -84,6 +84,8 @@ test('History metadata drops obsolete rejections and reports current failures', 
 const COMPARE = String.raw`
 const assert = require('node:assert/strict')
 const react = require('react')
+const twoCommits = () => ['A', 'B']
+let pages = twoCommits
 const stored = new Map()
 const calls = { commit: [], compare: [], mergeBase: [] }
 const later = (list, args) => new Promise((resolve, reject) => list.push({ args, resolve, reject }))
@@ -92,7 +94,7 @@ Object.assign(globalThis, {
   window: {
     innerWidth: 1900, addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout,
     bettergit: {
-      history: () => Promise.resolve(['A', 'B'].map((hash) => ({ hash, parents: [], refs: [], author: 'x', date: 0, subject: 'subject ' + hash }))),
+      history: (_repo, skip) => Promise.resolve(pages(skip).map((hash) => ({ hash, parents: [], refs: [], author: 'x', date: 0, subject: 'subject ' + hash }))),
       status: () => Promise.resolve({ upstream: null }),
       remotes: () => Promise.resolve([]),
       commit: (...args) => later(calls.commit, args),
@@ -181,11 +183,32 @@ function unmount() {
 const compareBase = () => commitItems(find(tree, (p) => p.input?.onCompare).input, { setPrompt() {}, setNotice() {}, pending: null })
   .find((item) => item.key === 'compareBase').onClick()
 
+// Paging appends a page: the selection stays, the rows already laid out are kept as they are, and the arrow keys step
+// past the end of the first page.
+{
+  pages = (skip) => (skip >= 600 ? [] : Array.from({ length: 300 }, (_, index) => 'P' + (skip + index)))
+  await mount({ places: { '/repo': { commit: 'P298' } } })
+  const list = () => find(tree, (p) => p.rows && p.onSelect)
+  const first = list().rows
+  assert.equal(first.length, 300)
+  assert.equal(list().selected, 'P298')
+  const key = (name) => list().onKeyDown({ key: name, preventDefault() {} })
+  key('ArrowDown'); render(); await flush()
+  assert.equal(list().selected, 'P299')
+  assert.equal(list().rows.length, 600, 'stepping near the end loaded the next page')
+  assert.ok(first.every((row, index) => list().rows[index] === row), 'paging laid out the shown rows again')
+  key('ArrowDown'); render()
+  assert.equal(list().selected, 'P300', 'the arrow key stepped into the appended page')
+  unmount()
+  pages = twoCommits
+}
+console.log('paging cases passed')
+
 // A merge-base lookup started on A that answers after B is selected must not compare A under B's heading.
 await mount({ places: { '/repo': { commit: 'A' } } })
 await detail('A')
 compareBase()
-find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+find(tree, (p) => p.rows && p.onSelect).onSelect('B')
 render(); await detail('B')
 await answer(calls.mergeBase, 'H', () => 'BASE-A')
 assert.deepEqual(calls.compare.map((c) => c.args[1]), [], 'obsolete merge base started a compare')
@@ -218,10 +241,10 @@ assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
 unmount()
 // A startup restore is spent once the user leaves its commit, even before that commit's detail arrived.
 await mount({ places: { '/repo': { commit: 'A' } }, views: { '/repo|compare': saved } })
-find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+find(tree, (p) => p.rows && p.onSelect).onSelect('B')
 render(); await detail('B')
 assert.deepEqual(savedCompare(), { key: 'B', value: null })
-find(tree, (p) => p.row?.commit.hash === 'A').onSelect()
+find(tree, (p) => p.rows && p.onSelect).onSelect('A')
 render(); await detail('A')
 assert.equal(calls.compare.length, 0, 'spent startup restore reopened its compare')
 assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
@@ -280,7 +303,7 @@ assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden.ts'
 await answer(calls.compare, 'A', () => ({ files: files('vs-hidden'), moves: [] }))
 assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-hidden.ts'] })
 // Moving to another commit still unmounts the diff until that commit's reply.
-find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+find(tree, (p) => p.rows && p.onSelect).onSelect('B')
 render()
 assert.equal(diffView(), undefined)
 await reply('B', true, 'b-hidden')
@@ -350,7 +373,7 @@ unmount()
   // A failure that lands after another commit was selected changes nothing either. The option loaded before shows from
   // the cache, so a context not loaded yet starts the load that fails late.
   setIgnoreWhitespace(false); setContextLines(10); render(); await flush()
-  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  find(tree, (p) => p.rows && p.onSelect).onSelect('B')
   render(); await reply('B', false, 'b-shown')
   await fail('A', false)
   assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-shown.ts'] })
@@ -410,7 +433,7 @@ console.log('whitespace toggle cases passed')
   // Leaving the commit while its reload is pending does not carry the old position to the next commit's pane.
   setIgnoreWhitespace(false); render(); await flush()
   frame(pane)
-  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  find(tree, (p) => p.rows && p.onSelect).onSelect('B')
   render()
   const next = makePane()
   ref.current = next
@@ -461,7 +484,7 @@ console.log('whitespace toggle cases passed')
   // The commit's own diff for this option was loaded before, so it shows from the cache without a reply.
   setIgnoreWhitespace(false); render(); await flush()
   frame(comparePane)
-  find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
+  find(tree, (p) => p.rows && p.onSelect).onSelect('B')
   render()
   const nextPane = makePane()
   await compared('A', false, 'vs-obsolete')
@@ -588,6 +611,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   expect(child.stdout.toString()).toContain('compare selection and restore cases passed')
+  expect(child.stdout.toString()).toContain('paging cases passed')
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')

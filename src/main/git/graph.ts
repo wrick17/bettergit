@@ -21,17 +21,22 @@ export interface GraphRow<T extends GraphCommit = GraphCommit> {
 
 const COLOR_COUNT = 5
 
-export function layoutGraph<T extends GraphCommit>(commits: T[]): GraphRow<T>[] {
-  let lanes: Lane[] = []
-  let nextColor = 0
+// Where a layout left off: the lanes below its last row and the next color. Passing the state from one call to the next
+// lays out an appended page without laying out the rows before it again.
+export interface GraphState {
+  lanes: Lane[]
+  nextColor: number
+}
+
+export function layoutGraph<T extends GraphCommit>(commits: T[], state: GraphState = { lanes: [], nextColor: 0 }): GraphRow<T>[] {
   const color = () => {
-    const value = nextColor
-    nextColor = nextColor === COLOR_COUNT ? 1 : nextColor + 1
+    const value = state.nextColor
+    state.nextColor = value === COLOR_COUNT ? 1 : value + 1
     return value
   }
 
   return commits.map((commit) => {
-    const input = lanes.map((node) => ({ ...node }))
+    const input = state.lanes.map((node) => ({ ...node }))
     const output: Lane[] = []
     const parents = commit.parents
     let firstParentAdded = false
@@ -48,7 +53,7 @@ export function layoutGraph<T extends GraphCommit>(commits: T[]): GraphRow<T>[] 
     for (let index = firstParentAdded ? 1 : 0; index < parents.length; index++) {
       output.push({ hash: parents[index], color: color() })
     }
-    lanes = output
+    state.lanes = output
     const inputIndex = input.findIndex((node) => node.hash === commit.hash)
     const lane = inputIndex === -1 ? input.length : inputIndex
     const commitColor = input[lane]?.color ?? output[lane]?.color ?? color()

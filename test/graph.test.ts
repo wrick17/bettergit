@@ -32,6 +32,19 @@ describe('layoutGraph', () => {
   })
 })
 
+test('laying out an appended page from the saved state matches one layout of the whole list', () => {
+  const commits = [
+    { hash: 'a', parents: ['b', 'x'] },
+    { hash: 'x', parents: ['c'] },
+    { hash: 'b', parents: ['c'] },
+    { hash: 'c', parents: ['d', 'y'] },
+    { hash: 'y', parents: ['d'] },
+    { hash: 'd', parents: [] },
+  ]
+  const state = { lanes: [], nextColor: 0 }
+  expect([...layoutGraph(commits.slice(0, 3), state), ...layoutGraph(commits.slice(3), state)]).toEqual(layoutGraph(commits))
+})
+
 describe('rollbackTargets', () => {
   test('only loaded ancestors of HEAD can be reset to', () => {
     const targets = rollbackTargets([
