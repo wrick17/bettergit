@@ -4,6 +4,7 @@ import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { confirmDropEdit, DiffView, type EditBridge } from './DiffView'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton } from './Icons'
+import { EmptyState } from './EmptyState'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
@@ -425,11 +426,15 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               <span className="fold-label">{selection ? splitPath(selection.path).name : `${staged.length} staged · ${unstaged.length} unstaged`}</span>
             </button>
           )}
-          <div className="changes-view-toggle">
-            <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
-            <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
+          <div className="file-list-head">
+            <span className="file-list-title">Files</span>
+            <div className="changes-view-toggle" role="group" aria-label="File list layout">
+              <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
+              <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
+            </div>
           </div>
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
+            {clean && <p className="file-list-empty">No changed files</p>}
             <List
               title="Staged"
               changes={staged}
@@ -503,7 +508,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
         <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll}>
-          {!selection && status.changes.length === 0 && <p className="hint">Working tree clean</p>}
+          {!selection && status.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
           {!selection && status.changes.length > 0 && (
             <>
               <h2 className="diff-section">Staged {stagedShown && stagedShown !== LOAD_FAILED && <span className="count">{stagedShown.files.length}</span>}</h2>

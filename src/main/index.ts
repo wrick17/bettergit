@@ -9,7 +9,7 @@ import { buildMenu } from './menu'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withRepoLock } from './repo-lock'
 import { commitDiff, compare, detectMoves, workingDiff } from './git/diff'
-import { readHistory, commitDetails, searchHistory } from './git/history'
+import { readHistory, commitDetails, searchHistory, readAuthors } from './git/history'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
@@ -99,6 +99,11 @@ function assertKnownRepo(repoPath: string) {
   return resolved
 }
 
+// An author filter from the renderer: plain names only. Anything else is dropped, so a bad argument cannot reach git.
+function authorList(authors: unknown): string[] {
+  return Array.isArray(authors) ? authors.filter((name): name is string => typeof name === 'string' && name !== '' && !/[\n<>]/.test(name)) : []
+}
+
 // Validate both the selected path and its destination before opening or locking a repo.
 function assertKnownWriteRepo(repoPath: string): string {
   const resolved = assertKnownRepo(repoPath)
@@ -163,8 +168,9 @@ function registerIpc() {
     return config
   })
   ipcMain.handle('repo:status', async (_event, repoPath: string) => readStatus(assertKnownRepo(repoPath)))
-  ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number) =>
-    readHistory(assertKnownRepo(repoPath), skip, limit))
+  ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number, authors?: unknown) =>
+    readHistory(assertKnownRepo(repoPath), skip, limit, authorList(authors)))
+  ipcMain.handle('repo:authors', (_event, repoPath: string) => readAuthors(assertKnownRepo(repoPath)))
   // The whitespace flag is strict: only a literal true turns it on, so a malformed IPC argument cannot change the diff.
   ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)
@@ -231,7 +237,8 @@ function registerIpc() {
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>
     ops.restoreBackup(repoPath, ref))
   handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
-  ipcMain.handle('repo:search', (_event, repoPath: string, query: string) => searchHistory(assertKnownRepo(repoPath), query))
+  ipcMain.handle('repo:search', (_event, repoPath: string, query: string, authors?: unknown) =>
+    searchHistory(assertKnownRepo(repoPath), query, authorList(authors)))
   // Reads take no lock. The save runs under the repo lock, and it checks the fingerprint the renderer got at load.
   ipcMain.handle('repo:conflict-load', (_event, repoPath: string, filePath: string) => loadConflict(assertKnownRepo(repoPath), filePath))
   ipcMain.handle('repo:conflict-preview', (_event, repoPath: string, filePath: string, save: unknown) =>
