@@ -187,7 +187,9 @@ async function assertNewBranch(repo: string, name: string, branches: Branch[], r
 // whatever its condition, except behind a gitdir include that does not apply to this repository. An include that Git
 // would fail on once it applies is refused as well, since the switch would already have written the branch and HEAD by then.
 // A new branch that tracks through a remote also needs that remote's URL and fetch mapping to stay the same after the switch.
-async function assertNoUpstreamConfig(repo: string, name: string, remote?: string): Promise<void> {
+// An existing tracker keeps its own upstream settings, so for it only those in includeIf files are refused, as they could
+// change once it is checked out.
+async function assertNoUpstreamConfig(repo: string, name: string, remote?: string, existing = false): Promise<void> {
   const unchecked = (reason: string) => new Error(`Could not read the Git config to check upstream settings for ${name}: ${reason}`)
   // A silent exit 1 is an absent key, no match or a missing include file. Git also exits 1 for a file it cannot
   // open, but with a warning, so that and anything else fails closed.
@@ -220,9 +222,11 @@ async function assertNoUpstreamConfig(repo: string, name: string, remote?: strin
   let conditionalUrl = false
   while (sources.length) {
     const { args, depth, conditional, inert } = sources.pop()!
-    for (const key of inert ? [] : [`branch.${name}.remote`, `branch.${name}.merge`]) {
+    for (const key of inert || (existing && !conditional) ? [] : [`branch.${name}.remote`, `branch.${name}.merge`]) {
       if ((await read([...args, '--get-all', key])) !== null) {
-        throw new Error(`Branch ${name} could inherit upstream settings (${key}) from the Git config. Choose another name, or remove those settings first.`)
+        throw new Error(existing
+          ? `Branch ${name} has upstream settings (${key}) in a Git config file reached through includeIf, so its tracking could change once it is checked out. Move them to the repository config first.`
+          : `Branch ${name} could inherit upstream settings (${key}) from the Git config. Choose another name, or remove those settings first.`)
       }
     }
     // Conditions are not evaluated, so any includeIf file Git could read may add, remove or reorder them once the branch changes.
@@ -275,7 +279,12 @@ export async function switchBranch(repo: string, selection: BranchSelection): Pr
   // Git already resolved an existing tracker's upstream, so only a new branch needs a mapping derived here.
   const tracking = branches.filter((entry) => !entry.remote && entry.upstreamRef === branch.fullRef)
   if (tracking.length > 1) throw new Error(`Multiple local branches track ${branch.name}: ${tracking.map((entry) => entry.name).join(', ')}. Select a local branch explicitly.`)
-  if (tracking.length === 1) return switchLocal(repo, tracking[0])
+  if (tracking.length === 1) {
+    // Its upstream must still resolve once it is checked out, which includes that could change would not guarantee.
+    const remote = (await git(repo, ['for-each-ref', '--format=%(upstream:remotename)', tracking[0].fullRef])).trim()
+    await assertNoUpstreamConfig(repo, tracking[0].name, remote || undefined, true)
+    return switchLocal(repo, tracking[0])
+  }
   const { name, remote } = await trackingName(repo, branch.fullRef)
   await assertNewBranch(repo, name, branches, remote)
   await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', name, branch.fullRef, '--'])
