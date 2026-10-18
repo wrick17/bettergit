@@ -373,6 +373,48 @@ describe('branch picker operations with real Git', () => {
     expect((await readStatus(dir)).head).toBe('main')
   })
 
+  test('an existing tracker whose upstream settings only apply on the current branch is refused before switching', async () => {
+    const { dir, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await git(dir, ['switch', '-q', '-c', 'my-topic', tip])
+    await git(dir, ['commit', '--allow-empty', '-qm', 'local only'])
+    const ahead = await sha(dir)
+    await git(dir, ['switch', '-q', 'main'])
+    // The tracker's upstream comes only from a file that applies while main is checked out.
+    writeFileSync(path.join(gitDir, 'main-upstream.config'), '[branch "my-topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n')
+    await git(dir, ['config', 'includeIf.onbranch:main.path', 'main-upstream.config'])
+    expect((await readBranches(dir)).find((entry) => entry.name === 'my-topic')!.upstreamRef).toBe(remote.fullRef)
+    mkdirSync(path.join(gitDir, 'info'), { recursive: true })
+    writeFileSync(path.join(gitDir, 'info', 'exclude'), 'build.log\n')
+    // Work that Git would carry across the switch, so only the new check can stop it.
+    writeFileSync(path.join(dir, 'staged.txt'), 'staged\n')
+    await git(dir, ['add', 'staged.txt'])
+    writeFileSync(path.join(dir, 'staged.txt'), 'unstaged\n')
+    writeFileSync(path.join(dir, 'notes.txt'), 'untracked\n')
+    writeFileSync(path.join(dir, 'build.log'), 'ignored\n')
+    const files = ['staged.txt', 'notes.txt', 'build.log'].map((file) => path.join(dir, file))
+    const snapshot = async () => [
+      await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+      await git(dir, ['status', '--porcelain=v2', '--ignored']),
+      ...[path.join(gitDir, 'config'), path.join(gitDir, 'main-upstream.config'), ...files].map((file) => readFileSync(file, 'utf8')),
+      ...files.map((file) => statSync(file).mode),
+    ]
+    const before = await snapshot()
+    await expect(switchBranch(dir, remote)).rejects.toThrow('branch.my-topic.remote')
+    expect(await snapshot()).toEqual(before)
+    // Git itself switches, and the tracker then has no upstream.
+    await git(dir, ['switch', '-q', 'my-topic'])
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'my-topic', upstreamRef: null })
+    await git(dir, ['switch', '-q', 'main'])
+    // The same settings in the repository config are reused, keeping the ahead tip and the upstream.
+    await git(dir, ['config', '--unset', 'includeIf.onbranch:main.path'])
+    await git(dir, ['config', 'branch.my-topic.remote', 'origin'])
+    await git(dir, ['config', 'branch.my-topic.merge', 'refs/heads/topic'])
+    await switchBranch(dir, remote)
+    expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'my-topic', hash: ahead, upstreamRef: remote.fullRef })
+  })
+
   test('refuses existing names and ref-directory collisions without changing upstreams', async () => {
     const { dir, base } = await fixture()
     await git(dir, ['branch', 'topic'])
@@ -708,11 +750,12 @@ describe('branch picker operations with real Git', () => {
     // Git itself creates the branch, but its upstream stops resolving once main is no longer checked out.
     await git(dir, ['switch', '-q', '--no-guess', '--no-overwrite-ignore', '--track=direct', '-c', 'later', later.fullRef, '--'])
     await expect(git(dir, ['rev-parse', '--symbolic-full-name', 'later@{upstream}'])).rejects.toThrow('upstream')
-    // Back on main the mapping applies again, so the existing tracker is reused, and creation without tracking still works.
+    // Back on main the mapping applies again, but reusing that tracker would lose its upstream the same way, so it is refused.
+    // Creation without tracking still works.
     await git(dir, ['switch', 'main'])
-    await switchBranch(dir, later)
-    expect((await readStatus(dir)).head).toBe('later')
-    await git(dir, ['switch', 'main'])
+    const reuse = await snapshot()
+    await expect(switchBranch(dir, later)).rejects.toThrow('remote.origin.fetch')
+    expect(await snapshot()).toEqual(reuse)
     await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
     expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
     await branchFromCommit(dir, 'from-commit', tip)
