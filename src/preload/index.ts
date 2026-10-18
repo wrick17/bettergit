@@ -49,6 +49,7 @@ const api = {
   restore: (repo: string, ref: string) => invoke('repo:restore', repo, ref),
   clone: (url: string, parent: string) => invoke('clone', url, parent),
   reveal: (repo: string) => invoke('repo:reveal', repo),
+  openInEditor: (repo: string, path?: string) => invoke('repo:open-in-editor', repo, path) as Promise<void>,
   // Conflict resolution. The save sends back the fingerprint from load, never a fresh one, and no file text.
   conflictLoad: (repo: string, file: string) => invoke('repo:conflict-load', repo, file) as Promise<ConflictDocument>,
   conflictPreview: (repo: string, file: string, save: ConflictSave) =>

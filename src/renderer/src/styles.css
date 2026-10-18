@@ -454,6 +454,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-file-toggle svg { width: 10px; height: 10px; }
 .diff-file-stage { display: inline-grid; flex: none; place-items: center; }
 .diff-file-stage input:disabled { opacity: 0.4; cursor: default; }
+/* Open in editor keeps its size when the path truncates, so the header's file counts stay visible. */
+.diff-file-open { flex: none; display: inline-grid; place-items: center; }
 /* Stands in for a collapsed file's hunks. */
 .collapsed-note { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 20px; color: var(--text-3); font: 13px/1 var(--font-ui); }
 .collapsed-note button { padding: 4px 10px; font-size: 13px; }

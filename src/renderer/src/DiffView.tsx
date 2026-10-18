@@ -1,5 +1,7 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import type { DiffFile, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
+import { EDITORS } from '../../shared/editors'
+import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, useContextLines, useLanguageOverrides } from './prefs'
@@ -329,6 +331,7 @@ function FileHeader({ file, stat, open, onToggle, stage }: {
 }) {
   const path = pathOf(file)
   const { name, dir } = splitPath(path)
+  const editor = useContext(EditorContext)
   return (
     <header>
       {stage && (
@@ -354,7 +357,29 @@ function FileHeader({ file, stat, open, onToggle, stage }: {
         <span className="add">+{stat.adds}</span>
         <span className="del">−{stat.dels}</span>
       </span>
+      {editor && <OpenInEditorButton file={file} bridge={editor} />}
     </header>
+  )
+}
+
+// Opens the file's working copy in the chosen editor. A deleted status does not say whether the file exists now (a staged
+// or past deletion may have been recreated), so the main process checks it and reports a missing one.
+function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBridge }) {
+  const path = pathOf(file)
+  const { label } = EDITORS[bridge.editor]
+  const { busy, open } = useEditorLaunch(() => bridge.openFile(path), bridge.onError)
+  const commit = bridge.source === 'commit'
+  const target = commit ? `working copy of ${path}` : path
+  // The wrapper stops the click before it reaches any ancestor that might collapse or select the file.
+  return (
+    <span className="diff-file-open" onClick={(event) => event.stopPropagation()}>
+      <IconButton
+        icon="externalLink"
+        label={busy ? `Opening ${target} in ${label}…` : `Open ${target} in ${label}`}
+        busy={busy}
+        onClick={open}
+      />
+    </span>
   )
 }
 

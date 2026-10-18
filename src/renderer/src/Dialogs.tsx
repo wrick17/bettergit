@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig, ThemeMode } from '../../main/config'
+import { EDITORS, type EditorId } from '../../shared/editors'
 
 const api = window.bettergit
 
@@ -216,6 +217,17 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
           <div className="setting">
             <span>Theme</span>
             <Segmented label="Appearance" options={THEMES} value={settings.theme} onChange={(theme) => set({ theme })} />
+          </div>
+        </div>
+      </section>
+      <section className="settings-section">
+        <h3>Editor</h3>
+        <div className="settings-group">
+          <div className="setting">
+            <label htmlFor="editor-choice">Open files and repos in</label>
+            <select id="editor-choice" value={settings.editor} onChange={(event) => set({ editor: event.target.value as EditorId })}>
+              {(Object.keys(EDITORS) as EditorId[]).map((id) => <option key={id} value={id}>{EDITORS[id].label}</option>)}
+            </select>
           </div>
         </div>
       </section>

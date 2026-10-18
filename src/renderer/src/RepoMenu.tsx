@@ -19,10 +19,12 @@ interface RepoActions {
   onNote: (note: string) => void
   onError: (error: unknown) => void
   onDialog: (dialog: RepoDialog) => void
+  // The Open in … item. Omitted until the owner wires the launch, so no button shows without a working path.
+  editor?: { label: string; busy: boolean; onOpen: () => void }
 }
 
 // Repository actions for the toolbar, grouped as in Better Source Control. Dialogs open through onDialog.
-export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onDialog }: RepoActions): BarItem[] {
+export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onDialog, editor }: RepoActions): BarItem[] {
   // The running action shows its working label and spinner. Every other write in the repo is blocked and says why.
   const state = (key: string, label: string) => {
     const running = busy === key || (key === 'fetch' && busy === 'background-fetch')
@@ -43,9 +45,20 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     void run('reset', async () => onNote(`Backup kept at ${await api.resetToUpstream(repo)}`))
   }
 
+  // Read-only launch, so it stays usable while a Git write runs. Only its own spinner shows.
+  const openEditor: BarItem[] = editor ? [{
+    key: 'openEditor',
+    icon: 'externalLink',
+    label: editor.busy ? `Opening in ${editor.label}…` : `Open in ${editor.label}`,
+    busy: editor.busy,
+    group: 'view',
+    onClick: editor.onOpen,
+  }] : []
+
   return [
     { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick: () => onTab('history') },
     { key: 'copy', icon: 'copy', label: 'Copy Branch Name', group: 'view', disabled: !status?.head, onClick: copyBranch },
+    ...openEditor,
     { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch'), group: 'sync', onClick: () => void run('fetch', () => api.fetch(repo)) },
     { key: 'pullMerge', icon: 'pullMerge', ...state('pull-merge', 'Pull and Merge'), group: 'sync', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
     { key: 'pullRebase', icon: 'pullRebase', ...state('pull-rebase', 'Pull and Rebase'), group: 'sync', onClick: () => void run('pull-rebase', () => api.pull(repo, 'rebase')) },
