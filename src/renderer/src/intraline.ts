@@ -26,6 +26,8 @@ interface Compared {
 
 // Changed stretches of two paired lines, or null when they share too little to pair or are too long to compare.
 export function changedSpans(before: string, after: string): Compared | null {
+  // Each character makes at most one token, so a pair within this budget builds at most MAX_CELLS tokens.
+  if (before.length + after.length > MAX_CELLS) return null
   const a = tokenize(before)
   const b = tokenize(after)
   // Shared words at the start and end cost no table cells, so one edit in a long line stays cheap.
@@ -35,7 +37,8 @@ export function changedSpans(before: string, after: string): Compared | null {
   while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail].text === b[b.length - 1 - tail].text) tail++
   const middleA = a.slice(head, a.length - tail)
   const middleB = b.slice(head, b.length - tail)
-  if (middleA.length * middleB.length > MAX_CELLS) return null
+  // The table has a padding row and column, so an empty middle on one side still costs a cell per token on the other.
+  if ((middleA.length + 1) * (middleB.length + 1) > MAX_CELLS) return null
 
   const matchedA = new Array<boolean>(a.length).fill(false)
   const matchedB = new Array<boolean>(b.length).fill(false)

@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { parseDiff, type DiffLine } from '../src/main/git/diff'
 import { changedSpans, emphasize, intralineSpans, type Span } from '../src/renderer/src/intraline'
 
@@ -73,6 +73,24 @@ test('a long line with one edit is still compared cheaply, and a fully rewritten
     Array.from({ length: 600 }, (_, i) => `b${i}`).join(' '),
   )
   expect(rewritten).toBeNull()
+})
+
+test('a pair over the comparison budget is left plain without being tokenized, even against an empty line', () => {
+  // The tokenizer reads text only through matchAll. One mark per token is the costliest input it can get.
+  const matchAll = spyOn(String.prototype, 'matchAll')
+  try {
+    const over = '!'.repeat(200_001)
+    const half = '!'.repeat(50_000)
+    const results = [changedSpans(over, ''), changedSpans(`${half}a${half}`, `${half}b${half}`)]
+    expect(matchAll).not.toHaveBeenCalled()
+    expect(results).toEqual([null, null])
+    // Within the budget, marks and a surrogate pair still get exact UTF-16 offsets.
+    const marks = '!'.repeat(1000)
+    expect(changedSpans(`${marks}\u00e9\u{1F600}x`, `${marks}\u00e9\u{1F600}y`)).toEqual({ before: [[1003, 1004]], after: [[1003, 1004]] })
+    expect(matchAll).toHaveBeenCalledTimes(2)
+  } finally {
+    matchAll.mockRestore()
+  }
 })
 
 test('emphasis splits coloured segments without losing text or colour, even across markup boundaries', () => {
