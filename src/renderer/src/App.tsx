@@ -14,6 +14,7 @@ import { HistoryView } from './HistoryView'
 import { OverflowBar } from './OverflowBar'
 import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
 import { CloneDialog, SettingsDialog } from './Dialogs'
+import { BranchPicker } from './BranchPicker'
 import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { blockedReason, busyKey, connectRepoLocks, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
@@ -92,6 +93,7 @@ export function App() {
   selectedRef.current = selected
   useEffect(() => {
     const off = api.onEvent('menu:action', (payload) => {
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
       const repo = selectedRef.current
       // Menu writes take the same repo slot as the toolbar. A refused write says what is running instead of starting.
       const runRepo = (key: string, action: () => Promise<unknown>) => {
@@ -341,6 +343,7 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
   const busy = useRepoBusy(repo.path)
   const [note, setNote] = useState<string | null>(null)
   const [dialog, setDialog] = useState<RepoDialog | null>(null)
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false)
   const editorLaunch = useEditorLaunch(() => api.openInEditor(repo.path), onError)
 
   const load = useCallback(async () => {
@@ -382,22 +385,14 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
         <header className="toolbar">
           <div className="repo-title">
             <h1 className="repo-name">{repo.name}</h1>
-            <label className="branch-pill" title="Switch branch">
-              <Icon name="branch" />
+            <button type="button" className="branch-pill" title={blockedReason(busy) ?? 'Switch or create branch'}
+              aria-label="Switch or create branch" aria-haspopup="dialog" aria-expanded={branchPickerOpen}
+              aria-busy={busy === 'switch' || busy === 'create-branch' || undefined}
+              disabled={busy !== null || !status} onClick={() => setBranchPickerOpen(true)}>
+              <Icon name={busy === 'switch' || busy === 'create-branch' ? 'loader' : 'branch'} className={busy === 'switch' || busy === 'create-branch' ? 'action-spin' : undefined} />
               <span>{headLabel}</span>
               <Icon name="chevronDown" className="chevron-down" />
-              <select
-                value={status?.head ?? ''}
-                aria-label="Switch branch"
-                disabled={busy !== null}
-                onChange={(event) => run('switch', () => api.switchBranch(repo.path, event.target.value))}
-              >
-                {!status?.head && <option value="">(no branch)</option>}
-                {branches.filter((branch) => !branch.remote).map((branch) => (
-                  <option key={branch.name} value={branch.name}>{branch.name}</option>
-                ))}
-              </select>
-            </label>
+            </button>
             {status?.upstream && (
               <span className="sync" title={`Ahead/behind ${status.upstream}`}>
                 <span><b>{status.ahead}</b> ahead</span>
@@ -422,6 +417,8 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
         </header>,
         titlebar,
       )}
+      {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
+        onRefresh={load} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
         <nav

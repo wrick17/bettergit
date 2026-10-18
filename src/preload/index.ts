@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
+import type { Branch, BranchSelection } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { ConflictDocument, ConflictPreview, ConflictSave, ConflictSaved } from '../shared/conflict'
 
@@ -24,8 +25,9 @@ const api = {
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
   discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),
   commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
-  branches: (repo: string) => invoke('repo:branches', repo),
-  switchBranch: (repo: string, name: string) => invoke('repo:switch', repo, name),
+  branches: (repo: string) => invoke('repo:branches', repo) as Promise<Branch[]>,
+  switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,
+  createBranch: (repo: string, name: string, base: BranchSelection) => invoke('repo:create-branch', repo, name, base) as Promise<void>,
   fetch: (repo: string) => invoke('repo:fetch', repo),
   pull: (repo: string, mode?: 'merge' | 'rebase') => invoke('repo:pull', repo, mode),
   pullFrom: (repo: string, remote: string, branch: string) => invoke('repo:pull-from', repo, remote, branch),
