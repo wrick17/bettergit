@@ -108,7 +108,28 @@ function expand() {
   return request
 }
 
-if (process.env.CHECK_MODE === 'conflict-reset') {
+if (process.env.CHECK_MODE === 'toggle-cache') {
+  // A whitespace option loaded under the same status shows again at once, without a reload or a loading frame, and
+  // picking a file reuses its section's load. A refresh drops the loads, so the next toggle loads again.
+  for (const selected of [false, true]) {
+    await start(selected)
+    setIgnoreWhitespace(true); render()
+    await load('filtered')
+    const before = requests.length
+    setIgnoreWhitespace(false); render()
+    assert.equal(requests.length, before, 'a loaded option was fetched again')
+    assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'initial', 'the loaded option did not show at once')
+    find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+    await flush()
+    assert.equal(requests.length, before, 'picking a file reloaded its section')
+    props = { ...props, revision: 2 }; render()
+    await load('refreshed')
+    setIgnoreWhitespace(true); render()
+    assert.ok(requests.slice(before).some((r) => !r.done && r.args[4] === true), 'a refresh kept the old whitespace load')
+    setIgnoreWhitespace(false)
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'conflict-reset') {
   const { parseConflicts, conflictBlocks } = await import('./src/shared/conflict')
   const loads = [], resets = [], confirms = []
   let answer = true
@@ -270,7 +291,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     setIgnoreWhitespace(true); render()
     assert.ok(requests.filter((r) => !r.done && r.args[3] === undefined).every((r) => r.args[4] === true))
     await settle(new Error('filtered load failed'))
-    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: filtered load failed'))
+    assert.deepEqual(errors, ['Error: filtered load failed'])
     // The failure stays on screen in place of the changes, with the toolbar mounted so the option can be changed back.
     for (let pass = 0; pass < 2; pass++) {
       for (const view of views(selected)) {
@@ -309,7 +330,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     render()
     for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) { request.done = true; request.reject(new Error('first load failed')) }
     await flush()
-    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: first load failed'))
+    assert.deepEqual(errors, ['Error: first load failed'])
     for (let pass = 0; pass < 2; pass++) {
       for (const view of views(selected)) {
         assert.ok(view, 'no diff toolbar after a failed first load')
@@ -372,7 +393,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     await settle(true, new Error('refresh failed'))
     assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
     for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
-    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: refresh failed'))
+    assert.deepEqual(errors, ['Error: refresh failed'])
     unmount()
   }
 } else if (process.env.CHECK_MODE === 'option-scroll') {
@@ -418,14 +439,15 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   frame(); frame()
   assert.equal(pane.scrollTop, 900, 'scroll position lost across an option reload')
   assert.deepEqual(await saved(), { key: 'all', value: 900 }, 'the clamp to the top was saved')
-  // Picking a file while an option reload runs leaves that file to its own reveal, not the old position.
-  setIgnoreWhitespace(false); render()
+  // Picking a file while an option reload runs leaves that file to its own reveal, not the old position. A context
+  // not loaded yet reloads; the whitespace option loaded before would show at once.
+  setContextLines(10); render()
   frame()
   find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
   await load('picked')
   frame(); frame(); frame()
   assert.notEqual(pane.scrollTop, 900, 'old view position restored into a picked file')
-  setIgnoreWhitespace(false)
+  setIgnoreWhitespace(false); setContextLines(3)
   unmount()
 } else if (process.env.CHECK_MODE === 'status-loads') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
@@ -451,7 +473,8 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     assert.equal(JSON.stringify(diff().files), beforeReply, mode + ': old base load replaced the current source')
     assert.deepEqual(errors, [], mode + ': obsolete status error reached onError')
     assert.deepEqual(JSON.parse(stored.get('bettergit.session')).places['/repo'].widened, {})
-    assert.equal(currentLoads.length, mode === 'all' ? 2 : 3, mode + ': status must start fresh base loads')
+    // The selected section shares the all view's load of that section.
+    assert.equal(currentLoads.length, 2, mode + ': status must start fresh base loads')
     const current = working('current')
     current.files = current.files.filter((file) => file.newPath === 'b.ts')
     for (const request of currentLoads) { request.done = true; request.resolve(current) }
@@ -461,12 +484,12 @@ if (process.env.CHECK_MODE === 'commit-draft') {
       assert.deepEqual(view.files.map((file) => file.newPath), ['b.ts'], mode + ': obsolete a.ts leaked')
       assert.equal(view.files[0].hunks[0].lines.at(-1).text, 'current')
     }
-    // A later failure for the current status must still report from each active loader.
+    // A later failure for the current status still reports, once per failed load.
     props = { ...props, status: { changes: [change('b.ts')] } }; render()
     const active = requests.filter((r) => !r.done && r.args[3] === undefined)
     for (const request of active) { request.done = true; request.reject(new Error('active status failure')) }
     await flush()
-    assert.equal(errors.length, mode === 'all' ? 1 : 2)
+    assert.equal(errors.length, 1)
     assert.ok(errors.every((error) => error === 'Error: active status failure'))
     unmount()
   }
@@ -480,7 +503,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
       request.done = true; request.reject(new Error('current base failure'))
     }
     await flush()
-    assert.equal(errors.length, selected ? 2 : 1)
+    assert.equal(errors.length, 1)
     const baseErrors = [...errors]
     currentWiden.done = true
     if (reject) currentWiden.reject(new Error('current widen failure'))
@@ -608,4 +631,5 @@ test('a failed load with new whitespace options shows the failure in place of th
 test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))
 test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
+test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

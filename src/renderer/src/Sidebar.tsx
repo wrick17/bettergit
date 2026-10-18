@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type Mous
 import { createPortal } from 'react-dom'
 import type { AppConfig } from '../../main/config'
 import type { TreeNode } from '../../main/scan'
-import { Icon, IconButton } from './Icons'
+import { Icon, IconButton, toggleLabel } from './Icons'
 import { FolderIcon } from './FileIcon'
 import { useScrollMemory } from './session'
 import type { FoldHold } from './fold'
@@ -119,7 +119,7 @@ export function Sidebar(props: SidebarProps) {
           </div>
           <IconButton
             icon="eye"
-            label="Show hidden repositories"
+            label={showHidden ? toggleLabel('Hidden repositories: shown', 'hide them') : toggleLabel('Hidden repositories: hidden', 'show them')}
             active={showHidden}
             onClick={() => setShowHidden((value) => !value)}
           />

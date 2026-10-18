@@ -12,6 +12,7 @@ export type MenuAction =
   | 'stash'
   | 'show-changes'
   | 'show-history'
+  | 'find'
   | 'search-history'
   | 'toggle-sidebar'
   | 'reveal-repo'
@@ -71,7 +72,9 @@ export function buildMenu(handlers: MenuHandlers): Menu {
         { role: 'paste' },
         { role: 'selectAll' },
         { type: 'separator' },
-        { label: 'Find in History', accelerator: 'Cmd+F', click: () => handlers.send('search-history') },
+        // Find searches the diffs on screen; its next and previous keys (⌘G, ⇧⌘G) are handled by the find bar itself.
+        { label: 'Find…', accelerator: 'Cmd+F', click: () => handlers.send('find') },
+        { label: 'Find in History', accelerator: 'Alt+Cmd+F', click: () => handlers.send('search-history') },
       ],
     },
     {

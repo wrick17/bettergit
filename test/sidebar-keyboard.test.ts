@@ -17,7 +17,7 @@ beforeAll(async () => {
     'react/jsx-runtime': jsx,
     'react/jsx-dev-runtime': jsxDev,
     'react-dom': { createPortal: (node: unknown) => node },
-    './Icons': { Icon: () => null, IconButton: () => null },
+    './Icons': { Icon: () => null, IconButton: () => null, toggleLabel: (state: string, action: string) => `${state} — click to ${action}` },
     './FileIcon': { FolderIcon: () => null },
     './session': { useScrollMemory: () => () => {} },
   }

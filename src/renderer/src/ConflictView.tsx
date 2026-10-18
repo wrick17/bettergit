@@ -167,7 +167,7 @@ function ConflictControls({ index, total, choice, combine, disabled, onChoose, s
           className="conflict-choice"
           aria-pressed={choice === kind}
           disabled={disabled}
-          title={hint}
+          title={choice === kind ? `${label}: chosen — click to clear this choice. ${hint}` : `${label}: not chosen — click to choose it. ${hint}`}
           onClick={() => onChoose(index, choice === kind ? null : kind)}
         >
           {label}

@@ -17,6 +17,8 @@ import { loadSession, rememberScroll, savePlace, savedView, saveView, useScrollM
 
 const api = window.bettergit
 const PAGE = 300
+const COMMIT_CACHE = 24
+type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
 // Geometry and colors match better-source-control's graph, so the two read the same.
 const LANE_WIDTH = 11
 const ROW_HEIGHT = 28
@@ -86,6 +88,29 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const pageBusy = useRef(false)
   const errorRef = useRef(onError)
   errorRef.current = onError
+  // A commit's diff never changes for its hash, so each one loaded with a context and whitespace option is kept while
+  // the view is open. Selecting it again or toggling back shows it at once. Loads in flight are shared.
+  const commits_ = useRef({ pending: new Map<string, Promise<CommitDetail>>(), done: new Map<string, CommitDetail>() })
+  const loadCommit = (hash: string, hideWhitespace: boolean) => {
+    const { pending, done } = commits_.current
+    const key = JSON.stringify([repo, hash, context, hideWhitespace])
+    let load = pending.get(key)
+    if (!load) {
+      load = api.commit(repo, hash, context, hideWhitespace) as Promise<CommitDetail>
+      load.then((next) => {
+        done.set(key, next)
+        // shortcut: keeps the newest COMMIT_CACHE loads by insertion order; enough for toggling and stepping back and forth.
+        if (done.size > COMMIT_CACHE) {
+          const oldest = done.keys().next().value!
+          done.delete(oldest)
+          pending.delete(oldest)
+        }
+      }, () => { pending.delete(key) })
+      pending.set(key, load)
+    }
+    return load
+  }
+  const cached = selected ? commits_.current.done.get(JSON.stringify([repo, selected, context, ignoreWhitespace])) : undefined
 
   useEffect(() => {
     const gen = ++generation.current
@@ -117,10 +142,13 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     // The commit is already on screen, so this load is a reload for another option or context.
     const reload = detail?.hash === selected
     setFailed(null)
-    api.commit(repo, selected, context, ignoreWhitespace).then((next) => {
+    loadCommit(selected, ignoreWhitespace).then((next) => {
       // Tagged with its hash, so a reply that lands after the selection moved is never shown, and with its option,
       // so its hunks are never shown under the other one.
-      if (!stale) setDetail({ hash: selected, ignoreWhitespace, ...next })
+      if (stale) return
+      setDetail({ hash: selected, ignoreWhitespace, ...next })
+      // The other whitespace option loads while the window is idle, so its toggle shows without waiting.
+      window.requestIdleCallback?.(() => { if (!stale) loadCommit(selected, !ignoreWhitespace).catch(() => undefined) }, { timeout: 500 })
     }).catch((failure: unknown) => {
       if (stale) return
       // A saved commit that no longer exists (rebased away, for example) must not leave the detail on "Loading…".
@@ -212,7 +240,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const onListScroll = useScrollMemory(list.pane, `${repo}|history-list`, 'list', rows.length > 0)
   // The diff on screen: the compare, or else the commit's own diff, each only for the whitespace option it was fetched with.
   // After a toggle the heading and toolbar stay, and the diff shows loading until its reply.
-  const patch = compare ?? (current?.ignoreWhitespace === ignoreWhitespace ? current : null)
+  const patch = compare ?? (current?.ignoreWhitespace === ignoreWhitespace ? current : cached ?? null)
   const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', patch !== null)
   // The diff's last scroll position for the commit on screen, and the view it was in: the commit's own diff or a compare.
   // A whitespace reload shows no hunks, so the pane clamps to the top. The position waits for the reply with the same view,

@@ -46,41 +46,64 @@ export function languageFor(filePath: string, overrides: Record<string, string>)
   return language && language in bundledLanguages ? language : null
 }
 
-// Re-rendering must not re-tokenise the same code. Clearing the whole cache when full is simpler than LRU
-// and costs little, since evicted entries are only re-tokenised once.
-const CACHE_LIMIT = 400
+// Re-rendering or remounting must not re-tokenise the same code. Clearing the whole cache when full is simpler than LRU
+// and costs little, since evicted entries are only re-tokenised once. The bound is in lines, since one entry can be a whole file.
+const CACHE_LINES = 200_000
 const cache = new Map<string, Segment[][]>()
+let cachedLines = 0
 
 // Returns one list of coloured segments per input line. Falls back to plain text whenever colouring fails.
-export async function highlightLines(lines: string[], language: string | null): Promise<Segment[][]> {
-  const code = lines.join('\n')
+export async function highlightLines(lines: string[], language: string | null, stale?: () => boolean): Promise<Segment[][]> {
+  return (await tokenize(lines.join('\n'), language, stale)) ?? lines.map((text) => [{ text }])
+}
+
+// Lines tokenised between yields. Tokenising runs on the main thread, so it stops every few milliseconds to let input
+// and frames through: a whole large file takes the same total time, but the window stays responsive meanwhile.
+const SLICE_LINES = 40
+const SLICE_MS = 6
+const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+// Null when the code is not coloured, or when `stale` turns true before it finishes (such as text typed since).
+export async function tokenize(code: string, language: string | null, stale?: () => boolean): Promise<Segment[][] | null> {
+  if (!language || code.length > MAX_HIGHLIGHT_CHARS) return null
   const key = `${language}\n${code}`
   const cached = cache.get(key)
   if (cached) return cached
-  const segments = await tokenize(code, language)
-  if (!segments) return lines.map((text) => [{ text }])
-  if (cache.size >= CACHE_LIMIT) cache.clear()
-  cache.set(key, segments)
-  return segments
-}
-
-// Uncached, for text that changes on every keystroke. Null when the code is not coloured.
-export async function tokenize(code: string, language: string | null): Promise<Segment[][] | null> {
-  if (!language || code.length > MAX_HIGHLIGHT_CHARS) return null
   try {
     const shiki = await getHighlighter()
     if (!shiki.getLoadedLanguages().includes(language)) {
       await shiki.loadLanguage(bundledLanguages[language as BundledLanguage]())
     }
-    const tokens = shiki.codeToTokensWithThemes(code, {
-      lang: language,
-      themes: { light: 'github-light', dark: 'github-dark' },
-    })
-    return tokens.map((line) => line.map((token) => ({
-      text: token.content,
-      light: token.variants.light?.color,
-      dark: token.variants.dark?.color,
-    })))
+    const lines = code.split('\n')
+    const out: Segment[][] = []
+    let grammarState: ReturnType<typeof shiki.getLastGrammarState> | undefined
+    let sliceStart = performance.now()
+    for (let index = 0; index < lines.length; index += SLICE_LINES) {
+      if (performance.now() - sliceStart > SLICE_MS) {
+        await nextTask()
+        if (stale?.()) return null
+        sliceStart = performance.now()
+      }
+      // The grammar state carries open strings and comments across slices, so colours match one whole-file pass.
+      const tokens = shiki.codeToTokensWithThemes(lines.slice(index, index + SLICE_LINES).join('\n'), {
+        lang: language,
+        themes: { light: 'github-light', dark: 'github-dark' },
+        grammarState,
+      })
+      grammarState = shiki.getLastGrammarState(tokens)
+      for (const line of tokens) out.push(line.map((token) => ({
+        text: token.content,
+        light: token.variants.light?.color,
+        dark: token.variants.dark?.color,
+      })))
+    }
+    if (cachedLines + out.length > CACHE_LINES) {
+      cache.clear()
+      cachedLines = 0
+    }
+    cache.set(key, out)
+    cachedLines += out.length
+    return out
   } catch {
     return null
   }
@@ -88,9 +111,10 @@ export async function tokenize(code: string, language: string | null): Promise<S
 
 // Colours every line of a file, grouped the same way as its hunks. Hunks are coloured as one block,
 // so a token that spans two hunks may be coloured slightly differently than in the full file.
-export async function highlightFile(file: DiffFile, overrides: Record<string, string>): Promise<Segment[][][]> {
+// A run cut short by `stale` returns plain text, which the caller drops.
+export async function highlightFile(file: DiffFile, overrides: Record<string, string>, stale?: () => boolean): Promise<Segment[][][]> {
   const flat = file.hunks.flatMap((hunk) => hunk.lines.map((line) => line.text))
-  const segments = await highlightLines(flat, languageFor(file.newPath ?? file.oldPath ?? '', overrides))
+  const segments = await highlightLines(flat, languageFor(file.newPath ?? file.oldPath ?? '', overrides), stale)
   let cursor = 0
   return file.hunks.map((hunk) => hunk.lines.map(() => {
     const line = segments[cursor] ?? [{ text: flat[cursor] }]

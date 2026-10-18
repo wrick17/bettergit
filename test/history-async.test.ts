@@ -246,7 +246,7 @@ console.log('first commit and author filter cases passed')
 
 // A whitespace toggle refetches the commit. Until that reply, hunks fetched with the other option are not shown;
 // the heading and the diff toolbar stay. A reply for an option already left is dropped.
-const { setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
+const { setContextLines, setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
 const diffView = () => find(tree, (p) => Array.isArray(p.files) && p.persist)
 const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)?.files.map((file) => file.path)
 const reply = (hash, option, label) => {
@@ -257,28 +257,26 @@ const reply = (hash, option, label) => {
 }
 await mount({ places: { '/repo': { commit: 'A' } } })
 await reply('A', false, 'shown')
-for (const [option, label] of [[true, 'hidden'], [false, 'shown-again']]) {
-  setIgnoreWhitespace(option); render(); await flush()
-  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] }, 'old hunks shown under the toggled option')
-  assert.equal(diffView().emptyHint, 'Loading…')
-  assert.deepEqual(stat(), [])
-  await reply('A', option, label)
-  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [label + '.ts'] })
-  assert.equal(diffView().emptyHint, undefined)
-}
 setIgnoreWhitespace(true); render(); await flush()
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] }, 'old hunks shown under the toggled option')
+assert.equal(diffView().emptyHint, 'Loading…')
+assert.deepEqual(stat(), [])
+await reply('A', true, 'hidden')
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden.ts'] })
+assert.equal(diffView().emptyHint, undefined)
+// Toggling back to an option already loaded for this commit shows its diff at once, without fetching it again.
+const fetched = calls.commit.length
 setIgnoreWhitespace(false); render(); await flush()
-await reply('A', true, 'obsolete')
-assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['shown-again.ts'] }, 'obsolete reply shown')
-// With a compare open, the fallback to the commit's own diff also waits for the option it was fetched with.
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['shown.ts'] }, 'loaded option not shown at once')
+assert.equal(calls.commit.length, fetched, 'loaded option fetched again')
+// With a compare open, the fallback to the commit's own diff is shown only for the option it was fetched with: here
+// the loaded own diff for the new option, while the compare refetches.
 compareBase()
 await answer(calls.mergeBase, 'H', () => 'BASE-A')
 await answer(calls.compare, 'A', () => ({ files: files('vs-shown'), moves: [] }))
 assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-shown.ts'] })
 setIgnoreWhitespace(true); render(); await flush()
-assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: [] })
-await reply('A', true, 'hidden-own')
-assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden-own.ts'] })
+assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden.ts'] })
 await answer(calls.compare, 'A', () => ({ files: files('vs-hidden'), moves: [] }))
 assert.deepEqual(shown(), { heading: 'subject A', bar: 'compare', files: ['vs-hidden.ts'] })
 // Moving to another commit still unmounts the diff until that commit's reply.
@@ -287,6 +285,12 @@ render()
 assert.equal(diffView(), undefined)
 await reply('B', true, 'b-hidden')
 assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-hidden.ts'] })
+// A reply for an option already left is dropped.
+setIgnoreWhitespace(false); render(); await flush()
+assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: [] })
+setIgnoreWhitespace(true); render(); await flush()
+await reply('B', false, 'obsolete')
+assert.deepEqual(shown(), { heading: 'subject B', bar: null, files: ['b-hidden.ts'] }, 'obsolete reply shown')
 setIgnoreWhitespace(false)
 unmount()
 
@@ -343,8 +347,9 @@ unmount()
   assert.equal(diffView().emptyHint, 'Loading…')
   await reply('A', true, 'hidden')
   assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['hidden.ts'] })
-  // A failure that lands after another commit was selected changes nothing either.
-  setIgnoreWhitespace(false); render(); await flush()
+  // A failure that lands after another commit was selected changes nothing either. The option loaded before shows from
+  // the cache, so a context not loaded yet starts the load that fails late.
+  setIgnoreWhitespace(false); setContextLines(10); render(); await flush()
   find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
   render(); await reply('B', false, 'b-shown')
   await fail('A', false)
@@ -357,6 +362,7 @@ unmount()
   assert.equal(place(), undefined)
   assert.deepEqual(errors, ['git failed', 'git failed'])
   unmount()
+  setContextLines(3)
   props.onError = throwing
 }
 console.log('whitespace toggle cases passed')
@@ -452,9 +458,9 @@ console.log('whitespace toggle cases passed')
   assert.deepEqual(await savedTop(), { key: 'A', value: 900 }, 'the fallback position was saved')
   // Leaving the commit while its comparison wait is pending drops the wait: an obsolete comparison reply changes nothing,
   // and the next commit pane is not moved to the old position.
+  // The commit's own diff for this option was loaded before, so it shows from the cache without a reply.
   setIgnoreWhitespace(false); render(); await flush()
   frame(comparePane)
-  await short('A', false)
   find(tree, (p) => p.row?.commit.hash === 'B').onSelect()
   render()
   const nextPane = makePane()

@@ -20,7 +20,9 @@ const { DiffView } = await import('./src/renderer/src/DiffView')
 const { EditorContext } = await import('./src/renderer/src/editor-launch')
 // EDITOR_SOURCE renders one deleted file under an editor bridge for that view.
 const source = process.env.EDITOR_SOURCE
-const files = source ? [{ oldPath: 'gone.txt', newPath: null, status: 'deleted', binary: true, hunks: [] }] : []
+// MARKDOWN_FILE adds one binary Markdown file, so the formatting toggle shows.
+const files = source ? [{ oldPath: 'gone.txt', newPath: null, status: 'deleted', binary: true, hunks: [] }]
+  : process.env.MARKDOWN_FILE ? [{ oldPath: 'notes.md', newPath: 'notes.md', status: 'modified', binary: true, hunks: [] }] : []
 // The staged section passes a stage control, as ChangesView does.
 const stage = process.env.STAGED ? { staged: true, onToggle: () => undefined } : undefined
 const view = createElement(DiffView, { files, moves: [], stage })
@@ -28,19 +30,19 @@ const bridge = { editor: 'vscode', openFile: async () => undefined, onError: () 
 console.log(JSON.stringify(renderToStaticMarkup(source ? createElement(EditorContext.Provider, { value: bridge }, view) : view)))
 `
 
-function renderEmpty(ignoreWhitespace: 'true' | 'false', formatMarkdown?: 'true' | 'false', editorSource?: 'working' | 'commit', staged?: boolean): string {
+function renderEmpty(ignoreWhitespace: 'true' | 'false', formatMarkdown?: 'true' | 'false', editorSource?: 'working' | 'commit', staged?: boolean, markdownFile?: boolean): string {
   const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], {
     cwd: `${import.meta.dir}/..`,
-    env: { ...process.env, IGNORE_WHITESPACE: ignoreWhitespace, FORMAT_MARKDOWN: formatMarkdown, EDITOR_SOURCE: editorSource, STAGED: staged ? '1' : '' },
+    env: { ...process.env, IGNORE_WHITESPACE: ignoreWhitespace, FORMAT_MARKDOWN: formatMarkdown, EDITOR_SOURCE: editorSource, STAGED: staged ? '1' : '', MARKDOWN_FILE: markdownFile ? '1' : '' },
     stderr: 'pipe',
   })
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   return JSON.parse(child.stdout.toString().trim())
 }
 
-// The opening tag of the Hide whitespace button, so its attributes can be checked without matching the whole markup.
+// The opening tag of the whitespace button, so its attributes can be checked without matching the whole markup.
 function whitespaceButton(html: string): string {
-  return html.match(/<button[^>]*aria-label="Hide whitespace"[^>]*>/)?.[0] ?? ''
+  return html.match(/<button[^>]*aria-label="Whitespace changes:[^"]*"[^>]*>/)?.[0] ?? ''
 }
 
 test('an empty filtered diff keeps the Hide whitespace button pressed and actionable', () => {
@@ -48,6 +50,7 @@ test('an empty filtered diff keeps the Hide whitespace button pressed and action
   expect(html).toContain('Whitespace changes are hidden')
   const button = whitespaceButton(html)
   expect(button).toContain('aria-pressed="true"')
+  expect(button).toContain('aria-label="Whitespace changes: hidden — click to show them"')
   expect(button).not.toContain('disabled')
 })
 
@@ -55,20 +58,23 @@ test('an empty diff with the option off shows the plain message and an unpressed
   const html = renderEmpty('false')
   expect(html).toContain('No changes in this view.')
   expect(whitespaceButton(html)).toContain('aria-pressed="false"')
+  expect(whitespaceButton(html)).toContain('aria-label="Whitespace changes: shown — click to hide them"')
 })
 
-test('Format Markdown defaults to raw and restores its pressed state before the final whitespace control', () => {
+test('Format Markdown shows only with a Markdown file, says its state, and sits left of the fixed layout and whitespace controls', () => {
+  expect(renderEmpty('true', 'true')).not.toContain('Formatted Markdown')
   for (const saved of [undefined, 'true', 'false'] as const) {
-    const html = renderEmpty('true', saved)
-    const button = html.match(/<button[^>]*aria-label="Format Markdown"[^>]*>/)?.[0] ?? ''
+    const html = renderEmpty('true', saved, undefined, false, true)
+    const button = html.match(/<button[^>]*aria-label="Formatted Markdown:[^"]*"[^>]*>/)?.[0] ?? ''
     expect(button).toContain(`aria-pressed="${saved === 'true'}"`)
+    expect(button).toContain(saved === 'true' ? 'Formatted Markdown: on — click to show the raw source' : 'Formatted Markdown: off — click to format Markdown')
     expect(button).not.toContain('disabled')
-    expect(button).toContain('visible Markdown hunk fragments')
-    const content = html.match(/<button[^>]*aria-label="Format Markdown"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? ''
+    const content = html.match(/<button[^>]*aria-label="Formatted Markdown:[^"]*"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? ''
     expect(content).toContain('<svg')
     expect(content.replace(/<[^>]*>/g, '')).toBe('')
-    const buttons = [...html.matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map((match) => match[1])
-    expect(buttons.slice(-2)).toEqual(['Format Markdown', 'Hide whitespace'])
+    const toolbar = html.slice(0, html.indexOf('<section'))
+    const buttons = [...toolbar.matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map((match) => match[1].split(':')[0])
+    expect(buttons.slice(-4)).toEqual(['Formatted Markdown', 'Unified layout', 'Split layout', 'Whitespace changes'])
   }
 })
 

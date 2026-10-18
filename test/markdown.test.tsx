@@ -278,6 +278,8 @@ react.useState = value => { const state = slot(() => ({ value: typeof value === 
 react.useEffect = () => undefined
 react.useMemo = compute => compute()
 react.useId = () => 'move-geometry'
+react.useDeferredValue = value => value
+react.useCallback = callback => callback
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 react.useLayoutEffect = (effect, deps) => {
   const state = slot(() => ({}))
@@ -369,6 +371,8 @@ react.useState = (value) => {
 react.useEffect = () => undefined
 react.useMemo = (compute) => compute()
 react.useId = () => 'anchor-test'
+react.useDeferredValue = (value) => value
+react.useCallback = (callback) => callback
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 react.useLayoutEffect = (effect, deps) => {
   const state = slot(() => ({}))
@@ -381,7 +385,7 @@ const prefs = await import('./src/renderer/src/prefs')
 const flush = () => { for (const effect of effects.splice(0)) effect() }
 const findButton = (node) => {
   if (!node || typeof node !== 'object') return
-  if (node.props?.['aria-label'] === 'Format Markdown') return node
+  if (node.props?.icon === 'markdown') return node
   for (const child of [node.props?.children].flat(Infinity)) {
     const found = findButton(child)
     if (found) return found
@@ -473,7 +477,7 @@ test('formatting preserves patch order, pairing, gutters, move targets, signs, s
     expect(html).toContain('md-moved-text')
     expect(html).toContain('aria-label="1 added, 2 removed"')
     expect(html).toContain('aria-label="Stage move.md" disabled=""')
-    expect(html).toContain('aria-label="Collapse move.md"')
+    expect(html).toContain('aria-label="move.md: expanded — click to collapse it"')
     expect(html).toContain('@@ empty @@')
     expect(html).toContain('data-path="header.MD"')
     expect(html).toContain('<span class="gutter">7</span>')
@@ -504,12 +508,12 @@ test('formatting keeps collapse persistence and restores raw content across both
   expect(html).toContain('401 changed lines hidden')
   expect(html).not.toContain('Hidden 400')
   expect(html).not.toContain('Saved closed')
-  expect(html).toContain('aria-label="Expand remembered.md"')
+  expect(html).toContain('aria-label="remembered.md: collapsed — click to expand it"')
   expect(otherView).toBe(html)
   expect(reset).toContain('<code># Visible</code>')
   expect(reset).not.toContain('<h1')
   expect(stored['bettergit.formatMarkdown']).toBe('false')
-  expect(render(files, 'unified', false, [], stored).html).toContain('aria-label="Format Markdown" aria-pressed="false"')
+  expect(render(files, 'unified', false, [], stored).html).toContain('aria-label="Formatted Markdown: off — click to format Markdown" aria-pressed="false"')
 })
 
 test('formatting parses only open Markdown files; expanding builds the plan, raw and conflict views never parse', () => {
@@ -543,7 +547,7 @@ test('a Markdown hunk too large to format, counting its context, shows the raw d
     const { html, parsed } = render([file(`large-${name}.md`, lines)], layout)
     expect(parsed).toEqual([])
     expect(html).toContain('Too large to format as Markdown. Showing the source diff.')
-    expect(html).toContain('aria-label="Format Markdown" aria-pressed="true"')
+    expect(html).toContain('aria-label="Formatted Markdown: on — click to show the raw source" aria-pressed="true"')
     expect(html).not.toContain('md-hunk')
     expect(html).toContain(`<code>${lines[0].text}</code>`)
     expect(html).toContain(`<code>${lines.at(-3)!.text}</code>`)

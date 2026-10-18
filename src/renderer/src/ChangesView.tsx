@@ -4,7 +4,7 @@ import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { DiffView } from './DiffView'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
 import { FileIcon, FolderIcon } from './FileIcon'
-import { Icon, IconButton } from './Icons'
+import { Icon, IconButton, toggleLabel } from './Icons'
 import { EmptyState } from './EmptyState'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
@@ -29,6 +29,9 @@ interface Props {
 }
 
 type Working = { files: DiffFile[]; moves: MovedBlock[] }
+// Loads of one status, revision, context and widening (`of`), keyed by loadKey.
+interface Loads { of: unknown[]; pending: Map<string, Promise<Working>>; done: Map<string, Working> }
+const loadKey = (staged: boolean, hideWhitespace: boolean) => `${staged} ${hideWhitespace}`
 type Stats = { add: number; del: number }
 type Section = 'staged' | 'unstaged'
 type View = 'list' | 'tree'
@@ -100,10 +103,19 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const diffKey = section === null ? null : JSON.stringify([repo, section, context, ignoreWhitespace])
   const allFor = useRef<string | null>(null)
   const diffFor = useRef<string | null>(null)
+  // The working diffs loaded for this status, revision, context and widening, by section and whitespace option. A refresh
+  // or a widen starts a new set. Toggling whitespace back, or picking a file, reads a loaded diff at once instead of reloading.
+  const loadsRef = useRef<Loads | null>(null)
+  const loadsFor = [repo, status, revision, context, extra]
+  if (!loadsRef.current || loadsRef.current.of.some((value, index) => value !== loadsFor[index])) {
+    loadsRef.current = { of: loadsFor, pending: new Map(), done: new Map() }
+  }
+  const loaded = (isStaged: boolean) => loadsRef.current!.done.get(loadKey(isStaged, ignoreWhitespace))
   // A result, or the failure of its load, shows only for the view and options it was loaded for. While a load for the
   // view on screen runs, its toolbar shows loading in place of hunks and counts from other options.
-  const allShown = all && allFor.current === allKey ? all : null
-  const diffShown = diff && diffFor.current === diffKey ? diff : null
+  const cachedAll = loaded(true) && loaded(false)
+  const allShown = all && allFor.current === allKey ? all : cachedAll ? { staged: loaded(true)!, unstaged: loaded(false)! } : null
+  const diffShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? null
   const stagedShown = allShown?.staged
   const unstagedShown = allShown?.unstaged
   const scrollKey = section === null ? 'all' : `${section}`
@@ -186,16 +198,18 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   useEffect(() => {
     let stale = false
     const key = allKey
-    Promise.all([api.working(repo, true, context, undefined, ignoreWhitespace), api.working(repo, false, context, undefined, ignoreWhitespace)]).then(async ([stagedDiff, unstagedDiff]: Working[]) => {
-      const [nextStaged, nextUnstaged] = await Promise.all([
-        widen(repo, stagedDiff, true, extraRef.current),
-        widen(repo, unstagedDiff, false, extraRef.current),
-      ])
+    const loads = loadsRef.current!
+    Promise.all([loadWorking(loads, true, ignoreWhitespace), loadWorking(loads, false, ignoreWhitespace)]).then(([nextStaged, nextUnstaged]) => {
       if (!stale) {
         const next = { staged: nextStaged, unstaged: nextUnstaged }
         if (currentRequest.current) currentRequest.current.all = next
         allFor.current = key
         setAll(next)
+        // The other whitespace option loads while the window is idle, so its toggle shows without waiting.
+        window.requestIdleCallback?.(() => {
+          if (loadsRef.current !== loads) return
+          for (const isStaged of [true, false]) loadWorking(loads, isStaged, !ignoreWhitespace).catch(() => undefined)
+        }, { timeout: 500 })
       }
     }).catch((failure: unknown) => {
       if (stale) return
@@ -219,8 +233,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     }
     let stale = false
     const key = diffKey
-    api.working(repo, section, context, undefined, ignoreWhitespace)
-      .then((next: Working) => widen(repo, next, section, extraRef.current))
+    loadWorking(loadsRef.current!, section, ignoreWhitespace)
       .then((next) => {
         if (!stale) {
           if (currentRequest.current) currentRequest.current.diff = next
@@ -228,10 +241,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           setDiff(next)
         }
       })
-      .catch((failure: unknown) => {
-        if (stale) return
-        errorRef.current(failure)
-        if (diffFor.current === key) return
+      .catch(() => {
+        // The all view's loader shares this load and reports its failure, so it is reported once.
+        if (stale || diffFor.current === key) return
         diffFor.current = key
         if (currentRequest.current) currentRequest.current.diff = LOAD_FAILED
         setDiff(LOAD_FAILED)
@@ -397,14 +409,27 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     })
   }
 
+  // One load per section and option in a set: the section view and the all view share it, and a failed load is retried.
+  function loadWorking(loads: Loads, isStaged: boolean, hideWhitespace: boolean): Promise<Working> {
+    const key = loadKey(isStaged, hideWhitespace)
+    let load = loads.pending.get(key)
+    if (!load) {
+      load = api.working(repo, isStaged, context, undefined, hideWhitespace)
+        .then((next: Working) => widen(repo, next, isStaged, extraRef.current, hideWhitespace))
+      load.then((next) => { loads.done.set(key, next) }, () => { loads.pending.delete(key) })
+      loads.pending.set(key, load)
+    }
+    return load
+  }
+
   // Reloads each widened file at its own level, so a global reload does not undo an expansion.
-  async function widen(repoPath: string, working: Working, isStaged: boolean, levels: Record<string, number>): Promise<Working> {
+  async function widen(repoPath: string, working: Working, isStaged: boolean, levels: Record<string, number>, hideWhitespace: boolean): Promise<Working> {
     const prefix = levelKey(isStaged, '')
     let next = working
     for (const [key, level] of Object.entries(levels)) {
       if (!key.startsWith(prefix)) continue
       const path = key.slice(prefix.length)
-      const fresh: Working = await api.working(repoPath, isStaged, level, path, ignoreWhitespace)
+      const fresh: Working = await api.working(repoPath, isStaged, level, path, hideWhitespace)
       if (fresh.files[0]) next = replaceFile(next, path, fresh.files[0])
     }
     return next
@@ -432,8 +457,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           <div className="file-list-head">
             <span className="file-list-title">Files</span>
             <div className="changes-view-toggle" role="group" aria-label="File list layout">
-              <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
-              <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
+              <IconButton icon="listFlat" label={view === 'list' ? 'List view: on' : toggleLabel('List view: off', 'show files as a flat list')} active={view === 'list'} onClick={() => chooseView('list')} />
+              <IconButton icon="listTree" label={view === 'tree' ? 'Tree view: on' : toggleLabel('Tree view: off', 'show files in folders')} active={view === 'tree'} onClick={() => chooseView('tree')} />
             </div>
           </div>
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>

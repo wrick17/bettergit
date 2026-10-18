@@ -53,6 +53,8 @@ interface Draft {
   revert?: () => void
 }
 const drafts = new Map<string, Draft>()
+// The editor mounted in each `.diff-editor` host, so find can reveal a line in it.
+export const mountedEditors = new WeakMap<Element, Mounted>()
 const draftListeners = new Set<() => void>()
 const keyOf = (repo: string, path: string) => `${repo}\0${path}`
 const dirty = (draft: Draft | undefined) => !!draft && draft.text !== draft.loaded
@@ -190,8 +192,9 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
         setDraft(key, { ...drafts.get(key)!, text: entry.loaded })
       }
       setDraft(key, { path, loaded, text: dirty(draft) ? draft!.text : loaded, revert })
+      const parent = host.current
       mounted.current = mountEditor({
-        parent: host.current,
+        parent,
         layout,
         language,
         path,
@@ -209,6 +212,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
           return true
         },
       })
+      mountedEditors.set(parent, mounted.current)
     })
     return () => {
       gone = true

@@ -319,7 +319,7 @@ test('App supplies the working-copy editor bridge and a repo launch independent 
     './RepoMenu': { ...menu, RepoDialogs: () => null },
     './OverflowBar': { OverflowBar: (props: { items: typeof items }) => { items = props.items; return null } },
     './HistoryView': { HistoryView: History },
-    './Icons': { Icon: History, IconButton: () => null },
+    './Icons': { Icon: History, IconButton: () => null, toggleLabel: (state: string, action: string) => `${state} — click to ${action}` },
     './repo-busy': { ...repoBusy, useRepoBusy: () => 'push' },
   }
   const app = await loadEntry('../src/renderer/src/App.tsx', imports, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: api } })

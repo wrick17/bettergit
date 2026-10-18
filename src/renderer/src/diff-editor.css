@@ -28,3 +28,5 @@
 .diff-editor .cm-mergeView .cm-mergeViewEditor { min-width: 0; }
 
 .diff-edit-note { padding: 8px 20px; }
+/* The current find match, the same colour as in the read-only diff. */
+.diff-editor .cm-find-current { background-color: var(--find-hit, #ffd54a); color: #111; }
