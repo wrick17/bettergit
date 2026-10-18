@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from 'react'
+import { type FocusEvent, type ReactNode, useMemo, useState } from 'react'
 import type { MovedBlock } from '../../main/git/diff'
 import { applyChoices, conflictBlocks, type Choice, type ChoiceKind, type Combine, type ConflictDocument, type ConflictSave, type Part } from '../../shared/conflict'
 import { conflictFile, isMarker } from './conflict-rows'
@@ -82,7 +82,7 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
   const canSave = busy === null && result.ok && resolved > 0
 
   return (
-    <section className="conflict" aria-label={`Conflict in ${path}`}>
+    <section className="conflict" aria-label={`Conflict in ${path}`} onFocus={keepFocusInView}>
       {bar(
         <span className="conflict-count" aria-live="polite">{resolved} of {blocks.length} resolved</span>,
         <button type="button" className="conflict-save" disabled={!canSave} aria-busy={saving || undefined} onClick={() => onSave({ fingerprint, choices: Array.from({ length: blocks.length }, (_, index) => choices[index] ?? null) })}>
@@ -146,6 +146,20 @@ function ConflictDiff({ path, parts, combine, choices, shown, disabled, onChoose
   )
 }
 
+// Tab moves between conflicts whose rows may not be mounted yet. They mount around the focused control, and rows above
+// it can come out taller than their estimate, so a keyboard focus is kept in view for a few frames while they settle.
+function keepFocusInView(event: FocusEvent<HTMLElement>) {
+  const target = event.target
+  if (!target.matches(':focus-visible')) return
+  let frames = 0
+  const follow = () => {
+    if (document.activeElement !== target) return
+    target.scrollIntoView({ block: 'nearest' })
+    if (++frames < 8) requestAnimationFrame(follow)
+  }
+  requestAnimationFrame(follow)
+}
+
 // Compact actions above a conflict's first line. They are controls, not source, so they carry no line numbers.
 function ConflictControls({ index, total, choice, combine, disabled, onChoose, split }: {
   split: boolean
@@ -167,7 +181,7 @@ function ConflictControls({ index, total, choice, combine, disabled, onChoose, s
           className="conflict-choice"
           aria-pressed={choice === kind}
           disabled={disabled}
-          title={hint}
+          title={choice === kind ? `${label}: chosen — click to clear this choice. ${hint}` : `${label}: not chosen — click to choose it. ${hint}`}
           onClick={() => onChoose(index, choice === kind ? null : kind)}
         >
           {label}

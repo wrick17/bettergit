@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
-import type { Mounted } from './cm-editor'
+import type { Marks, Mounted, Preview } from './cm-editor'
+import { Code } from './DiffView'
+import { tokenize, type Segment } from './highlight'
+import { charWidth, columns, hscrollOf } from './hscroll'
+import { useWordWrap } from './prefs'
+import { originalText } from './original-text'
+import { RowChunk } from './row-chunk'
+import { suspendHold } from './scroll-anchor'
 import { IconButton } from './Icons'
 import './diff-editor.css'
 
@@ -14,34 +22,6 @@ export interface EditBridge {
   disabled?: boolean
 }
 
-// Rebuilds the old side of a working-tree diff from the current file: lines outside the hunks are unchanged, and each hunk
-// swaps its new lines for its old ones. Null when the diff no longer describes this text, such as after a change on disk.
-// Context lines come from the file, so with whitespace hidden a whitespace-only change stays hidden.
-// shortcut: a final newline added or removed on one side only is not rebuilt; upgrade if that one-line diff confuses.
-export function originalText(current: string, hunks: DiffHunk[]): string | null {
-  const lines = current.split('\n')
-  const out: string[] = []
-  const same = (a: string, b: string) => a.replace(/\s+/g, '') === b.replace(/\s+/g, '')
-  let next = 1
-  for (const hunk of hunks) {
-    const match = /\+(\d+)(?:,(\d+))? @@/.exec(hunk.header)
-    if (!match) return null
-    // A hunk with no new lines sits after its start line; any other hunk starts on it.
-    const before = Number(match[1]) - (match[2] === '0' ? 0 : 1)
-    if (before < next - 1 || before > lines.length) return null
-    while (next <= before) out.push(lines[next++ - 1])
-    for (const line of hunk.lines) {
-      if (line.type === 'del') out.push(line.text)
-      else if (line.type !== 'note') {
-        const actual = lines[next++ - 1]
-        if (actual === undefined || (line.type === 'add' ? actual.replace(/\r$/, '') !== line.text.replace(/\r$/, '') : !same(actual, line.text))) return null
-        if (line.type === 'context') out.push(actual)
-      }
-    }
-  }
-  return [...out, ...lines.slice(next - 1)].join('\n')
-}
-
 // The text of each loaded working file, by repo and path. It lives outside every DiffView, so a reload, remount or layout
 // switch keeps unsaved text. A clean entry leaves with its editor; a dirty one stays until it is saved or discarded.
 interface Draft {
@@ -53,6 +33,8 @@ interface Draft {
   revert?: () => void
 }
 const drafts = new Map<string, Draft>()
+// The editor mounted in each `.diff-editor` host, so find can reveal a line in it.
+export const mountedEditors = new WeakMap<Element, Mounted>()
 const draftListeners = new Set<() => void>()
 const keyOf = (repo: string, path: string) => `${repo}\0${path}`
 const dirty = (draft: Draft | undefined) => !!draft && draft.text !== draft.loaded
@@ -113,30 +95,121 @@ export function DraftActions({ edit, path }: { edit: EditBridge; path: string })
   )
 }
 
-type Source = { loaded: string; original: string } | { error: string }
+type Loaded = { loaded: string; original: string; preview: Preview | null }
+type Source = Loaded | { error: string }
+type At = { line: number; column: number }
+type CodeMirror = typeof import('./cm-editor')
 
-// The working-tree diff of one text file, as an editor of the file itself. Context and added lines are the editable
-// text; removed lines and the old side are read-only. Until the file loads, or when it cannot be edited, `fallback`
-// (the read-only diff) shows instead.
-export function EditableDiff({ edit, path, hunks, layout, language, fallback }: {
+// CodeMirror loads on first use, so the rest of the app, and its tests, never load it. Once a file is near the screen it
+// loads in idle time, so the first click mounts an editor at once.
+let cm: CodeMirror | null = null
+let cmLoad: Promise<CodeMirror> | null = null
+const loadCodeMirror = () => (cmLoad ??= import('./cm-editor').then((module) => (cm = module)))
+const whenIdle = (run: () => void) => {
+  const idle = window.requestIdleCallback
+  if (!idle) {
+    const timer = setTimeout(run, 1)
+    return () => clearTimeout(timer)
+  }
+  const handle = idle(run, { timeout: 300 })
+  return () => window.cancelIdleCallback?.(handle)
+}
+
+// The folds a user opened, per file, by their first current-side line. Shared by the static rows and the editor, so
+// opening a fold in one shows in the other.
+const openedFolds = new Map<string, Set<number>>()
+// Lets find open a fold or scroll a part of a file's static rows into view, so a match in it mounts.
+export const previewReveals = new WeakMap<Element, (side: 'old' | 'new', line: number) => void>()
+
+// One key typed before the editor could take it: text, '\n' for Enter, '\b' for Backspace. Null for keys left alone.
+export function bufferedKey(event: { key: string; metaKey: boolean; ctrlKey: boolean }): string | null {
+  if (event.metaKey || event.ctrlKey) return null
+  if (event.key === 'Enter') return '\n'
+  if (event.key === 'Backspace') return '\b'
+  return [...event.key].length === 1 ? event.key : null
+}
+
+// Keys are kept for a file that is still loading for at most this long, so a load that never ends cannot keep taking them.
+const TYPE_AHEAD_MS = 3000
+
+// The current-side line and column a caret position (from caretPositionFromPoint) falls on, or null when it is not on an
+// editable line: removed lines, the old side and folds stay read-only. A position in the gutter starts the line.
+export function lineColumnAt(node: Node | null, offset: number): At | null {
+  let row: Element | null = node?.nodeType === 1 ? node as Element : node?.parentElement ?? null
+  while (row && !(row.classList?.contains('ed-line'))) row = row.parentElement
+  const line = Number(row?.getAttribute('data-new'))
+  if (!row || !line) return null
+  const code = row.querySelector('code')
+  if (!code || !node || !code.contains(node)) return { line, column: 0 }
+  let column = 0
+  const walk = (current: Node): boolean => {
+    if (current === node) {
+      column += current.nodeType === 3 ? offset : [...current.childNodes].slice(0, offset).reduce((sum, child) => sum + (child.textContent?.length ?? 0), 0)
+      return true
+    }
+    if (current.nodeType === 3) {
+      column += (current as Text).data.length
+      return false
+    }
+    for (const child of current.childNodes) if (walk(child)) return true
+    return false
+  }
+  walk(code)
+  return { line, column }
+}
+
+function caretAt(x: number, y: number): { node: Node; offset: number } | null {
+  const position = (document as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint?.(x, y)
+  if (position) return { node: position.offsetNode, offset: position.offset }
+  const range = document.caretRangeFromPoint?.(x, y)
+  return range ? { node: range.startContainer, offset: range.startOffset } : null
+}
+
+// The working-tree diff of one text file. It shows as static rows drawn like its editor, and the editor mounts only when
+// a line is clicked (the caret lands where the click was) or the file gets keyboard focus. Context and added lines are
+// the editable text; removed lines and the old side are read-only. Until the file loads, or when it cannot be edited,
+// `fallback` (the read-only diff) shows instead. A clean editor goes back to static rows once it loses focus and leaves
+// the screen; one with unsaved text stays.
+export function EditableDiff({ edit, path, hunks, layout, language, fallback, fileIndex, onExtent }: {
   edit: EditBridge
   path: string
   hunks: DiffHunk[]
   layout: 'unified' | 'split'
   language: string | null
   fallback: ReactNode
+  fileIndex: number
+  onExtent: (pixels: number) => void
 }) {
   const key = keyOf(edit.repo, path)
+  const wrap = useWordWrap()
+  const wrapRef = useRef(wrap)
+  wrapRef.current = wrap
   const editRef = useRef(edit)
   editRef.current = edit
   const [source, setSource] = useState<Source | null>(null)
   const sourceRef = useRef(source)
   sourceRef.current = source
+  const [active, setActive] = useState(() => dirty(drafts.get(key)))
+  const [opened, setOpened] = useState(() => openedFolds.get(key) ?? new Set<number>())
+  const openedRef = useRef(opened)
+  openedRef.current = opened
+  const openFold = useCallback((b: number) => setOpened((prev) => {
+    if (prev.has(b)) return prev
+    const next = new Set(prev).add(b)
+    openedFolds.set(key, next)
+    return next
+  }), [key])
   const host = useRef<HTMLDivElement>(null)
   const mounted = useRef<Mounted | null>(null)
-  // A stacked diff can hold many files, so each loads, highlights and builds its editor only once its file nears the
-  // screen; until then the read-only diff holds its place. A dirty draft starts at once so its text shows.
-  // shortcut: an editor stays built after it scrolls away; unmount offscreen editors if very long sessions grow heavy.
+  // What the next mount starts with: the caret, the clicked row's place on screen, and keys typed before it was ready.
+  const startAt = useRef<At | null>(null)
+  const anchor = useRef<{ line: number; top: number } | null>(null)
+  const typed = useRef<string[] | null>(null)
+  // Ends the key capture and drops its keys. Only the editor mount it was waiting for takes the keys first.
+  const stopTyping = useRef<(() => void) | null>(null)
+  const dropTyping = () => stopTyping.current?.()
+  useEffect(() => dropTyping, [key])
+  useEffect(() => { if (source && 'error' in source) dropTyping() }, [source])
   const [near, setNear] = useState(() => dirty(drafts.get(key)))
   const probe = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -148,95 +221,436 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
     return () => observer.disconnect()
   }, [near])
 
-  // Each new diff of the file reloads it. A dirty draft keeps the text and the old side it was typed against.
+  // Each new diff of the file reloads it, in idle time, with CodeMirror, and works out the static rows. A dirty draft
+  // keeps the text and the old side it was typed against, and its editor.
   useEffect(() => {
     if (!near) return
     let stale = false
     const draft = drafts.get(key)
     if (dirty(draft)) {
-      if (!sourceRef.current || 'error' in sourceRef.current) {
+      void loadCodeMirror().then((module) => {
+        if (stale || (sourceRef.current && !('error' in sourceRef.current))) return
         const original = originalText(draft!.loaded, hunks)
-        setSource(original === null ? { error: `${path} changed on disk since your edits began. Discard them to edit it again.` } : { loaded: draft!.loaded, original })
-      }
-      return
-    }
-    editRef.current.load(path).then(
-      (loaded) => {
-        if (stale || dirty(drafts.get(key))) return
-        const original = originalText(loaded, hunks)
-        setSource(original === null ? { error: 'This diff is out of date. It refreshes when the file is reloaded.' } : { loaded, original })
-      },
-      (error) => { if (!stale) setSource({ error: messageOf(error) }) },
-    )
-    return () => { stale = true }
-  }, [key, path, hunks, near])
-
-  const ready = !!source && !('error' in source)
-
-  // The editor is built once per layout and language. Later loads update it in place, so the caret survives a save.
-  // CodeMirror loads on first use, so the rest of the app, and its tests, never load it.
-  useEffect(() => {
-    if (!ready) return
-    let gone = false
-    void import('./cm-editor').then(({ mountEditor }) => {
-      const start = sourceRef.current
-      if (gone || !host.current || !start || 'error' in start) return
-      const draft = drafts.get(key)
-      const loaded = dirty(draft) ? draft!.loaded : start.loaded
-      const revert = () => {
-        const entry = drafts.get(key)
-        if (!entry || !mounted.current) return
-        mounted.current.replace(entry.loaded)
-        setDraft(key, { ...drafts.get(key)!, text: entry.loaded })
-      }
-      setDraft(key, { path, loaded, text: dirty(draft) ? draft!.text : loaded, revert })
-      mounted.current = mountEditor({
-        parent: host.current,
-        layout,
-        language,
-        path,
-        text: drafts.get(key)!.text,
-        original: start.original,
-        separator: loaded.includes('\r\n') ? '\r\n' : '\n',
-        onText: (text) => {
-          const entry = drafts.get(key)
-          if (entry) setDraft(key, { ...entry, text })
-        },
-        onSave: () => void saveDraft(editRef.current, path),
-        onEscape: () => {
-          if (!dirty(drafts.get(key))) return false
-          revert()
-          return true
-        },
+        // The static rows show the file as loaded, for when the draft is saved or discarded and the editor goes.
+        setSource(original === null ? { error: `${path} changed on disk since your edits began. Discard them to edit it again.` } : { loaded: draft!.loaded, original, preview: module.previewOf(draft!.loaded, original) })
       })
+      return () => { stale = true }
+    }
+    const cancel = whenIdle(() => {
+      Promise.all([editRef.current.load(path), loadCodeMirror()]).then(
+        ([loaded, module]) => {
+          if (stale || dirty(drafts.get(key))) return
+          const original = originalText(loaded, hunks)
+          setSource(original === null ? { error: 'This diff is out of date. It refreshes when the file is reloaded.' } : { loaded, original, preview: module.previewOf(loaded, original) })
+        },
+        (error) => { if (!stale) setSource({ error: messageOf(error) }) },
+      )
     })
     return () => {
-      gone = true
-      mounted.current?.destroy()
+      stale = true
+      cancel()
+    }
+  }, [key, path, hunks, near])
+
+  const loaded = source && !('error' in source) ? source : null
+  const loadedRef = useRef(loaded)
+  loadedRef.current = loaded
+  const preview = loaded?.preview ?? null
+  const tokens = usePreviewTokens(preview, language, layout)
+  useEffect(() => {
+    if (preview && !wrap) onExtent(Math.max(columns(preview.lines, 4) * charWidth() + 28, columns(preview.old, 4) * charWidth() + 90))
+  }, [preview, onExtent, wrap])
+
+  // Builds the editor in place, in the same frame as the click: CodeMirror and the text are already loaded.
+  // Built once per layout and language; a reload updates it in place (below), so the caret survives a save.
+  useLayoutEffect(() => {
+    const start = loadedRef.current
+    if (!active || !start || !cm || !host.current) return
+    const draft = drafts.get(key)
+    const base = dirty(draft) ? draft!.loaded : start.loaded
+    const revert = () => {
+      const entry = drafts.get(key)
+      if (!entry || !mounted.current) return
+      mounted.current.replace(entry.loaded)
+      setDraft(key, { ...drafts.get(key)!, text: entry.loaded })
+    }
+    setDraft(key, { path, loaded: base, text: dirty(draft) ? draft!.text : base, revert })
+    const parent = host.current
+    const text = drafts.get(key)!.text
+    const model = start.preview && text === start.loaded ? start.preview : cm.previewOf(text, start.original)
+    const at = startAt.current
+    const place = anchor.current
+    startAt.current = null
+    anchor.current = null
+    const editor = cm.mountEditor({
+      parent,
+      layout,
+      language,
+      path,
+      text,
+      original: start.original,
+      separator: base.includes('\r\n') ? '\r\n' : '\n',
+      onText: (next) => {
+        const entry = drafts.get(key)
+        if (entry) setDraft(key, { ...entry, text: next })
+      },
+      onSave: () => void saveDraft(editRef.current, path),
+      onEscape: () => {
+        if (!dirty(drafts.get(key))) return false
+        revert()
+        return true
+      },
+      wrap: wrapRef.current,
+      folds: model.stretches.flatMap((stretch) => (stretch.kind === 'fold' ? [stretch] : [])),
+      opened: openedRef.current,
+      onFold: openFold,
+      at: at ?? undefined,
+    })
+    mounted.current = editor
+    mountedEditors.set(parent, editor)
+    const section = parent.closest<HTMLElement>('.diff-file')
+    const unfollow = section ? editor.scrollers.map((element) => hscrollOf(section).follow(element)) : []
+    // Keys typed before the editor was ready go in now, at the caret.
+    const keys = typed.current
+    dropTyping()
+    if (keys?.length) cm.typeKeys(editor.view, keys)
+    // The editor draws on its next measure, before the frame paints. The clicked line is kept where it was on screen,
+    // since lines above it that the editor has not drawn yet are estimated.
+    const pane = parent.closest<HTMLElement>('.diff-pane')
+    if (place && pane) {
+      editor.view.requestMeasure({
+        read: (view) => (place.line <= view.state.doc.lines ? view.documentTop + view.lineBlockAt(view.state.doc.line(place.line).from).top : null),
+        write: (top) => { if (top !== null) pane.scrollTop += top - place.top },
+      })
+    }
+    return () => {
+      unfollow.forEach((stop) => stop())
+      editor.destroy()
       mounted.current = null
       const entry = drafts.get(key)
       if (entry) setDraft(key, dirty(entry) ? { ...entry, revert: undefined } : null)
     }
-  }, [key, path, layout, language, ready])
+  }, [key, path, layout, language, !!loaded, active])
+
+  useEffect(() => { mounted.current?.setWrap(wrap) }, [wrap])
 
   // A reload of a clean file brings the editor up to date: the old side always, and the text when it changed on disk.
   useEffect(() => {
-    if (!mounted.current || !source || 'error' in source || dirty(drafts.get(key))) return
+    if (!mounted.current || !loaded || dirty(drafts.get(key))) return
     const entry = drafts.get(key)
-    if (entry) setDraft(key, { ...entry, loaded: source.loaded, text: source.loaded })
-    mounted.current.sync(source.loaded, source.original)
-  }, [key, source])
+    if (entry) setDraft(key, { ...entry, loaded: loaded.loaded, text: loaded.loaded })
+    mounted.current.sync(loaded.loaded, loaded.original)
+  }, [key, loaded])
 
-  if (!source || 'error' in source) {
+  // A clean editor that has lost focus goes back to static rows once it leaves the screen.
+  useEffect(() => {
+    const element = host.current
+    if (!active || !element) return
+    let focused = element.contains(document.activeElement)
+    let visible = true
+    const check = () => { if (!focused && !visible && !dirty(drafts.get(key))) setActive(false) }
+    const onIn = () => { focused = true }
+    const onOut = (event: FocusEvent) => {
+      if (element.contains(event.relatedTarget as Node | null)) return
+      focused = false
+      check()
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting
+      check()
+    })
+    observer.observe(element)
+    element.addEventListener('focusin', onIn)
+    element.addEventListener('focusout', onOut)
+    draftListeners.add(check)
+    return () => {
+      observer.disconnect()
+      element.removeEventListener('focusin', onIn)
+      element.removeEventListener('focusout', onOut)
+      draftListeners.delete(check)
+    }
+  }, [active, key])
+
+  // Synchronous from an input event, so the editor exists, focused, before the next key arrives.
+  const activate = (at: At | null, row: Element | null, sync = true) => {
+    if (mounted.current) return
+    startAt.current = at
+    anchor.current = at && row ? { line: at.line, top: row.getBoundingClientRect().top } : null
+    if (sync) flushSync(() => setActive(true))
+    else setActive(true)
+  }
+
+  // A click on the read-only rows shown before the file loaded asks for the editor too. Keys typed until it mounts are kept.
+  useEffect(() => {
+    if (!typed.current || active || !preview) return
+    activate(startAt.current, null, false)
+  })
+  const fallbackClick = (event: ReactMouseEvent) => {
+    if (dragged(event)) return
+    const row = (event.target as Element).closest<HTMLElement>('[data-source-row]')
+    const [, hunk, index] = (row?.dataset.sourceRow ?? '').split(':').map(Number)
+    const line = hunks[hunk]?.lines[index]
+    if (!line?.newNo || row?.dataset.sourceSide === 'old' || row?.classList.contains('del')) return
+    const caret = caretAt(event.clientX, event.clientY)
+    const code = row!.querySelector('code')
+    let column = 0
+    if (caret && code?.contains(caret.node)) {
+      const range = document.createRange()
+      range.setStart(code, 0)
+      range.setEnd(caret.node, caret.offset)
+      column = range.toString().length
+    }
+    startAt.current = { line: line.newNo, column }
+    if (stopTyping.current) return
+    const keys: string[] = []
+    typed.current = keys
+    const file = event.currentTarget as HTMLElement
+    const onKey = (key: KeyboardEvent) => {
+      // Keys typed into a field are that field's.
+      const target = key.target
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
+      const value = bufferedKey(key)
+      if (value === null) return
+      key.preventDefault()
+      keys.push(value)
+    }
+    // A click anywhere else gives up the edit, so its keys never land in this file.
+    const onDown = (down: PointerEvent) => {
+      if (!file.contains(down.target as Node)) dropTyping()
+    }
+    const stop = () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('blur', stop)
+      clearTimeout(timer)
+      if (stopTyping.current === stop) stopTyping.current = null
+      if (typed.current === keys) typed.current = null
+    }
+    const timer = setTimeout(stop, TYPE_AHEAD_MS)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('blur', stop)
+    stopTyping.current = stop
+  }
+
+  if (!loaded || (!preview && !active)) {
     return (
       <>
         {!near && <span ref={probe} hidden />}
-        {source && <p className="hint diff-edit-note">Read-only: {source.error}</p>}
-        {fallback}
+        {source && 'error' in source && <p className="hint diff-edit-note">Read-only: {source.error}</p>}
+        {loaded || !source ? <div onMouseDown={rememberDown} onMouseUp={fallbackClick}>{fallback}</div> : fallback}
       </>
     )
   }
-  return <div className="diff-editor" ref={host} />
+  if (active) return <div className="diff-editor" ref={host} />
+  return (
+    <EditorPreview model={preview!} tokens={tokens} layout={layout} opened={opened} onOpen={openFold} fileIndex={fileIndex} hunks={hunks} path={path}
+      onActivate={activate} />
+  )
+}
+
+// A press and release in about the same place, with no text selected, is a click; anything else is a drag that selects.
+let down = { x: 0, y: 0 }
+const rememberDown = (event: ReactMouseEvent) => { down = { x: event.clientX, y: event.clientY } }
+function dragged(event: ReactMouseEvent) {
+  return event.button !== 0 || Math.abs(event.clientX - down.x) > 3 || Math.abs(event.clientY - down.y) > 3 || !!window.getSelection()?.toString()
+}
+
+// Shiki colours for the static rows, in the same cache the editor reads, so it is coloured on its first frame.
+function usePreviewTokens(preview: Preview | null, language: string | null, layout: 'unified' | 'split') {
+  const [tokens, setTokens] = useState<{ preview: Preview; old: Segment[][] | null; new: Segment[][] | null } | null>(null)
+  useEffect(() => {
+    if (!preview || !language) return
+    let stale = false
+    const gone = () => stale
+    void Promise.all([tokenize(preview.lines.join('\n'), language, gone), layout === 'split' ? tokenize(preview.old.join('\n'), language, gone) : null]).then(([next, old]) => {
+      if (!stale) setTokens({ preview, new: next, old })
+    })
+    return () => { stale = true }
+  }, [preview, language, layout])
+  return tokens?.preview === preview ? tokens : null
+}
+
+type Row =
+  | { kind: 'same'; a: number; b: number }
+  | { kind: 'add'; b: number; marks: Marks }
+  | { kind: 'del'; a: number; marks: Marks }
+  | { kind: 'fold'; a: number; b: number; count: number }
+  // Split only: a stretch of a change, each side's lines stacked, so the shorter side ends in blank space like the editor.
+  | { kind: 'block'; a: number; countA: number; b: number; countB: number; marksA: Marks[]; marksB: Marks[] }
+
+const BLOCK_LINES = 50
+
+function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<number>): Row[] {
+  const rows: Row[] = []
+  for (const stretch of model.stretches) {
+    if (stretch.kind === 'same' || (stretch.kind === 'fold' && opened.has(stretch.b))) {
+      for (let index = 0; index < stretch.count; index++) rows.push({ kind: 'same', a: stretch.a + index, b: stretch.b + index })
+    } else if (stretch.kind === 'fold') {
+      rows.push(stretch)
+    } else if (layout === 'unified') {
+      for (let index = 0; index < stretch.countA; index++) rows.push({ kind: 'del', a: stretch.a + index, marks: stretch.marksA[index] })
+      for (let index = 0; index < stretch.countB; index++) rows.push({ kind: 'add', b: stretch.b + index, marks: stretch.marksB[index] })
+    } else {
+      // shortcut: a change longer than BLOCK_LINES lines lines its sides up again every BLOCK_LINES lines, where the editor
+      // aligns only at the change's end; they differ only when long lines wrap differently, upgrade if that shows.
+      for (let at = 0; at < Math.max(stretch.countA, stretch.countB); at += BLOCK_LINES) {
+        const countA = Math.max(0, Math.min(BLOCK_LINES, stretch.countA - at))
+        const countB = Math.max(0, Math.min(BLOCK_LINES, stretch.countB - at))
+        rows.push({ kind: 'block', a: stretch.a + at, countA, b: stretch.b + at, countB, marksA: stretch.marksA.slice(at, at + countA), marksB: stretch.marksB.slice(at, at + countB) })
+      }
+    }
+  }
+  return rows
+}
+
+const rowLines = (row: Row) => (row.kind === 'block' ? Math.max(row.countA, row.countB) : 1)
+const rowHeight = (row: Row) => (row.kind === 'fold' ? 28 : rowLines(row) * 22)
+
+// The editor's look as plain rows: its gutter, change bar, tints, changed text, folds, font and wrapping, so the editor
+// can replace it without anything moving. Rows mount in chunks near the screen, like the read-only diff.
+function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, fileIndex, hunks, path }: {
+  model: Preview
+  tokens: { old: Segment[][] | null; new: Segment[][] | null } | null
+  layout: 'unified' | 'split'
+  opened: Set<number>
+  onOpen: (b: number) => void
+  onActivate: (at: At | null, row: Element | null) => void
+  fileIndex: number
+  hunks: DiffHunk[]
+  path: string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const rows = useMemo(() => previewRows(model, layout, opened), [model, layout, opened])
+  // The diff's own row for each file line, so find and the layout switch can address these rows like the read-only diff.
+  const sources = useMemo(() => {
+    const map = new Map<string, string>()
+    hunks.forEach((hunk, hunkIndex) => hunk.lines.forEach((line, index) => {
+      const value = `${fileIndex}:${hunkIndex}:${index}`
+      if (line.type === 'del' && line.oldNo) map.set(`o${line.oldNo}`, value)
+      else if (line.newNo) map.set(`n${line.newNo}`, value)
+    }))
+    return map
+  }, [hunks, fileIndex])
+  const parts = useMemo(() => {
+    const out: Array<{ start: number; end: number; height: number; range: [number, number, number, number] }> = []
+    let start = 0
+    let lines = 0
+    let height = 0
+    rows.forEach((row, index) => {
+      lines += rowLines(row)
+      height += rowHeight(row)
+      if (lines >= BLOCK_LINES || index === rows.length - 1) {
+        const first = rows[start]
+        const last = row
+        const aOf = (entry: Row, end: boolean) => ('a' in entry ? entry.a + (end && entry.kind === 'block' ? Math.max(0, entry.countA - 1) : end && entry.kind === 'fold' ? entry.count - 1 : 0) : 0)
+        const bOf = (entry: Row, end: boolean) => ('b' in entry ? entry.b + (end && entry.kind === 'block' ? Math.max(0, entry.countB - 1) : end && entry.kind === 'fold' ? entry.count - 1 : 0) : 0)
+        out.push({ start, end: index + 1, height, range: [aOf(first, false), aOf(last, true), bOf(first, false), bOf(last, true)] })
+        start = index + 1
+        lines = 0
+        height = 0
+      }
+    })
+    return out
+  }, [rows])
+
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+    previewReveals.set(element, (side, line) => {
+      const fold = model.stretches.find((stretch) => stretch.kind === 'fold' && (side === 'old' ? stretch.a : stretch.b) <= line && line < (side === 'old' ? stretch.a : stretch.b) + stretch.count)
+      if (fold && !opened.has(fold.b)) onOpen(fold.b)
+      const part = [...element.querySelectorAll<HTMLElement>('[data-range]')].find((chunk) => {
+        const [a1, a2, b1, b2] = chunk.dataset.range!.split(':').map(Number)
+        return side === 'old' ? a1 <= line && line <= a2 && a1 > 0 : b1 <= line && line <= b2 && b1 > 0
+      })
+      if (part) {
+        const pane = part.closest<HTMLElement>('.diff-pane')
+        if (pane) suspendHold(pane)
+        part.scrollIntoView({ block: 'center' })
+      }
+    })
+  }, [model, opened, onOpen])
+
+  const numberStyle = { '--digits-a': String(model.old.length).length, '--digits-b': String(model.lines.length).length } as CSSProperties
+  const code = (side: 'old' | 'new', line: number, marks?: Marks, coloured = true) => {
+    const text = (side === 'old' ? model.old : model.lines)[line - 1] ?? ''
+    const segments = coloured ? (side === 'old' ? tokens?.old : tokens?.new)?.[line - 1] : undefined
+    return <Code text={text} segments={segments} changed={marks} changedClass="ed-changed" />
+  }
+  const fold = (row: Extract<Row, { kind: 'fold' }>, side: 'a' | 'b') => (
+    <div className={`ed-fold side-${side}`}>
+      <span className="ed-num" />
+      <span className="ed-bar" />
+      <button type="button" className="ed-fold-bar" onClick={() => onOpen(row.b)}>{row.count} unchanged lines</button>
+    </div>
+  )
+  const line = (side: 'a' | 'b', kind: string, number: number, body: ReactNode, editable: boolean) => (
+    <div className={`ed-line ${kind} side-${side}`} data-new={editable ? number : undefined} data-old={side === 'a' ? number : undefined}
+      data-source-row={sources.get(`${side === 'a' ? 'o' : 'n'}${number}`) ?? (side === 'a' ? sources.get(`n${number}`) : undefined)}
+      data-source-side={layout === 'split' ? (side === 'a' ? 'old' : 'new') : undefined}>
+      <span className="ed-num">{kind === 'del' ? '' : number}</span>
+      <span className="ed-bar" />
+      {body}
+    </div>
+  )
+  const render = (row: Row, index: number): ReactNode => {
+    if (layout === 'unified') {
+      if (row.kind === 'fold') return <Fragment key={index}>{fold(row, 'b')}</Fragment>
+      if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks, false), false)}</Fragment>
+      if (row.kind === 'add') return <Fragment key={index}>{line('b', 'add', row.b, code('new', row.b, row.marks), true)}</Fragment>
+      if (row.kind === 'same') {
+        return (
+          <div key={index} className="ed-line same side-b" data-new={row.b} data-old={row.a} data-source-row={sources.get(`n${row.b}`)}>
+            <span className="ed-num">{row.b}</span>
+            <span className="ed-bar" />
+            {code('new', row.b)}
+          </div>
+        )
+      }
+      return null
+    }
+    if (row.kind === 'fold') return <div key={index} className="ed-pair">{fold(row, 'a')}{fold(row, 'b')}</div>
+    if (row.kind === 'same') {
+      return <div key={index} className="ed-pair">{line('a', 'same', row.a, code('old', row.a), false)}{line('b', 'same', row.b, code('new', row.b), true)}</div>
+    }
+    if (row.kind !== 'block') return null
+    return (
+      <div key={index} className="ed-pair">
+        <div className="ed-side">{Array.from({ length: row.countA }, (_, offset) => <Fragment key={offset}>{line('a', 'old', row.a + offset, code('old', row.a + offset, row.marksA[offset]), false)}</Fragment>)}</div>
+        <div className="ed-side">{Array.from({ length: row.countB }, (_, offset) => <Fragment key={offset}>{line('b', 'add', row.b + offset, code('new', row.b + offset, row.marksB[offset]), true)}</Fragment>)}</div>
+      </div>
+    )
+  }
+
+  // The first changed line, where keyboard activation puts the caret.
+  const firstChange = () => {
+    const chunk = model.stretches.find((stretch) => stretch.kind === 'chunk')
+    return { line: chunk?.kind === 'chunk' ? chunk.b : 1, column: 0 }
+  }
+  return (
+    <div ref={ref} className={`ed-preview ed-${layout}`} style={numberStyle} tabIndex={0} role="textbox" aria-multiline="true" aria-readonly="false"
+      aria-label={`Contents of ${path}. Click a line or press Enter to edit it.`}
+      onMouseDown={rememberDown}
+      onMouseUp={(event) => {
+        if (dragged(event) || (event.target as Element).closest('.ed-fold')) return
+        const caret = caretAt(event.clientX, event.clientY)
+        const at = caret && lineColumnAt(caret.node, caret.offset)
+        if (at) onActivate(at, (caret!.node instanceof Element ? caret!.node : caret!.node.parentElement)?.closest('.ed-line') ?? null)
+      }}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && event.key === 'Enter') {
+          event.preventDefault()
+          onActivate(firstChange(), null)
+        }
+      }}
+      onFocus={(event) => { if (event.target === event.currentTarget && event.currentTarget.matches(':focus-visible')) onActivate(firstChange(), null) }}>
+      {parts.map((part) => (
+        <RowChunk key={`${part.start}:${part.end}`} rows={part.end - part.start} estimate={part.height} range={part.range.join(':')}
+          pinned={false} render={() => rows.slice(part.start, part.end).map((row, offset) => render(row, part.start + offset))} />
+      ))}
+    </div>
+  )
 }
 
 // IPC errors arrive wrapped as "Error invoking remote method '…': Error: <message>".

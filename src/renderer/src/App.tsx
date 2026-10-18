@@ -6,7 +6,7 @@ import { EditorContext, useEditorLaunch } from './editor-launch'
 import type { TreeNode, RepoNode } from '../../main/scan'
 import type { RepoStatus } from '../../main/git/status'
 import type { Branch } from '../../main/git/ops'
-import { Icon, IconButton } from './Icons'
+import { Icon, IconButton, toggleLabel } from './Icons'
 import { Sidebar } from './Sidebar'
 import type { MenuAction } from '../../main/menu'
 import { ChangesView } from './ChangesView'
@@ -20,6 +20,7 @@ import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { blockedReason, busyKey, connectRepoLocks, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
+import { FindBar } from './FindBar'
 
 const api = window.bettergit
 // The repo pane's tab panels fill the pane height, as the grid inside them expects.
@@ -40,6 +41,11 @@ export function App() {
   const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The find bar, and a counter bumped by each ⌘F so an open bar takes focus again.
+  const [find, setFind] = useState({ open: false, focus: 0 })
+  const openFind = () => setFind((prev) => ({ open: true, focus: prev.focus + 1 }))
+  const openFindRef = useRef(openFind)
+  openFindRef.current = openFind
   // The titlebar band's element. The repo toolbar is portalled into it.
   const [titlebar, setTitlebar] = useState<HTMLElement | null>(null)
   // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
@@ -112,6 +118,7 @@ export function App() {
         case 'stash': return void runRepo('stash', () => api.stash(repo!, 'BetterGit stash'))
         case 'show-changes': return setTab('changes')
         case 'show-history': return setTab('history')
+        case 'find': return openFindRef.current()
         case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
         case 'toggle-sidebar': return setSidebarOpen((open) => !open)
         case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
@@ -193,6 +200,18 @@ export function App() {
     if (paths.length) await addPaths(paths).catch(reportError)
   }
 
+  // ⌘F also opens find from the page, which matters where the app menu is absent (such as a test harness). Opening is
+  // idempotent, so the menu accelerator firing as well does no harm.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.metaKey || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'f') return
+      event.preventDefault()
+      openFindRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+
   if (!config) return <div className="boot">Loading…</div>
 
   return (
@@ -206,6 +225,7 @@ export function App() {
       } as CSSProperties}
     >
       <header className="titlebar" ref={setTitlebar} />
+      <FindBar open={find.open} focusKey={find.focus} onClose={() => setFind((prev) => ({ ...prev, open: false }))} />
       {sidebarOpen && (
         <Sidebar
           fold={sidebarFold}
@@ -448,9 +468,9 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
           <button id="tab-history" role="tab" tabIndex={tab === 'history' ? 0 : -1} aria-selected={tab === 'history'} aria-controls={tab === 'history' ? 'panel-history' : undefined} onClick={() => onTab('history')}>History</button>
         </nav>
         <div className="pane-toggles">
-          <IconButton icon="panelLeft" label="Sidebar" active={sidebarOpen} onClick={onToggleSidebar} />
-          <IconButton icon="paneList" label={tab === 'changes' ? 'File list' : 'Commit list'} active={listOpen} onClick={onToggleList} />
-          <IconButton icon="panelRight" label="Detail" active={detailOpen} onClick={onToggleDetail} />
+          <IconButton icon="panelLeft" label={paneLabel('Sidebar', sidebarOpen)} active={sidebarOpen} onClick={onToggleSidebar} />
+          <IconButton icon="paneList" label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
+          <IconButton icon="panelRight" label={paneLabel(tab === 'changes' ? 'Diff' : 'Commit details', detailOpen)} active={detailOpen} onClick={onToggleDetail} />
         </div>
       </div>
       {tab === 'changes' && (
@@ -465,6 +485,11 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
       )}
     </EditorContext.Provider>
   )
+}
+
+// A pane toggle's label: whether the pane shows now, and what a click does.
+function paneLabel(pane: string, shown: boolean) {
+  return toggleLabel(`${pane}: ${shown ? 'shown' : 'hidden'}`, shown ? 'hide it' : 'show it')
 }
 
 function flatten(nodes: TreeNode[]): RepoNode[] {

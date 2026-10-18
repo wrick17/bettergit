@@ -16,6 +16,8 @@ const MAX_TOKENS = 20_000
 // git reports the conflict count as the exit code of merge-file, truncated to 127. Other codes are git errors.
 const MERGE_CONFLICTS_MAX = 127
 const STYLES = ['--diff3', '--zdiff3'] as const
+// Concurrent git merge-file runs while combining one file's conflicts.
+const COMBINE_WORKERS = 8
 const REGULAR_MODES = new Set(['100644', '100755'])
 const STALE = 'The file changed after it was loaded. Reload the conflict before saving.'
 const STALE_RESET = 'The file changed after it was loaded. Reload the conflict before resetting.'
@@ -228,13 +230,8 @@ async function mergeStages(sides: [Buffer, Buffer, Buffer], style: (typeof STYLE
 async function stageRuns(repo: string, stages: Map<number, StageEntry>): Promise<StageBlock[][] | null> {
   const sides = await stageSides(repo, stages)
   if (!sides) return null
-  const runs: StageBlock[][] = []
-  for (const style of STYLES) {
-    const run = await mergeStages(sides, style)
-    if (!run) return null
-    runs.push(run)
-  }
-  return runs
+  const runs = await Promise.all(STYLES.map((style) => mergeStages(sides, style)))
+  return runs.every((run) => run !== null) ? runs : null
 }
 
 // git's 3-way merge of one block over token records. A clean merge returns text. An overlap stays a manual choice.
@@ -271,10 +268,17 @@ async function combineStates(repo: string, snapshot: Snapshot, blocks: ConflictB
   if (!snapshot.stages.has(1)) return blocks.map(() => unavailable('no-ancestor'))
   const runs = await stageRuns(repo, snapshot.stages)
   if (!runs) return blocks.map(() => unavailable('unreadable'))
-  const states: Combine[] = []
-  for (const [index, match] of matchBasesAcrossRuns(blocks, runs).entries()) {
-    states.push(match.state === 'matched' ? await combineBlock(blocks[index], match.base) : unavailable(match.reason))
-  }
+  const matches = matchBasesAcrossRuns(blocks, runs)
+  const states = new Array<Combine>(matches.length)
+  // Each combine is one git spawn, so a file with many conflicts runs a few at once instead of one after another.
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(COMBINE_WORKERS, matches.length) }, async () => {
+    while (next < matches.length) {
+      const index = next++
+      const match = matches[index]
+      states[index] = match.state === 'matched' ? await combineBlock(blocks[index], match.base) : unavailable(match.reason)
+    }
+  }))
   return states
 }
 
@@ -364,13 +368,14 @@ async function resetState(repo: string, snapshot: Snapshot): Promise<ConflictRes
 export async function loadConflict(repo: string, relPath: string): Promise<ConflictDocument> {
   try {
     const snapshot = await readSnapshot(repo, relPath)
-    const reset = await resetState(repo, snapshot)
+    // The reset check reads git on its own, so it runs alongside the combine states.
+    const resetting = resetState(repo, snapshot)
     const parsed = parseConflicts(snapshot.text)
-    if (!parsed.ok) return { supported: false, message: parsed.failure.message, reset }
+    if (!parsed.ok) return { supported: false, message: parsed.failure.message, reset: await resetting }
     const blocks = conflictBlocks(parsed.parts)
-    if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS, reset }
-    const parts = await withStageEndsOf(repo, snapshot.stages, parsed.parts)
-    return { supported: true, fingerprint: snapshot.fingerprint, parts, combine: await combineStates(repo, snapshot, blocks), reset }
+    if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS, reset: await resetting }
+    const [parts, combine, reset] = await Promise.all([withStageEndsOf(repo, snapshot.stages, parsed.parts), combineStates(repo, snapshot, blocks), resetting])
+    return { supported: true, fingerprint: snapshot.fingerprint, parts, combine, reset }
   } catch (error) {
     if (error instanceof ConflictRefusal) return { supported: false, message: error.message, reset: { available: false, reason: error.message } }
     throw error

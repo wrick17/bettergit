@@ -60,6 +60,19 @@ export function useFormatMarkdown(): boolean {
   return useSyncExternalStore(formatMarkdownStore.subscribe, formatMarkdownStore.get)
 }
 
+// Long lines in raw diffs and editors wrap (the default) or scroll sideways.
+const WRAP_KEY = 'bettergit.wordWrap'
+const wrapStore = createStore(localStorage.getItem(WRAP_KEY) !== 'false')
+
+export function setWordWrap(next: boolean) {
+  localStorage.setItem(WRAP_KEY, String(next))
+  wrapStore.set(next)
+}
+
+export function useWordWrap(): boolean {
+  return useSyncExternalStore(wrapStore.subscribe, wrapStore.get)
+}
+
 // Extension to Shiki language, from Settings. Set by the app whenever the config changes.
 const languageStore = createStore<Record<string, string>>({})
 

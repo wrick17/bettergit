@@ -1,10 +1,10 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, Columns2, Columns3,
+  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, ChevronUp, Columns2, Columns3,
   CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
-  MousePointerClick, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, Tag, Trash2, Undo2, UnfoldVertical, Users, X, type LucideIcon,
+  MousePointerClick, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
@@ -50,11 +50,13 @@ const ICONS = {
   plus: Plus,
   chevron: ChevronRight,
   chevronDown: ChevronDown,
+  chevronUp: ChevronUp,
   branch: GitBranch,
   search: Search,
   settings: Settings,
   trash: Trash2,
   unfold: UnfoldVertical,
+  wrap: WrapText,
   close: X,
   save: Save,
   users: Users,
@@ -95,6 +97,37 @@ function Tooltip({ anchor, label }: { anchor: HTMLElement; label: string }) {
   )
 }
 
+// A toggle's label and tooltip: the state it is in now, then what a click does. Toggles also set aria-pressed.
+export function toggleLabel(state: string, action: string) {
+  return `${state} — click to ${action}`
+}
+
+// The tooltip of a control: shown on hover or keyboard focus. It re-renders with the control, so a click that changes
+// the label changes the tooltip at once.
+function useTooltip(tip: string) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null)
+  return {
+    handlers: {
+      onPointerEnter: (event: PointerEvent<HTMLButtonElement>) => setAnchor(event.currentTarget),
+      onPointerLeave: () => setAnchor(null),
+      onFocus: (event: FocusEvent<HTMLButtonElement>) => { if (event.currentTarget.matches(':focus-visible')) setAnchor(event.currentTarget) },
+      onBlur: () => setAnchor(null),
+    },
+    tooltip: anchor && <Tooltip anchor={anchor} label={tip} />,
+  }
+}
+
+// A text button in a segmented toggle, such as a context level. Same label and tooltip rules as IconButton.
+export function TextToggle({ text, label, active, onClick }: { text: string; label: string; active: boolean; onClick: () => void }) {
+  const { handlers, tooltip } = useTooltip(label)
+  return (
+    <button type="button" className={active ? 'on' : ''} aria-label={label} aria-pressed={active} onClick={onClick} {...handlers}>
+      {text}
+      {tooltip}
+    </button>
+  )
+}
+
 // An icon-only button. The label is both the accessible name and the hover or keyboard-focus tooltip.
 // While `busy`, the glyph becomes a spinner and aria-busy is set. The label should then say what runs.
 // `blocked` gives the reason a control cannot run now. It stays focusable and hoverable, so the reason shows as a tooltip.
@@ -109,9 +142,8 @@ export function IconButton({ icon, label, onClick, active, disabled, busy, block
   className?: string
   tabIndex?: number
 }) {
-  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null)
   const inert = !!busy || !!blocked
-  const tip = blocked ? `${label}. ${blocked}` : label
+  const { handlers, tooltip } = useTooltip(blocked ? `${label}. ${blocked}` : label)
   return (
     <button
       type="button"
@@ -123,13 +155,10 @@ export function IconButton({ icon, label, onClick, active, disabled, busy, block
       disabled={disabled}
       tabIndex={tabIndex}
       onClick={inert ? undefined : onClick}
-      onPointerEnter={(event) => setAnchor(event.currentTarget)}
-      onPointerLeave={() => setAnchor(null)}
-      onFocus={(event) => { if (event.currentTarget.matches(':focus-visible')) setAnchor(event.currentTarget) }}
-      onBlur={() => setAnchor(null)}
+      {...handlers}
     >
       <Icon name={busy ? 'loader' : icon} className={busy ? 'action-spin' : undefined} />
-      {anchor && <Tooltip anchor={anchor} label={tip} />}
+      {tooltip}
     </button>
   )
 }
