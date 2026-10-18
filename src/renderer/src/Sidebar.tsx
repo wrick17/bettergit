@@ -4,6 +4,8 @@ import type { AppConfig } from '../../main/config'
 import type { TreeNode } from '../../main/scan'
 import { Icon, IconButton } from './Icons'
 import { FolderIcon } from './FileIcon'
+import { useScrollMemory } from './session'
+import type { FoldHold } from './fold'
 
 interface SidebarProps {
   tree: TreeNode[]
@@ -19,6 +21,9 @@ interface SidebarProps {
   onReveal: (path: string) => void
   onDrop: (event: DragEvent) => void
   dirty?: Record<string, number>
+  // Folded into a strip that shows `stripLabel`. A held fold opens the full sidebar in flow beside the content.
+  fold: FoldHold<HTMLElement>
+  stripLabel?: string
 }
 
 interface ContextState {
@@ -36,6 +41,9 @@ export function Sidebar(props: SidebarProps) {
   const addTrigger = useRef<HTMLButtonElement>(null)
   const contextRef = useRef<HTMLDivElement>(null)
   const [focusPath, setFocusPath] = useState<string | null>(null)
+
+  const treeRef = useRef<HTMLDivElement>(null)
+  const onTreeScroll = useScrollMemory(treeRef, 'sidebar', '', props.tree.length > 0)
 
   // Popovers close on any outside click or Escape.
   useEffect(() => {
@@ -74,21 +82,22 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <aside
-      className={`sidebar${dragging ? ' dragging' : ''}`}
+      ref={props.fold.pane}
+      {...props.fold.paneHandlers}
+      className={`sidebar${dragging ? ' dragging' : ''}${props.fold.folded ? ' folded' : ''}${props.fold.held ? ' held' : ''}`}
       onDragOver={(event) => { event.preventDefault(); setDragging(true) }}
       onDragLeave={() => setDragging(false)}
       onDrop={(event) => { setDragging(false); props.onDrop(event) }}
     >
-      <div className="drag-strip" aria-hidden="true" />
+      {props.fold.folded && (
+        <button ref={props.fold.strip} type="button" className="fold-strip" aria-label="Show repositories" onClick={props.fold.activate}>
+          <Icon name="chevron" />
+          <span className="fold-label">{props.stripLabel}</span>
+        </button>
+      )}
       <div className="sidebar-head">
         <span className="sidebar-title">Repositories</span>
         <div className="sidebar-tools">
-          <IconButton
-            icon="eye"
-            label="Show hidden repositories"
-            active={showHidden}
-            onClick={() => setShowHidden((value) => !value)}
-          />
           <div className="add-anchor" ref={addRef}>
             <button
               ref={addTrigger}
@@ -109,13 +118,21 @@ export function Sidebar(props: SidebarProps) {
               </div>
             )}
           </div>
+          <IconButton
+            icon="eye"
+            label="Show hidden repositories"
+            active={showHidden}
+            onClick={() => setShowHidden((value) => !value)}
+          />
           <IconButton icon="settings" label="Settings" onClick={props.onSettings} />
         </div>
       </div>
 
       <div
+        ref={treeRef}
         className="tree"
         role="tree"
+        onScroll={onTreeScroll}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
           const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')]

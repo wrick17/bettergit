@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { createPortal } from 'react-dom'
 import type { AppConfig, ThemeMode } from '../../main/config'
 import type { TreeNode, RepoNode } from '../../main/scan'
 import type { RepoStatus } from '../../main/git/status'
@@ -12,6 +13,7 @@ import { OverflowBar } from './OverflowBar'
 import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
 import { CloneDialog, SettingsDialog } from './Dialogs'
 import { useResizable } from './Splitter'
+import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 
@@ -34,7 +36,13 @@ export function App() {
   const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The titlebar band's element. The repo toolbar is portalled into it.
+  const [titlebar, setTitlebar] = useState<HTMLElement | null>(null)
+  // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
+  const [repoClean, setRepoClean] = useState(false)
   const { size: sidebarWidth, handle: sidebarHandle } = useResizable('bettergit.sidebarWidth', 264, 200, 420)
+
+  const sidebarFold = useFoldHold<HTMLElement>(useFolded('sidebar') && !repoClean, '[role="treeitem"][tabindex="0"]')
 
   const refreshTree = useCallback(async () => setTree(await api.getTree()), [])
   const reportError = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))
@@ -139,6 +147,11 @@ export function App() {
   const repos = useMemo(() => flatten(tree), [tree])
   const repo = repos.find((node) => node.path === selected) ?? null
 
+  // Clean state belongs to the open repo, so it resets when no repo is open.
+  useEffect(() => {
+    if (!repo) setRepoClean(false)
+  }, [repo])
+
   const update = async (patch: Partial<AppConfig>) => {
     setConfig(await api.updateConfig(patch))
   }
@@ -157,9 +170,19 @@ export function App() {
   if (!config) return <div className="boot">Loading…</div>
 
   return (
-    <div className={`shell${sidebarOpen ? '' : ' sidebar-closed'}`} style={{ gridTemplateColumns: sidebarOpen ? `${sidebarWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div
+      className="shell"
+      style={{
+        gridTemplateColumns: sidebarOpen
+          ? `${sidebarFold.collapsed ? SIDEBAR_STRIP_WIDTH : sidebarWidth}px ${sidebarFold.collapsed ? 0 : GUTTER}px minmax(0, 1fr)`
+          : 'minmax(0, 1fr)',
+        '--sidebar-width': `${sidebarWidth}px`,
+      } as CSSProperties}
+    >
+      <header className="titlebar" ref={setTitlebar} />
       {sidebarOpen && (
         <Sidebar
+          fold={sidebarFold}
           tree={tree}
           dirty={dirty}
           config={config}
@@ -185,9 +208,12 @@ export function App() {
           }).catch(reportError)}
           onDrop={handleDrop}
           onSettings={() => setSettingsOpen(true)}
+          stripLabel={repo?.name ?? 'Repositories'}
         />
       )}
-      {sidebarOpen && <div className="splitter gap" {...sidebarHandle} />}
+      {sidebarOpen && (
+        <div className={`splitter gap${sidebarFold.collapsed ? ' off' : ''}`} {...sidebarHandle} {...sidebarFold.splitterHandlers} />
+      )}
       <main className="pane">
         {error && (
           <div className="banner" role="alert">
@@ -207,6 +233,7 @@ export function App() {
         {repo && (
           <RepoPane
             key={repo.path}
+            titlebar={titlebar}
             repo={repo}
             tab={tab}
             onTab={setTab}
@@ -219,6 +246,7 @@ export function App() {
             revision={revision}
             onChanged={() => setRevision((value) => value + 1)}
             onError={reportError}
+            onCleanChange={setRepoClean}
           />
         )}
       </main>
@@ -264,7 +292,8 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError }: {
+function RepoPane({ titlebar, repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+  titlebar: HTMLElement | null
   repo: RepoNode
   tab: 'changes' | 'history'
   onTab: (tab: 'changes' | 'history') => void
@@ -277,6 +306,7 @@ function RepoPane({ repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, on
   revision: number
   onChanged: () => void
   onError: (error: unknown) => void
+  onCleanChange: (clean: boolean) => void
 }) {
   const [status, setStatus] = useState<RepoStatus | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
@@ -293,6 +323,11 @@ function RepoPane({ repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, on
   useEffect(() => {
     load().catch(onError)
   }, [load, revision])
+
+  // Only a loaded status counts, so switching repos keeps the last answer until the new status arrives.
+  useEffect(() => {
+    if (status) onCleanChange(tab === 'changes' && status.changes.length === 0)
+  }, [status, tab, onCleanChange])
 
   // Resolves to whether the action succeeded, so dialogs can stay open on failure.
   const run = async (label: string, action: () => Promise<unknown>) => {
@@ -313,44 +348,48 @@ function RepoPane({ repo, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, on
 
   return (
     <>
-      <header className="toolbar">
-        <div className="repo-title">
-          <h1 className="repo-name">{repo.name}</h1>
-          <label className="branch-pill" title="Switch branch">
-            <Icon name="branch" />
-            <span>{headLabel}</span>
-            <Icon name="chevronDown" className="chevron-down" />
-            <select
-              value={status?.head ?? ''}
-              aria-label="Switch branch"
-              disabled={busy !== null}
-              onChange={(event) => run('switch', () => api.switchBranch(repo.path, event.target.value))}
-            >
-              {!status?.head && <option value="">(no branch)</option>}
-              {branches.filter((branch) => !branch.remote).map((branch) => (
-                <option key={branch.name} value={branch.name}>{branch.name}</option>
-              ))}
-            </select>
-          </label>
-          {status?.upstream && (
-            <span className="sync" title={`Ahead/behind ${status.upstream}`}>
-              <span><b>{status.ahead}</b> ahead</span>
-              <span><b>{status.behind}</b> behind</span>
-            </span>
-          )}
-        </div>
-        <div className="toolbar-actions">
-          <OverflowBar items={repoItems({ repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog })} />
-          <RepoDialogs
-            repo={repo.path}
-            branch={status?.head ?? ''}
-            dialog={dialog}
-            run={run}
-            onError={onError}
-            onClose={() => setDialog(null)}
-          />
-        </div>
-      </header>
+      {/* The toolbar lives in the titlebar band beside the traffic lights, not in the pane below it. */}
+      {titlebar && createPortal(
+        <header className="toolbar">
+          <div className="repo-title">
+            <h1 className="repo-name">{repo.name}</h1>
+            <label className="branch-pill" title="Switch branch">
+              <Icon name="branch" />
+              <span>{headLabel}</span>
+              <Icon name="chevronDown" className="chevron-down" />
+              <select
+                value={status?.head ?? ''}
+                aria-label="Switch branch"
+                disabled={busy !== null}
+                onChange={(event) => run('switch', () => api.switchBranch(repo.path, event.target.value))}
+              >
+                {!status?.head && <option value="">(no branch)</option>}
+                {branches.filter((branch) => !branch.remote).map((branch) => (
+                  <option key={branch.name} value={branch.name}>{branch.name}</option>
+                ))}
+              </select>
+            </label>
+            {status?.upstream && (
+              <span className="sync" title={`Ahead/behind ${status.upstream}`}>
+                <span><b>{status.ahead}</b> ahead</span>
+                <span><b>{status.behind}</b> behind</span>
+              </span>
+            )}
+          </div>
+          <div className="toolbar-actions">
+            <OverflowBar items={repoItems({ repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog })} />
+            <RepoDialogs
+              repo={repo.path}
+              branch={status?.head ?? ''}
+              dialog={dialog}
+              run={run}
+              onError={onError}
+              onClose={() => setDialog(null)}
+            />
+          </div>
+        </header>,
+        titlebar,
+      )}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
         <nav

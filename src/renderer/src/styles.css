@@ -4,6 +4,11 @@
   --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, sans-serif;
   --font-code: 'JetBrains Mono', ui-monospace, Menlo, monospace;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* The titlebar band holds the traffic lights (x 16 to 68) and the repo toolbar. Every pane starts below it. */
+  --titlebar-h: 48px;
+  --traffic-reserve: 84px;
+  /* The one inset and gap for every pane: window edge to card, card to card. fold.ts GUTTER must match. */
+  --gutter: 8px;
   --radius-sm: 7px;
   --radius: 10px;
   --radius-lg: 16px;
@@ -22,7 +27,7 @@
    Code sits on denser fills so it stays sharp. */
 :root[data-theme='light'] {
   color-scheme: light;
-  --glass-fill: rgba(255, 255, 255, 0.46);
+  --glass-fill: rgba(255, 255, 255, 0.4);
   --glass-strong: rgba(252, 252, 255, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.62);
   --glass-edge: rgba(255, 255, 255, 0.95);
@@ -31,9 +36,9 @@
   --glass-sheen: 0.7;
   --aurora-a: rgba(120, 170, 255, 0.22);
   --aurora-b: rgba(255, 170, 215, 0.18);
-  --content: rgba(255, 255, 255, 0.93);
+  --content: rgba(255, 255, 255, 0.85);
   --surface: var(--content);
-  --list: rgba(247, 248, 251, 0.78);
+  --list: rgba(247, 248, 251, 0.62);
   --raised: var(--glass-strong);
   --sunken: rgba(20, 26, 44, 0.06);
   --text: #111114;
@@ -64,7 +69,7 @@
 }
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --glass-fill: rgba(16, 17, 22, 0.6);
+  --glass-fill: rgba(16, 17, 22, 0.5);
   --glass-strong: rgba(20, 21, 27, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.07);
   --glass-edge: rgba(255, 255, 255, 0.2);
@@ -73,9 +78,9 @@
   --glass-sheen: 0.12;
   --aurora-a: rgba(70, 110, 255, 0.18);
   --aurora-b: rgba(255, 80, 170, 0.12);
-  --content: rgba(9, 10, 13, 0.88);
+  --content: rgba(9, 10, 13, 0.8);
   --surface: var(--content);
-  --list: rgba(12, 13, 17, 0.6);
+  --list: rgba(12, 13, 17, 0.5);
   --raised: var(--glass-strong);
   --sunken: rgba(255, 255, 255, 0.06);
   --text: #f5f5f8;
@@ -156,8 +161,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .boot { display: grid; place-items: center; height: 100%; color: var(--text-3); }
 
 /* Shell: floating panels with 8px of window margin. The gaps between panels are the dividers. */
-.shell { display: grid; height: 100%; }
-.drag-strip { position: absolute; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; }
+/* Row 1 is the titlebar band, fixed in height and reserve whatever the folds do. Row 2 holds the panes. */
+.shell { position: relative; display: grid; grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100%; }
+.titlebar {
+  grid-row: 1; grid-column: 1 / -1; display: flex; align-items: center; min-width: 0;
+  padding: 0 10px 0 var(--traffic-reserve); -webkit-app-region: drag;
+}
+.shell > :not(.titlebar) { grid-row: 2; }
 
 /* Glass panel: the sidebar and the main area. Refraction is a subtle displacement of the backdrop. */
 .sidebar, .pane {
@@ -178,20 +188,23 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   -webkit-mask-composite: xor;
   mask-composite: exclude;
 }
-.sidebar { margin: 8px 0 8px 8px; padding: 46px 8px 8px; }
-.pane { margin: 8px 8px 8px 0; padding: 0; }
+.sidebar { margin: var(--gutter) 0 var(--gutter) var(--gutter); padding: 8px 8px 8px; }
+/* The main area is a frame, not a surface. Its cards float on the native material, so the rails and cards share one look.
+   The frame insets only its top. Each card carries the right and bottom inset, so every card ends at the same gutter. */
+.pane { margin: var(--gutter) 0 0; padding: 0; }
+.titlebar + .pane { margin-left: var(--gutter); }
+.pane { background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.pane::after { display: none; }
 
-/* Dividers. The gap variant is invisible until hovered, then fills with the accent tint; the inline variant is a hairline inside a panel. */
+/* Dividers are invisible until the pointer or keyboard focus reaches them: a soft tint on hover, the accent on focus. */
 .splitter { position: relative; flex: none; cursor: col-resize; touch-action: none; outline: none; }
 .splitter::after {
-  content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; margin-left: -0.5px;
-  background: var(--line); transition: background 140ms var(--ease), width 140ms var(--ease), box-shadow 140ms var(--ease);
+  content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; margin-left: -1.5px; border-radius: 3px;
+  background: transparent; transition: background 100ms var(--ease), width 100ms var(--ease);
 }
-.splitter:hover::after, .splitter:focus-visible::after, .splitter:active::after { background: var(--accent); width: 2px; margin-left: -1px; }
-.splitter.gap::after { top: 14px; bottom: 14px; width: 3px; margin-left: -1.5px; border-radius: 3px; background: transparent; }
-.splitter.gap:hover::after, .splitter.gap:focus-visible::after, .splitter.gap:active::after {
-  background: var(--accent-soft); width: 4px; margin-left: -2px;
-}
+.splitter:hover::after, .splitter:active::after { background: var(--accent-soft); width: 4px; margin-left: -2px; }
+.splitter:focus-visible::after { background: var(--accent); width: 3px; margin-left: -1.5px; }
+.splitter.gap::after { top: 14px; bottom: 14px; }
 
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 10px 10px; }
 .sidebar-title { font-size: 13px; font-weight: 600; color: var(--text-2); }
@@ -260,6 +273,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   -webkit-app-region: drag;
 }
 .toolbar button, .toolbar select, .toolbar label { -webkit-app-region: no-drag; }
+/* In the titlebar band the toolbar fills the space right of the traffic-light reserve. */
+.titlebar > .toolbar { flex: 1; min-width: 0; height: 100%; padding: 0; }
 .repo-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .repo-name { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .branch-pill {
@@ -284,20 +299,25 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
-.toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-sm); }
+.toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-pill); }
 
-.tabs { display: flex; align-items: stretch; gap: 22px; height: 40px; padding: 0 20px; flex: none; }
+/* The selected tab shares the list's fill and open bottom edge. Folded lists keep a detached tab. */
+.tabs { display: flex; align-items: stretch; gap: 4px; height: 40px; padding: 0 12px; flex: none; }
 .tabs button {
-  position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0;
-  background: transparent; box-shadow: none; border-radius: 0; color: var(--text-3); font-weight: 500; font-size: 14px;
+  position: relative; display: inline-flex; align-items: center; gap: 6px; margin: 4px 0; padding: 0 12px;
+  background: transparent; box-shadow: none; border-radius: var(--panel-radius); color: var(--text-3); font-weight: 500; font-size: 14px;
 }
-.tabs button:hover:not(:disabled) { background: transparent; color: var(--text-2); }
-.tabs button[aria-selected='true'] { color: var(--text); font-weight: 600; }
-.tabs button::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 2px;
-  background: var(--accent); transform: scaleX(0); transition: transform 220ms var(--ease);
+.tabs button:hover:not(:disabled) { background: var(--hover); color: var(--text-2); }
+.tabs button[aria-selected='true'] { background: var(--glass-chip); color: var(--text); font-weight: 600; }
+.tabs button:active:not(:disabled) { transform: none; color: var(--accent); }
+.pane:has(> [role='tabpanel'] > :is(.changes, .history) > :is(.file-list, .history-list):not(.folded)) .tabs button[aria-selected='true'] {
+  margin-bottom: 0; border-radius: var(--panel-radius) var(--panel-radius) 0 0; background: var(--list);
+  box-shadow: inset 0 1px 0 var(--glass-edge), inset 0.5px 0 0 var(--glass-outline), inset -0.5px 0 0 var(--glass-outline);
 }
-.tabs button[aria-selected='true']::after { transform: scaleX(1); }
+/* Leave the list's top edge open so no rim separates it from the selected tab. */
+.changes > .file-list:not(.folded), .history > .history-list:not(.folded) {
+  box-shadow: inset 0.5px 0 0 var(--glass-outline), inset -0.5px 0 0 var(--glass-outline), inset 0 -0.5px 0 var(--glass-outline), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
 .tab-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-2); font-size: 12px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 
 /* Empty pane: one mark, one line of guidance, two obvious next steps. */
@@ -308,12 +328,20 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .empty-actions { display: flex; gap: 8px; }
 
 /* Changes and history: a list column, a divider, and a reading surface. Column widths are set inline. */
-.changes, .history { display: grid; flex: 1; min-height: 0; }
+.changes, .history { position: relative; display: grid; flex: 1; min-height: 0; }
 .file-list, .history-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--list); overflow: hidden; }
 .history-list { overflow: auto; }
 .diff-pane, .commit-detail { min-width: 0; min-height: 0; overflow: auto; background: var(--content); }
-.changes > .diff-pane, .history > .commit-detail { border-radius: var(--radius-card); margin: 0 8px 8px 0; box-shadow: var(--shadow-raised); }
-.changes > .file-list, .history > .history-list { border-radius: var(--radius-card); margin: 0 0 8px 8px; box-shadow: var(--shadow-raised); }
+.changes > .diff-pane { border-radius: var(--panel-radius); margin: 0 var(--gutter) var(--gutter) 0; box-shadow: var(--shadow-raised); }
+/* History's right side is a container: its metadata card and diff card are separate panes with a divider between. */
+.history > .commit-detail { margin: 0 var(--gutter) var(--gutter) 0; background: transparent; }
+.history > .commit-detail:not(.has-commit) { border-radius: var(--panel-radius); background: var(--content); box-shadow: var(--shadow-raised); }
+.commit-detail.has-commit > .commit-info, .commit-detail.has-commit > .diff-pane {
+  margin: 0; min-width: 0; min-height: 0; border-radius: var(--panel-radius); box-shadow: var(--shadow-raised);
+}
+.commit-detail.has-commit > .commit-info { background: var(--list); }
+.commit-detail.has-commit > .diff-pane { background: var(--content); }
+.changes > .file-list, .history > .history-list { border-radius: var(--panel-radius); margin: 0 0 var(--gutter); box-shadow: var(--shadow-raised); }
 /* The file list scrolls above a commit box that stays pinned to the bottom. */
 .file-scroll { flex: 1; min-height: 0; overflow: auto; }
 
@@ -326,7 +354,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .group ul { list-style: none; margin: 0; padding: 0 6px; }
 .group li {
   position: relative; display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 6px 0 8px; border-radius: var(--radius-sm);
+  height: 28px; padding: 0 6px; border-radius: var(--radius-sm);
 }
 .group li:hover { background: var(--hover); }
 .group li.active {
@@ -335,6 +363,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 .group li .icon-button, .group .tree-row .icon-button { opacity: 0; transition: opacity 120ms var(--ease); }
 .group li:hover .icon-button, .group li:focus-within .icon-button, .group .tree-row:hover .icon-button, .group .tree-row:focus-within .icon-button, .group [role='treeitem']:focus-visible > .tree-row .icon-button { opacity: 1; }
+/* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
+.group > .tree { padding-left: 8px; }
 .group li .check { display: inline-flex; }
 /* Tree file rows: checkbox, icon, and name share one centre line. */
 .tree-row .check { display: inline-flex; flex: none; align-items: center; }
@@ -369,7 +399,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
-.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: 14px/1.45 var(--font-ui); border-radius: var(--radius); }
+.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: 14px/1.45 var(--font-ui); border-radius: var(--radius-sm); }
 .commit-action {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   height: 34px; padding: 0 16px; border-radius: var(--radius-pill);
@@ -388,14 +418,14 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .move-arrows { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 /* Above the file headers (z 2), below popovers (z 40) and dialogs (z 50). Near-opaque like the headers (--content), so diff text barely shows through. */
 .diff-toolbar {
-  position: sticky; top: 0; z-index: 3; background: var(--content);
+  position: sticky; top: 0; z-index: 3; background: var(--content); border-radius: var(--panel-radius) var(--panel-radius) 0 0;
   display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--diff-toolbar-height); padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); font: 13px/1 var(--font-ui);
 }
 .diff-toolbar-controls { display: inline-flex; align-items: center; gap: 8px; }
 .moves { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .diff-layout-toggle, .context-toggle, .changes-view-toggle { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--glass-chip); }
 /* Icon buttons in a toggle keep their own size. The text-button padding below would push the icon off the centre line. */
-.diff-layout-toggle .icon-button, .changes-view-toggle .icon-button { width: 30px; height: 24px; padding: 0; border-radius: var(--radius-sm); }
+.diff-layout-toggle .icon-button, .changes-view-toggle .icon-button { width: 30px; height: 24px; padding: 0; border-radius: var(--radius-pill); }
 .diff-layout-toggle .icon-button.on { background: var(--glass-strong); color: var(--text); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
 .context-toggle button, .changes-view-toggle button { background: transparent; box-shadow: none; padding: 3px 10px; border-radius: 999px; font-size: 13px; color: var(--text-2); }
 .context-toggle button:hover:not(:disabled), .changes-view-toggle button:hover:not(:disabled) { background: transparent; color: var(--text); }
@@ -484,7 +514,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit.active .ref.head { background: #ffffff; color: var(--accent-fill); }
 .more { display: block; margin: 10px auto 16px; background: transparent; box-shadow: none; color: var(--text-2); }
 
-.commit-detail { display: flex; flex-direction: column; }
+.commit-detail { position: relative; display: flex; flex-direction: column; }
 .commit-detail.has-commit { display: grid; overflow: hidden; }
 .commit-info { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; z-index: 1; }
 .commit-info .commit-head { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overflow-wrap: anywhere; }
@@ -567,9 +597,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .add-popover { top: 34px; right: 0; }
 .context-menu { position: fixed; transform-origin: top left; }
 .popover button {
-  display: flex; align-items: center; width: 100%; height: 28px; padding: 0 10px;
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 10px;
   border: 0; border-radius: var(--radius-sm); background: transparent; box-shadow: none; text-align: left;
 }
+/* Every menu row shares one icon slot: a 16px glyph with 8px before the label. Lucide's 24px default crowded the label. */
+.popover button svg { flex: none; width: 16px; height: 16px; }
 .popover button:hover:not(:disabled) { background: var(--accent-fill); color: var(--on-accent); }
 .popover button.danger { color: var(--del); }
 .popover button.danger:hover:not(:disabled) { background: var(--del-bg); color: var(--del); }
@@ -647,9 +679,38 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .tab-row > .tabs { flex: 1; min-width: 0; }
 .pane-toggles { display: flex; align-items: center; gap: 2px; padding-right: 20px; }
 /* A lone pane keeps the 8px frame on both sides. With both panes shown, the splitter sits between them. */
-.changes > :only-child, .history > :only-child { margin: 0 8px 8px; }
+.changes > :only-child, .history > :only-child { margin: 0 var(--gutter) var(--gutter); }
 /* With the detail pane hidden, the list stops at a readable width instead of stretching across the window. */
 .changes > .file-list:only-child { max-width: 560px; }
+
+/* Folded panes: the sidebar, the file or commit list, and the commit details fold into a 44px strip beside their neighbour
+   (fold.ts sets when). A held pane opens in flow: its grid track grows, so the neighbours shift, and the strip gives way
+   to the content. Collapsed content is hidden but keeps its layout. A click on the strip does not hold the pane. */
+.fold-strip {
+  display: flex; flex: 1 1 auto; flex-direction: column; align-items: center; gap: 10px; width: 100%; min-height: 0; padding: 10px 0;
+  border-radius: var(--radius-sm); background: transparent; box-shadow: none; color: var(--text-2);
+}
+.fold-strip:hover:not(:disabled) { background: var(--hover); }
+.fold-strip svg { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.fold-label {
+  min-height: 0; max-height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; font-weight: 600; color: var(--text);
+}
+.fold-label code { font: 500 11px/1 var(--font-code); color: var(--text-3); }
+.folded:not(.held) > :not(.fold-strip) { visibility: hidden; }
+.folded.held > .fold-strip { display: none; }
+/* The sidebar's 8px side padding is cancelled, so the strip fills the 36px column the 44px track leaves beside its margin. */
+.sidebar.folded > .fold-strip { width: auto; margin: 0 -8px; }
+.history-list.folded:not(.held), .commit-info.folded:not(.held) { overflow: hidden; }
+/* A folded rail keeps the 8px gap that its hidden splitter (0px track) cannot give. A held rail is in flow, so its splitter supplies the gap. */
+.sidebar.folded:not(.held), .changes > .file-list.folded:not(.held), .history > .history-list.folded:not(.held), .commit-detail.has-commit > .commit-info.folded:not(.held) { margin-right: var(--gutter); }
+.sidebar, .changes > .file-list, .history > .history-list, .commit-detail.has-commit > .commit-info { transition: margin-right 100ms var(--ease); }
+/* Grid tracks animate as a pane folds, opens in flow, or the window crosses a fold line. A divider drag writes the track
+   each frame, so Splitter.tsx turns the transition off with data-resizing for the drag. */
+.shell, .changes, .history, .commit-detail { transition: grid-template-columns 100ms var(--ease); }
+[data-resizing] { transition: none !important; }
+/* A divider beside a collapsed pane keeps its track at 0px and is hidden, so nothing shows between the strip and the content. */
+.splitter.off { visibility: hidden; pointer-events: none; }
 
 /* Commit detail stat: one row per changed file (CommitStat.tsx). Rows match the Changes list: 28px, 13.5px names, 12px counts. */
 .commit-stat-block { display: grid; gap: 6px; }
@@ -668,6 +729,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   position: fixed; z-index: 60; padding: 5px 9px; border-radius: 7px; background: var(--tip); color: var(--tip-text);
   font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm);
   animation: fade 120ms var(--ease) 350ms both;
 }
 /* Destructive icon actions, such as reset (OverflowBar danger). */
@@ -682,7 +744,6 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .dialog-note p { margin: 0 0 6px; }
 
 /* Fixer B: the traffic-light inset, row tools that show on focus (visibility keeps them out of the Tab order until then), and the row focus ring. */
-.shell.sidebar-closed .toolbar { padding-left: 84px; }
 .tree-row .row-tools { display: inline-flex; visibility: hidden; }
 .tree-row:hover .row-tools, .tree-row:focus-within .row-tools { visibility: visible; }
 [role='treeitem']:focus-visible > .tree-row { outline: 2px solid var(--accent); outline-offset: -2px; }

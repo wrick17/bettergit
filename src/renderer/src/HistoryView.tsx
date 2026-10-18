@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { layoutGraph, type GraphRow } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
@@ -10,7 +10,8 @@ import { Icon } from './Icons'
 import { ActionMenu } from './OverflowBar'
 import { useContextLines } from './prefs'
 import { useResizable } from './Splitter'
-import { loadSession, savePlace } from './session'
+import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { loadSession, savePlace, savedView, saveView, useScrollMemory } from './session'
 
 const api = window.bettergit
 const PAGE = 300
@@ -35,10 +36,19 @@ interface Props {
 
 export function HistoryView({ repo, head, revision, listOpen, detailOpen, onError, onChanged }: Props) {
   const [commits, setCommits] = useState<Commit[]>([])
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
   const [detail, setDetail] = useState<{ hash: string; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
-  const [compare, setCompare] = useState<{ label: string; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
+  // The compare the user asked for: the commit, and the ref it compares with.
+  const [target, setTarget] = useState<{ hash: string; label: string; ref: string; quiet?: boolean } | null>(null)
+  // The last fetched compare. It is shown only while its target is current.
+  const [loaded, setLoaded] = useState<{ hash: string; label: string; ref: string; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
+  // The compare that was open for the commit at launch. It is read once, and returns when that commit's detail shows.
+  const [savedCompare] = useState(() => {
+    const saved = selected ? savedView<{ label: string; ref: string } | null>(`${repo}|compare`, selected, null) : null
+    return saved && selected ? { hash: selected, ...saved } : null
+  })
+  const restoredCompare = useRef(false)
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
@@ -48,8 +58,15 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const [webBase, setWebBase] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
   const context = useContextLines()
+  // Shown only for the target on screen. While a new fetch runs, the commit's own diff is shown.
+  const compare = loaded && target && target.hash === selected && loaded.hash === target.hash && loaded.ref === target.ref ? loaded : null
   const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
   const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
+  // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, 'ul.commits')
+  const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen, '.commit-info button:not(.fold-strip)')
+  const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : historyWidth
+  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : detailWidth
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const selectedRef = useRef(selected)
@@ -97,10 +114,14 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     return () => { stale = true }
   }, [repo, selected, context, onError])
 
-  // Remembers the open commit per repo, so a reload returns to it.
+  // Remembers the open commit and the search per repo, so a reload returns to them.
   useEffect(() => {
     savePlace(repo, { commit: selected ?? undefined })
   }, [repo, selected])
+
+  useEffect(() => {
+    savePlace(repo, { query: query || undefined })
+  }, [repo, query])
 
   // The remote link and the upstream feed the commit menu. Both follow the repository, so they reload with it.
   useEffect(() => {
@@ -116,7 +137,10 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   // A compare, prompt, or notice belongs to the commit it was started from. Moving to another commit clears it.
   useEffect(() => {
     selectedRef.current = selected
-    setCompare(null)
+    // The launch compare is spent once the selection leaves its commit, even before that commit's detail arrived.
+    if (selected !== savedCompare?.hash) restoredCompare.current = true
+    setTarget(null)
+    setLoaded(null)
     setPrompt(null)
     setNotice(null)
     // A right-click selects its commit and opens the menu for it, so the menu survives only for the selected commit.
@@ -144,13 +168,9 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     }
   }, [menuOpen])
 
+  // A merge-base lookup answers later, so a reply for a commit no longer selected is dropped.
   const compareWith = (label: string, ref: string) => {
-    const hash = selected
-    if (!hash) return
-    api.compare(repo, hash, ref).then((result: { files: DiffFile[]; moves: MovedBlock[] }) => {
-      // A slow result must not land on a commit the user has already left.
-      if (selectedRef.current === hash) setCompare({ label, ...result })
-    }).catch(onError)
+    if (selected && selected === selectedRef.current) setTarget({ hash: selected, label, ref })
   }
 
   const rows = useMemo(() => layoutGraph(commits), [commits])
@@ -160,6 +180,39 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   const picked = commits.find((commit) => commit.hash === selected) ?? null
   // Detail for another commit is not shown, so moving the selection clears it until its own reply arrives.
   const current = detail && detail.hash === selected ? detail : null
+  // The list and the open commit's diff return to their saved scroll. A diff only returns for the commit it was saved with.
+  // The diff's file collapse map has its own id: a scroll write replaces whatever is stored under the scroll's id.
+  const onListScroll = useScrollMemory(list.pane, `${repo}|history-list`, 'list', rows.length > 0)
+  const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', current !== null)
+
+  // The compare that was open comes back once its commit shows. A ref that no longer resolves opens the commit without it.
+  useEffect(() => {
+    if (restoredCompare.current || !savedCompare || !current || selected !== savedCompare.hash) return
+    restoredCompare.current = true
+    setTarget({ ...savedCompare, quiet: true })
+  }, [savedCompare, current, selected])
+
+  // Fetches the target. A new target cancels the older fetch, so its reply cannot land.
+  useEffect(() => {
+    if (!target || target.hash !== selected) return
+    let stale = false
+    api.compare(repo, target.hash, target.ref).then((result: { files: DiffFile[]; moves: MovedBlock[] }) => {
+      if (!stale) setLoaded({ hash: target.hash, label: target.label, ref: target.ref, ...result })
+    }).catch((failure: unknown) => {
+      if (stale) return
+      // A restored compare that no longer resolves is dropped without a message. A requested one reports its error.
+      setTarget(null)
+      if (!target.quiet) onError(failure)
+    })
+    return () => { stale = true }
+  }, [repo, selected, target, onError])
+
+  // The compare that is requested is saved with its commit, so a reload asks for it again.
+  // A saved compare stays saved until it returns, so a remount before its commit shows still restores it.
+  useEffect(() => {
+    if (!restoredCompare.current && savedCompare?.hash === selected) return
+    saveView(`${repo}|compare`, selected ?? '', target && target.hash === selected ? { label: target.label, ref: target.ref } : null)
+  }, [repo, selected, target, savedCompare])
   // The heading already shows the subject, so the body under it leaves the subject out.
   const body = current ? bodyBelow(current.details.body, picked?.subject ?? '') : ''
   // A repo with no commits gets its own message in place of the selection hint.
@@ -224,9 +277,25 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   return (
-    <div className="history" style={{ gridTemplateColumns: listOpen && detailOpen ? `${historyWidth} 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div
+      className="history"
+      style={{
+        gridTemplateColumns: listOpen && detailOpen ? `${listTrack} ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+      } as CSSProperties}
+    >
       {listOpen && (
-        <div className="history-list">
+        <div
+          className={`history-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
+          ref={list.pane}
+          {...list.paneHandlers}
+          onScroll={onListScroll}
+        >
+          {list.folded && (
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" onClick={list.activate}>
+              <Icon name="chevron" />
+              <span className="fold-label">{picked ? <><code>{picked.hash.slice(0, 7)}</code> {picked.subject}</> : 'Commits'}</span>
+            </button>
+          )}
           <div className="search">
             <Icon name="search" />
             <input
@@ -264,17 +333,30 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
           {!rows.length && !empty && <p className="hint">No commits to show.</p>}
         </div>
       )}
-      {listOpen && detailOpen && <div className="splitter" {...historyHandle} />}
+      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />}
       {detailOpen && (
-        <div className={`commit-detail${selected && current ? ' has-commit' : ''}`} style={selected && current ? { gridTemplateColumns: `${detailWidth} 9px minmax(0, 1fr)` } : undefined}>
+        <div
+          className={`commit-detail${selected && current ? ' has-commit' : ''}`}
+          style={selected && current ? { gridTemplateColumns: `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` } as CSSProperties : undefined}
+        >
           {!selected && (empty
             ? <p className="hint">This repository has no commits yet.</p>
             : <p className="hint">Select a commit. Use the up and down arrows to move between commits.</p>)}
           {selected && !current && <p className="hint">Loading…</p>}
           {selected && current && (
             <>
-              <div className="commit-info">
-                <header className="commit-head">
+              <div
+                className={`commit-info${details.folded ? ' folded' : ''}${details.held ? ' held' : ''}`}
+                ref={details.pane}
+                {...details.paneHandlers}
+              >
+                {details.folded && (
+                  <button ref={details.strip} type="button" className="fold-strip" aria-label="Show commit details" onClick={details.activate}>
+                    <Icon name="chevron" />
+                    <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {current.files.length} files</span>
+                  </button>
+                )}
+                <header className="commit-head" tabIndex={-1}>
                   {picked && (
                     <div className="commit-title">
                       <h2 className="commit-subject">{picked.subject}</h2>
@@ -299,17 +381,17 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
                     .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
                 }} />
               </div>
-              <div className="splitter" aria-label="Commit details width" {...detailHandle} />
-              <div className="diff-pane" ref={diffRef}>
+              <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />
+              <div className="diff-pane" ref={diffRef} onScroll={onDiffScroll}>
                 {compare && totals && (
                   <div className="compare-bar">
                     <span>
                       Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats at left are for this comparison.
                     </span>
-                    <button className="ghost" onClick={() => setCompare(null)}>Exit comparison</button>
+                    <button className="ghost" onClick={() => setTarget(null)}>Exit comparison</button>
                   </div>
                 )}
-                <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} />
+                <DiffView files={compare?.files ?? current.files} moves={compare?.moves ?? current.moves} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} />
               </div>
             </>
           )}

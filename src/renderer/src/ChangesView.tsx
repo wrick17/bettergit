@@ -7,7 +7,8 @@ import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines } from './prefs'
 import { useResizable } from './Splitter'
-import { loadSession, savePlace } from './session'
+import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { loadSession, savePlace, useScrollMemory } from './session'
 
 const api = window.bettergit
 
@@ -49,26 +50,39 @@ interface SectionProps {
 }
 
 const VIEW_KEY = 'bettergit.changesView'
-// Commit drafts by repo path. A module-level map survives unmounts, such as opening History.
-const drafts = new Map<string, string>()
+
+// Draft edits per repo. Module level, so a commit from an unmounted pane still sees edits made after a remount.
+const draftEdits = new Map<string, number>()
 
 export function ChangesView({ repo, status, revision, listOpen, detailOpen, onChanged, onError }: Props) {
   const [selection, setSelection] = useState<Selection | null>(() => savedSelection(repo, status))
-  const [, rerender] = useState(0)
   const [pending, setPending] = useState<Pending | null>(null)
-  const message = drafts.get(repo) ?? ''
+  // The draft is kept in the session, so a reload keeps what was typed.
+  const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
   const paneRef = useRef<HTMLDivElement>(null)
-  // The file picked last, or restored at launch. The pane scrolls to it once its diff loads.
-  const revealRef = useRef<string | null>(selection?.path ?? null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // The file picked last. The pane scrolls to it once its diff loads. A file restored at launch is revealed only when it has no saved scroll position.
+  const revealRef = useRef<string | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
   // Both sections load on every refresh. The file rows need their +/- counts, and the empty-selection pane shows them all.
   const [all, setAll] = useState<{ staged: Working; unstaged: Working } | null>(null)
   // Context level of each widened file, keyed by levelKey. Kept across refreshes and read by the loaders.
-  const [extra, setExtra] = useState<Record<string, number>>({})
+  const [extra, setExtra] = useState<Record<string, number>>(() => loadSession().places[repo]?.widened ?? {})
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
   const context = useContextLines()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
+  // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
+  // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
+  const clean = status.changes.length === 0
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
+  const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
+  // The view each loaded diff belongs to. Only a diff loaded for the file on screen is ready for its scroll position.
+  const diffKey = selection && JSON.stringify([repo, selection.staged, selection.path, context])
+  const diffFor = useRef<string | null>(null)
+  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, selection ? `${selection.staged}:${selection.path}` : 'all',
+    selection ? diffFor.current === diffKey : all !== null,
+    selection ? (pane) => revealFile(pane, selection.path) : undefined)
   const errorRef = useRef(onError)
   errorRef.current = onError
   const extraRef = useRef(extra)
@@ -80,13 +94,14 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const stats = useMemo(() => countStats(all), [all])
   const List = view === 'tree' ? Tree : Group
 
-  // A different repo starts with no widened files.
-  useEffect(() => setExtra({}), [repo])
-
-  // Remembers the open file per repo, so a reload returns to it.
+  // Remembers the open file per repo, so a reload returns to it. The closed folders and the widened files are kept the same way.
   useEffect(() => {
     savePlace(repo, { file: selection?.path, staged: selection?.staged })
   }, [repo, selection])
+
+  useEffect(() => {
+    savePlace(repo, { collapsed: [...collapsed], widened: extra })
+  }, [repo, collapsed, extra])
 
   // A selection survives a status change only while its file is still in the section it names. Otherwise it moves to the other section or clears.
   useEffect(() => {
@@ -113,14 +128,18 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   useEffect(() => {
     if (!selection) {
+      diffFor.current = null
       setDiff(null)
       return
     }
     let stale = false
+    const key = diffKey
     api.working(repo, selection.staged, context)
       .then((next: Working) => widen(repo, next, selection.staged, extraRef.current))
       .then((next) => {
-        if (!stale) setDiff(next)
+        if (stale) return
+        diffFor.current = key
+        setDiff(next)
       })
       .catch((failure: unknown) => errorRef.current(failure))
     return () => { stale = true }
@@ -129,13 +148,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   // Picking a file keeps the continuous diff and scrolls the file's header into view once its diff loads.
   useEffect(() => {
     const path = revealRef.current
-    if (!path || !diff) return
+    if (!path || !diff || diffFor.current !== diffKey) return
     revealRef.current = null
     // Files skipped by content-visibility use their estimated height until a frame has laid them out, so scroll after two frames.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      Array.from(paneRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
-        .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
-    }))
+    requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path)))
   }, [diff])
 
   const act = async (action: () => Promise<unknown>) => {
@@ -198,9 +214,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // Empty text drops the draft, so clearing the box is how a draft is discarded.
   const editMessage = (text: string) => {
-    if (text) drafts.set(repo, text)
-    else drafts.delete(repo)
-    rerender((count) => count + 1)
+    draftEdits.set(repo, (draftEdits.get(repo) ?? 0) + 1)
+    setMessage(text)
+    savePlace(repo, { draft: text || undefined })
   }
 
   const canCommit = staged.length > 0 && message.trim().length > 0
@@ -208,10 +224,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const commit = () => {
     if (pending || !canCommit) return
     setPending({ kind: 'commit' })
+    const edit = draftEdits.get(repo)
     void act(async () => {
       await api.commitChanges(repo, message, false)
-      // A draft typed while the commit ran was not committed, so it stays.
-      if (drafts.get(repo) === message) editMessage('')
+      // A draft typed while the commit ran was not committed, so it stays, even if it was typed in a remounted pane.
+      if (draftEdits.get(repo) === edit) editMessage('')
       setSelection(null)
     }).finally(() => setPending(null))
   }
@@ -230,20 +247,28 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   return (
-    <div className="changes" style={{ gridTemplateColumns: listOpen && detailOpen ? `${listWidth}px 9px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="changes" style={{ gridTemplateColumns: listOpen && detailOpen ? `${list.collapsed ? STRIP_WIDTH : listWidth}px ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
       {/* Clicking empty space in the list clears the file selection, so the right pane shows every change again. */}
       {listOpen && (
         <div
-          className="file-list"
+          className={`file-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
+          ref={list.pane}
+          {...list.paneHandlers}
           onClick={(event) => {
-            if (!(event.target as HTMLElement).closest('li, h3, .commit-box, .changes-view-toggle, .tree-row')) setSelection(null)
+            if (!(event.target as HTMLElement).closest('li, h3, .commit-box, .changes-view-toggle, .tree-row, .fold-strip')) setSelection(null)
           }}
         >
+          {list.folded && (
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show file list" onClick={list.activate}>
+              <Icon name="chevron" />
+              <span className="fold-label">{selection ? splitPath(selection.path).name : `${staged.length} staged · ${unstaged.length} unstaged`}</span>
+            </button>
+          )}
           <div className="changes-view-toggle">
             <IconButton icon="listFlat" label="List view" active={view === 'list'} onClick={() => chooseView('list')} />
             <IconButton icon="listTree" label="Tree view" active={view === 'tree'} onClick={() => chooseView('tree')} />
           </div>
-          <div className="file-scroll">
+          <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
             <List
               title="Staged"
               changes={staged}
@@ -304,9 +329,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
           </div>
         </div>
       )}
-      {listOpen && detailOpen && <div className="splitter" {...listHandle} />}
+      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
-        <div className="diff-pane" ref={paneRef}>
+        <div className="diff-pane" ref={paneRef} onScroll={onDiffScroll}>
           {!selection && status.changes.length === 0 && <p className="hint">Working tree clean</p>}
           {!selection && all && status.changes.length > 0 && (
             <>
@@ -317,6 +342,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                   moves={all.staged.moves}
                   stage={{ staged: true, disabled: !!pending, onToggle: togglePath }}
                   onExpand={(file) => expandFile('staged', file)}
+                  persist={{ id: `${repo}|changes-staged`, key: 'all' }}
                 />
               )}
               <h2 className="diff-section">Unstaged <span className="count">{all.unstaged.files.length}</span></h2>
@@ -326,6 +352,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                   moves={all.unstaged.moves}
                   stage={{ staged: false, disabled: !!pending, onToggle: togglePath }}
                   onExpand={(file) => expandFile('unstaged', file)}
+                  persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
                 />
               )}
             </>
@@ -336,6 +363,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               moves={diff.moves}
               stage={{ staged: selection.staged, disabled: !!pending, onToggle: togglePath }}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
+              persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
             />
           )}
         </div>
@@ -349,6 +377,11 @@ function savedSelection(repo: string, status: RepoStatus): Selection | null {
   const place = loadSession().places[repo]
   if (!place?.file || !status.changes.some((change) => change.path === place.file)) return null
   return { path: place.file, staged: !!place.staged }
+}
+
+function revealFile(pane: HTMLElement | null, path: string) {
+  Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
+    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
 }
 
 // The path a file is listed and matched by: its new name, or its old one for a deletion.

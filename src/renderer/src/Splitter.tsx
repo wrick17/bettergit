@@ -1,4 +1,5 @@
 import { useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent } from 'react'
+import { GUTTER } from './fold'
 
 // A resizable column width, remembered between launches. Spread `handle` onto a divider element:
 // drag it, double-click to restore the default, or use the arrow keys (Shift for bigger steps).
@@ -19,7 +20,7 @@ export function useResizable(key: string, initial: number, min: number, max: num
   }
   const track = (px: number) => (cap ? `min(${px}px, ${cap}%)` : `${px}px`)
   const paint = (grid: HTMLElement, px: number) => {
-    grid.style.gridTemplateColumns = `${track(px)} 9px minmax(0, 1fr)`
+    grid.style.gridTemplateColumns = `${track(px)} ${GUTTER}px minmax(0, 1fr)`
   }
   // The rendered width of a saved width, and the widths the track can take, under a cap of `px`.
   // A cap below the configured min pins the track: it neither shrinks nor grows, and the saved width is kept for a wider grid.
@@ -51,7 +52,9 @@ export function useResizable(key: string, initial: number, min: number, max: num
       const grid = event.currentTarget.parentElement
       if (!grid) return
       event.currentTarget.setPointerCapture(event.pointerId)
-      // A move starts from the rendered width, so it does not jump.
+      // The grid's column transition would trail the pointer, so it is off until release.
+      grid.dataset.resizing = ''
+      // Measured with the transition off. A move starts from the rendered width, so it does not jump.
       const { now, low, high } = bounds(measure(grid), latest.current)
       drag.current = { x: event.clientX, from: now, px: now, low, high, frame: 0, grid }
     },
@@ -70,6 +73,7 @@ export function useResizable(key: string, initial: number, min: number, max: num
       if (!d) return
       drag.current = null
       cancelAnimationFrame(d.frame)
+      delete d.grid.dataset.resizing
       // A click, or a drag that cannot move the track, keeps the saved width and React's track.
       if (d.px === d.from) return paint(d.grid, latest.current)
       paint(d.grid, d.px)

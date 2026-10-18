@@ -4,6 +4,7 @@ import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, useContextLines, useLanguageOverrides } from './prefs'
 import { highlightFile, type Segment } from './highlight'
+import { savedView, saveView } from './session'
 
 interface Props {
   files: DiffFile[]
@@ -12,6 +13,8 @@ interface Props {
   stage?: { staged: boolean; disabled?: boolean; onToggle: (path: string, stage: boolean) => void }
   // Set in the Changes view. Each hunk gets an expand row above and below to show more context for that file.
   onExpand?: (file: DiffFile) => void
+  // Where the open and closed choices of each file are saved. The choices come back only for the same key, such as a commit.
+  persist?: { id: string; key: string }
 }
 
 export type DiffLayout = 'unified' | 'split'
@@ -38,7 +41,7 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files, moves, stage, onExpand }: Props) {
+export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
   const current = useDiffLayout()
@@ -48,7 +51,12 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand }
   const [arrows, setArrows] = useState<Arrow[]>([])
   const [height, setHeight] = useState(0)
   // The user's open or closed choice per file path. Files without a choice use the default.
-  const [choices, setChoices] = useState<Record<string, boolean>>({})
+  const persistId = persist?.id
+  const persistKey = persist?.key
+  const [choices, setChoices] = useState<Record<string, boolean>>(() => (persistId !== undefined && persistKey !== undefined ? savedView(persistId, persistKey, {}) : {}))
+  useEffect(() => {
+    if (persistId !== undefined && persistKey !== undefined) saveView(persistId, persistKey, choices)
+  }, [persistId, persistKey, choices])
 
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
