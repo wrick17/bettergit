@@ -41,8 +41,5 @@
 .diff .md-destination, .diff .md-image, .diff .md-definition, .diff .md-note { color: var(--text-2); }
 .diff .md-footnote-definition { display: flex; gap: 6px; font-size: 12px; }
 .diff .md-content hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
-.diff .md-source-syntax { margin-top: 4px; color: var(--text-2); font: 11px/18px var(--font-ui); }
-.diff .md-source-syntax > span:first-child { color: var(--text-3); }
-.diff .md-source-syntax code { font-size: 11px; }
 .diff .md-moved-text { background: var(--move-bg); color: var(--move); }
 .diff .md-content li > input + p { display: inline; }

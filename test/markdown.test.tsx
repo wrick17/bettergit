@@ -69,7 +69,7 @@ for (const [name, source, tag] of [['paragraph', 'first\rsecond', 'p'], ['headin
   })
 }
 
-test('bare CR source ranges retain UTF16 boundaries, blank/note rails and targeted syntax columns', () => {
+test('bare CR source ranges retain UTF16 boundaries and blank/note rails without a source syntax readout', () => {
   const source = '😀 first\rsecond'
   const files = parseDiff([
     'diff --git a/boundary.md b/boundary.md', '--- a/boundary.md', '+++ b/boundary.md', '@@ -0,0 +1,3 @@',
@@ -93,10 +93,7 @@ test('bare CR source ranges retain UTF16 boundaries, blank/note rails and target
     const syntax = html.split('data-path="syntax.md"')[1].split('</section>')[0]
     expect((syntax.match(/<p[ >]/g) ?? []).length).toBe(2)
     expect([...syntax.matchAll(/<em>(.*?)<\/em>/g)].map(match => match[1].replace(/<[^>]+>/g, ''))).toEqual(['same', 'same'])
-    expect(syntax).toContain('Source syntax − 1')
-    expect(syntax).toContain('Source syntax + 1')
-    expect(syntax).toContain('col 4 ')
-    expect(syntax).toContain('col 9 ')
+    expect(syntax).not.toContain('Source syntax')
     expect((syntax.match(/data-source-row=/g) ?? []).length).toBe(2)
   }
 })
@@ -189,7 +186,7 @@ test('hunk sides keep independent fence state and never infer missing headers or
   }
 })
 
-test('word edits keep intraline tints while syntax-only edits stay formatted with targeted annotations', () => {
+test('word edits keep intraline tints while syntax-only edits stay formatted', () => {
   const pairs = [['A **before** phrase', 'A **after** phrase'], ['A *stable* phrase', 'A **stable** phrase'], ['*same*', '_same_'], ['**same**', '__same__'], ['A `before` value', 'A `after` value']]
   for (const layout of ['unified', 'split'] as const) {
     const files = pairs.map(([before, after], index) => file(`syntax-${index}.md`, [line(before, 'del'), line(after, 'add')]))
@@ -199,17 +196,14 @@ test('word edits keep intraline tints while syntax-only edits stay formatted wit
     expect(html).toContain('<em><span>same</span></em>')
     expect(html).toContain('<strong><span>same</span></strong>')
     expect(html).toContain('<code><span class="intra">before</span></code>')
-    expect(html).toContain('Source syntax −')
-    expect(html).toContain('Source syntax +')
-    expect(html).toContain('&quot;__&quot;')
+    expect(html).not.toContain('Source syntax')
     expect(html).not.toContain('<code>*same*</code>')
     expect(html).not.toContain('<code>A **stable** phrase</code>')
     const pureText = html.split('data-path="syntax-0.md"')[1].split('</section>')[0]
-    expect(pureText).not.toContain('md-source-syntax')
   }
 })
 
-test('paired blocks retain exact side rails and annotate alignment, fence, reference and normalized edits only where needed', () => {
+test('paired blocks retain exact side rails for alignment, fence, reference and normalized edits', () => {
   const table = [line('| Name | Value |', 'context', 1), line('|---|---|', 'del', 2), line('| one | before |', 'del', 3), line('|:---|---:|', 'add', 2), line('| one | after |', 'add', 3), line('| two | added |', 'add', 4), line('', 'context', 5)]
   const fixtures = [file('table.md', table), file('shape.md', [line('paragraph', 'del'), line('- first', 'add'), line('- second', 'add', 2)]), file('fence.md', [line('```ts', 'del'), line('~~~ts', 'add'), line('const one = 1', 'context', 2), line('```', 'del', 3), line('~~~', 'add', 3)]), file('reference.md', [line('[label][ref]', 'context'), line('', 'context', 2), line('[ref]: /before', 'del', 3), line('[ref]: /after', 'add', 3)]), file('normalized.md', [line('A &amp; B', 'del'), line('A &#38; B', 'add')])]
   for (const layout of ['unified', 'split'] as const) {
@@ -219,18 +213,14 @@ test('paired blocks retain exact side rails and annotate alignment, fence, refer
     const rail = (side: string) => [...tables.matchAll(new RegExp(`data-source-row="0:0:(\\d+)" data-source-side="${side}"`, 'g'))].map(match => Number(match[1]))
     expect(rail('old')).toEqual([0, 1, 2, ...(layout === 'split' ? [6] : [])])
     expect(rail('new')).toEqual([0, 3, 4, 5, ...(layout === 'split' ? [6] : [])])
-    expect(tables).toContain('Source syntax')
-    expect(tables).toContain('&quot;:&quot;')
+    expect(tables).not.toContain('Source syntax')
     expect(tables).not.toContain('<code>| Name | Value |</code>')
     const shape = html.split('data-path="shape.md"')[1].split('</section>')[0]
     expect(shape).toContain('<p')
     expect(shape).toContain('<ul')
-    expect((shape.match(/class="md-source-syntax/g) ?? []).length).toBe(1)
     expect(shape).not.toContain('<code>paragraph</code>')
-    expect(html).toContain('&quot;~~~&quot;')
     expect(html).toContain('/before')
     expect(html).toContain('/after')
-    expect(html).toContain('col ')
     expect(html).not.toMatch(/\s(?:src|href)=/)
   }
 })
@@ -246,7 +236,7 @@ for (const layout of ['unified', 'split'] as const) test(`formatted ${layout} re
   expect((html.match(/data-source-row=/g) ?? []).length).toBe(6)
   expect(html).toContain('<span class="sign">+</span>')
   expect(html).toContain('<span class="sign">-</span>')
-  expect(html).toContain('Source syntax')
+  expect(html).not.toContain('Source syntax')
   expect(html).toContain('moved to line')
   expect(html).toContain('md-moved-text')
 })

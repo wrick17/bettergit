@@ -61,6 +61,10 @@ const api = {
     invoke('repo:conflict-save', repo, file, save) as Promise<ConflictSaved>,
   conflictReset: (repo: string, file: string, request: ConflictReset) =>
     invoke('repo:conflict-reset', repo, file, request) as Promise<ConflictResetResult>,
+  // The inline editor. The write sends back the text it loaded, so the main process can refuse a file changed since.
+  readFile: (repo: string, file: string) => invoke('repo:file-read', repo, file) as Promise<string>,
+  writeFile: (repo: string, file: string, expected: string, text: string) =>
+    invoke('repo:file-write', repo, file, expected, text) as Promise<void>,
   // Drag-and-drop gives a File; webUtils turns it into a real path without exposing fs to the page.
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),

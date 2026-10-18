@@ -17,7 +17,7 @@ import { promises as fs, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeConfig } from '../src/main/config'
-import { openCommand, resolveFileTarget, resolveRepoTarget } from '../src/main/editor'
+import { openCommand, readWorkingFile, resolveFileTarget, resolveRepoTarget, writeWorkingFile } from '../src/main/editor'
 import type { EditorId } from '../src/shared/editors'
 
 // Tests stop at the native process boundary. No test starts an editor.
@@ -63,6 +63,26 @@ test('reports a missing file and never creates it', async () => {
   const { repo } = await sandbox()
   await expect(resolveFileTarget(repo, 'src/deleted.ts')).rejects.toThrow('Not in the working copy')
   expect(await fs.stat(path.join(repo, 'src', 'deleted.ts')).catch(() => null)).toBeNull()
+})
+
+test('the inline editor saves only a file unchanged since it was loaded, inside the repository', async () => {
+  const { root, repo } = await sandbox()
+  const file = path.join(repo, 'src', 'app.ts')
+  const loaded = await readWorkingFile(repo, 'src/app.ts')
+  await writeWorkingFile(repo, 'src/app.ts', loaded, 'export const a = 1\r\n')
+  expect(await fs.readFile(file, 'utf8')).toBe('export const a = 1\r\n')
+  // The file on disk no longer matches what was loaded, so a second save from the old text is refused.
+  await expect(writeWorkingFile(repo, 'src/app.ts', loaded, 'lost\n')).rejects.toThrow('changed on disk')
+  expect(await fs.readFile(file, 'utf8')).toBe('export const a = 1\r\n')
+  await expect(writeWorkingFile(repo, '../secret.txt', 'outside the repo\n', 'x')).rejects.toThrow('leaves the repository')
+  expect(await fs.readFile(path.join(root, 'secret.txt'), 'utf8')).toBe('outside the repo\n')
+  await fs.writeFile(path.join(repo, 'blob.bin'), Buffer.from([0x66, 0x00, 0x67]))
+  await expect(readWorkingFile(repo, 'blob.bin')).rejects.toThrow('binary')
+  // An in-repo symlink is refused both ways, so its target is never written through it.
+  await fs.symlink('app.ts', path.join(repo, 'src', 'alias.ts'))
+  await expect(readWorkingFile(repo, 'src/alias.ts')).rejects.toThrow('symbolic link')
+  await expect(writeWorkingFile(repo, 'src/alias.ts', 'export const a = 1\r\n', 'x')).rejects.toThrow('symbolic link')
+  expect(await fs.readFile(file, 'utf8')).toBe('export const a = 1\r\n')
 })
 
 test('file and folder targets must match their kind', async () => {

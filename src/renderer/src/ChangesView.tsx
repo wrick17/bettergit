@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
-import { DiffView } from './DiffView'
+import { confirmDropEdit, DiffView, type EditBridge } from './DiffView'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
@@ -270,6 +270,15 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
 
+  // The inline editor in working-tree diffs. Its save takes the repo slot like any write, and the diff reloads after it.
+  const edit: EditBridge = {
+    repo,
+    load: (path) => api.readFile(repo, path),
+    save: (path, loaded, text) => write(`file-save:${path}`, () => api.writeFile(repo, path, loaded, text)),
+    onError: (failure) => errorRef.current(failure),
+    disabled: !!busy,
+  }
+
   // Each choice copies the list, since the list belongs to the model on screen and that model is replaced on reload.
   const chooseConflict = (index: number, choice: Choice) => setConflict((prev) => {
     if (!prev) return prev
@@ -310,6 +319,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   const choose = (change: FileChange, isStaged: boolean) => {
+    // Opening another file hides the editor, so an unsaved edit is confirmed and closed first.
+    if (!confirmDropEdit({ repo, path: change.path })) return
     revealRef.current = change.path
     setSelection({ path: change.path, staged: isStaged })
   }
@@ -513,6 +524,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                   files={unstagedShown?.files ?? NO_FILES.files}
                   moves={unstagedShown?.moves ?? NO_FILES.moves}
                   stage={{ staged: false, disabled: !!busy, onToggle: togglePath }}
+                  edit={edit}
                   onExpand={(file) => expandFile('unstaged', file)}
                   persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
                   emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
@@ -528,6 +540,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               files={diffShown?.files ?? NO_FILES.files}
               moves={diffShown?.moves ?? NO_FILES.moves}
               stage={{ staged: selection.staged, disabled: !!busy, onToggle: togglePath }}
+              edit={selection.staged ? undefined : edit}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
               emptyHint={diffShown === LOAD_FAILED ? LOAD_FAILED_HINT : diffShown ? undefined : LOADING_HINT}

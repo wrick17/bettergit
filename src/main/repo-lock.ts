@@ -34,6 +34,7 @@ const OPERATION_NAMES: Record<string, string> = {
   'repo:restore': 'Restoring',
   'repo:conflict-save': 'Saving resolution',
   'repo:conflict-reset': 'Resetting resolution',
+  'repo:file-write': 'Saving file',
 }
 
 export function describeOperation(holder: string): string {
