@@ -415,6 +415,72 @@ describe('branch picker operations with real Git', () => {
     expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'my-topic', hash: ahead, upstreamRef: remote.fullRef })
   })
 
+  test('a command-line gitdir include for another repository does not block branch operations, but one for this repository does', async () => {
+    const { dir, base, tip } = await fixture()
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    const remote = await select(dir, 'refs/remotes/origin/topic')
+    await git(dir, ['switch', '-q', '--track=direct', '-c', 'my-topic', remote.fullRef])
+    await git(dir, ['commit', '--allow-empty', '-qm', 'local only'])
+    const ahead = await sha(dir)
+    await git(dir, ['switch', '-q', 'main'])
+    for (const name of ['later', 'refused']) await git(dir, ['update-ref', `refs/remotes/origin/${name}`, tip])
+    const external = mkdtempSync(path.join(tmpdir(), 'bettergit-command-'))
+    repos.push(external)
+    const upstreamFile = path.join(external, 'upstream.config')
+    const upstream = (name: string, merge = 'unrelated') => `[branch "${name}"]\n\tremote = origin\n\tmerge = refs/heads/${merge}\n`
+    writeFileSync(upstreamFile, ['independent', 'from-commit', 'later', 'refused'].map((name) => upstream(name)).join('') + upstream('my-topic', 'topic'))
+    // Process-scoped command-line config, as an app launched with GIT_CONFIG_COUNT would pass to every Git command.
+    const keys = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_KEY_1', 'GIT_CONFIG_VALUE_1']
+    const previous = keys.map((key) => process.env[key])
+    const scope = (gitdir: string) => Object.assign(process.env, {
+      GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `includeIf.gitdir:${gitdir}.path`, GIT_CONFIG_VALUE_0: upstreamFile,
+      GIT_CONFIG_KEY_1: 'core.abbrev', GIT_CONFIG_VALUE_1: '12',
+    })
+    try {
+      scope(`${dir}-other/.git`)
+      expect(await git(dir, ['config', '--show-origin', '--get-all', `includeIf.gitdir:${dir}-other/.git.path`])).toBe(`command line:\t${upstreamFile}\n`)
+      await expect(git(dir, ['config', 'branch.independent.remote'])).rejects.toThrow()
+      await createBranch(dir, 'independent', { fullRef: 'HEAD', hash: base })
+      expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'independent', upstreamRef: null })
+      await git(dir, ['switch', '-q', 'main'])
+      await branchFromCommit(dir, 'from-commit', tip)
+      expect((await readBranches(dir)).find((entry) => entry.name === 'from-commit')).toMatchObject({ hash: tip, upstreamRef: null })
+      await switchBranch(dir, await select(dir, 'refs/remotes/origin/later'))
+      expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'later', upstreamRef: 'refs/remotes/origin/later' })
+      await git(dir, ['switch', '-q', 'main'])
+      await switchBranch(dir, remote)
+      expect((await readBranches(dir)).find((entry) => entry.current)).toMatchObject({ name: 'my-topic', hash: ahead, upstreamRef: remote.fullRef })
+      await git(dir, ['switch', '-q', 'main'])
+      // The same include for this repository applies, so Git sees those settings and every operation is refused before writing.
+      scope(gitDir)
+      expect((await git(dir, ['config', 'branch.refused.remote'])).trim()).toBe('origin')
+      mkdirSync(path.join(gitDir, 'info'), { recursive: true })
+      writeFileSync(path.join(gitDir, 'info', 'exclude'), 'build.log\n')
+      writeFileSync(path.join(dir, 'staged.txt'), 'staged\n')
+      await git(dir, ['add', 'staged.txt'])
+      writeFileSync(path.join(dir, 'staged.txt'), 'unstaged\n')
+      writeFileSync(path.join(dir, 'notes.txt'), 'untracked\n')
+      writeFileSync(path.join(dir, 'build.log'), 'ignored\n')
+      const files = [path.join(gitDir, 'config'), upstreamFile, ...['staged.txt', 'notes.txt', 'build.log'].map((file) => path.join(dir, file))]
+      const snapshot = async () => [
+        await git(dir, ['for-each-ref']), await git(dir, ['symbolic-ref', 'HEAD']), await git(dir, ['ls-files', '--stage']),
+        await git(dir, ['status', '--porcelain=v2', '--ignored']),
+        ...files.map((file) => readFileSync(file, 'utf8')), ...files.map((file) => statSync(file).mode),
+      ]
+      const before = await snapshot()
+      await expect(createBranch(dir, 'refused', { fullRef: 'HEAD', hash: base })).rejects.toThrow('branch.refused.remote')
+      await expect(branchFromCommit(dir, 'refused', base)).rejects.toThrow('branch.refused.remote')
+      await expect(switchBranch(dir, await select(dir, 'refs/remotes/origin/refused'))).rejects.toThrow('branch.refused.remote')
+      await expect(switchBranch(dir, remote)).rejects.toThrow('branch.my-topic.remote')
+      expect(await snapshot()).toEqual(before)
+    } finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key]
+        else process.env[key] = previous[index]
+      })
+    }
+  })
+
   test('refuses existing names and ref-directory collisions without changing upstreams', async () => {
     const { dir, base } = await fixture()
     await git(dir, ['branch', 'topic'])
