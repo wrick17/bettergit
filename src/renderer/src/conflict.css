@@ -1,38 +1,36 @@
 /* Conflict resolution pane. Colours, radii, and the 100 ms motion come from the tokens in styles.css, so both themes follow the app. */
-.conflict { display: flex; flex-direction: column; gap: 12px; padding: 0 20px 32px; font: 13px/1.4 var(--font-ui); color: var(--text); }
-/* Sticky above the blocks, like the diff toolbar, so the save control and count stay in reach while scrolling. */
-.conflict-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; min-height: 44px; margin: 0 -20px; padding: 0 20px; background: var(--content); box-shadow: inset 0 -0.5px 0 var(--line); }
+.conflict { --conflict-bar-height: 44px; display: flex; flex-direction: column; gap: 12px; padding: 0 20px 32px; font: 13px/1.4 var(--font-ui); color: var(--text); }
+/* Sticky above the diff, so the save control and count stay in reach while scrolling. The diff's own toolbar and file
+   header stick below it. */
+.conflict-bar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 12px; height: var(--conflict-bar-height); margin: 0 -20px; padding: 0 20px; background: var(--content); box-shadow: inset 0 -0.5px 0 var(--line); }
+.conflict > .diff { margin: 0 -20px; }
+.conflict .diff-toolbar { top: var(--conflict-bar-height); }
+.conflict-sides { color: var(--text-3); font: 500 12px/28px var(--font-ui); }
+.conflict-sides > span { padding-left: 44px; }
+.conflict .diff-file > header { top: calc(var(--conflict-bar-height) + var(--diff-toolbar-height)); }
 .conflict-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1 var(--font-code); }
 .conflict-count { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conflict-save { flex: none; height: 30px; padding: 0 14px; border-radius: var(--radius-pill); background: var(--accent-fill); color: var(--on-accent); font-weight: 600; box-shadow: none; transition: background 100ms var(--ease), filter 100ms var(--ease); }
 .conflict-save:hover:not(:disabled) { filter: brightness(1.07); }
 .conflict-save:disabled { background: var(--glass-chip); color: var(--text-3); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
-.conflict-block { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--radius-card); background: var(--surface); box-shadow: var(--shadow-raised); }
-.conflict-block-head { display: flex; align-items: center; gap: 8px; }
-.conflict-block-head h3 { margin: 0; font: 600 13px/1.2 var(--font-ui); }
-.conflict-state { margin-left: auto; color: var(--text-3); white-space: nowrap; }
-.conflict-state.done { color: var(--text-2); }
-.conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.conflict-choice { height: 26px; padding: 0 10px; border-radius: var(--radius-pill); background: var(--glass-chip); color: var(--text-2); box-shadow: none; transition: background 100ms var(--ease), color 100ms var(--ease); }
-.conflict-choice:hover:not(:disabled) { background: var(--press); color: var(--text); }
-.conflict-choice[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent); }
-.conflict-choice:disabled { opacity: 0.4; }
 .conflict-note { margin: 0; color: var(--text-3); font-size: 12px; }
-/* Both sides stay in view at all times. Each side is one column of code, so a narrow pane stacks them. */
-.conflict-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
-.conflict-side { min-width: 0; border-radius: var(--radius-sm); overflow: hidden; box-shadow: inset 0 0 0 0.5px var(--line); }
-.conflict-side.current { --side: var(--ren); --side-bg: var(--ren-bg); }
-.conflict-side.incoming { --side: var(--mod); --side-bg: var(--mod-bg); }
-.conflict-side h4 { margin: 0; padding: 4px 8px; background: var(--side-bg); color: var(--side); font: 600 12px/1.4 var(--font-ui); }
-.conflict-label { margin-left: 6px; color: var(--text-3); font-weight: 400; }
-.conflict-code { font: 13px/22px var(--font-code); }
-/* A row is at least one line tall, so an empty line still shows as a row. */
-.conflict-line { display: flex; min-height: 22px; white-space: pre; }
-.conflict-gutter { flex: none; width: 40px; padding-right: 10px; text-align: right; color: var(--text-3); user-select: none; font-variant-numeric: tabular-nums; }
-.conflict-line code { flex: 1; min-width: 0; padding-right: 12px; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-.conflict-empty { margin: 0; padding: 4px 8px; color: var(--text-3); font: 12px/1.4 var(--font-ui); }
-.conflict-base { color: var(--text-3); }
-.conflict-base summary { font: 12px/1.4 var(--font-ui); cursor: default; }
-.conflict-result { display: flex; flex-direction: column; gap: 8px; }
-.conflict-result h3 { margin: 0; font: 600 13px/1.2 var(--font-ui); }
 .conflict-unsupported { margin: 0; padding: 10px 12px; border-radius: var(--radius-card); background: var(--del-bg); color: var(--del); }
+/* Inline actions above each conflict, like VS Code's. They are not source, so they start at the code column, past the
+   28px lane, two 50px gutters and the 18px sign, and carry no line numbers. */
+.conflict-lens { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-height: 24px; padding: 2px 20px 2px 146px; font: 12px/20px var(--font-ui); color: var(--text-3); }
+.conflict-split-controls > .conflict-lens { min-width: 0; padding-left: 44px; }
+/* A hairline border and semibold label lift the actions above the muted marker rows. */
+.conflict-choice { height: 20px; padding: 0 7px; border-radius: var(--radius-chip); background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); font: inherit; font-weight: 600; transition: background 100ms var(--ease), color 100ms var(--ease), box-shadow 100ms var(--ease); }
+.conflict-choice:hover:not(:disabled) { background: var(--press); color: var(--text); }
+.conflict-choice[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.conflict-choice:disabled { opacity: 0.4; }
+.conflict-state, .conflict-hint { margin-left: 6px; }
+.conflict-state { color: var(--text-2); }
+/* Conflict rows are DiffView rows. The tint names where a line came from. Marker rows come from the parse and keep their raw text. */
+.conflict-row.current, .conflict-row.marker-open { --side: var(--ren); --side-bg: var(--ren-bg); }
+.conflict-row.incoming, .conflict-row.marker-close { --side: var(--mod); --side-bg: var(--mod-bg); }
+.conflict-row.combine { --side: var(--add); --side-bg: var(--add-bg); }
+.conflict-row.current, .conflict-row.incoming, .conflict-row.combine { background: var(--side-bg); box-shadow: inset 2px 0 0 var(--side); }
+.conflict-row.marker { background: var(--sunken); box-shadow: inset 2px 0 0 var(--side, var(--text-3)); color: var(--text-3); }
+/* Smaller marker text inside the row's fixed 22px line height, so gutters and row geometry do not move. */
+.conflict-row.marker code { font-size: 11.5px; }

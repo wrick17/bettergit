@@ -285,6 +285,24 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     void write('resolve', () => api.conflictSave(repo, path, save))
   }
 
+  // Reset rebuilds the file from Git's index after the user confirms. Its reply replaces only the model it was asked
+  // for, and clears that model's choices even when the bytes come back the same.
+  const resetConflictFile = () => {
+    if (busy || !conflict?.model.reset.available) return
+    const { path } = conflict
+    const { fingerprint } = conflict.model.reset
+    if (!window.confirm(`Reset resolution for "${path}"?\n\nThis replaces the whole working file with its conflicts recreated from Git's index, `
+      + 'and discards saved edits and unsaved choices for this file. The conflict markers are rebuilt in diff3 style, '
+      + 'so labels and layout can differ from the original. The file stays unmerged and unstaged. Other files are unchanged.')) return
+    void write('conflict-reset', async () => {
+      const model = await api.conflictReset(repo, path, { fingerprint })
+      if (repoRef.current !== repo) return
+      setConflict((prev) => (prev?.path === path && prev.model.reset.available && sameFingerprint(prev.model.reset.fingerprint, fingerprint)
+        ? { path, model, choices: [] }
+        : prev))
+    })
+  }
+
   // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
   const togglePaths = (paths: string[], stage: boolean) => {
     if (busy || !paths.length) return
@@ -414,20 +432,6 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
               busy={busy}
             />
-            <List
-              title="Unstaged"
-              changes={unstaged}
-              staged={false}
-              selection={selection}
-              stats={stats}
-              collapsed={collapsed}
-              onToggleFolder={toggleFolder}
-              onSelect={(change) => choose(change, false)}
-              onToggle={(change) => toggle(change, true)}
-              onDiscard={discard}
-              onToggleAll={() => togglePaths(unstaged.map((change) => change.path), true)}
-              busy={busy}
-            />
             {conflicted.length > 0 && (
               <List
                 title="Conflicts"
@@ -442,6 +446,20 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 busy={busy}
               />
             )}
+            <List
+              title="Unstaged"
+              changes={unstaged}
+              staged={false}
+              selection={selection}
+              stats={stats}
+              collapsed={collapsed}
+              onToggleFolder={toggleFolder}
+              onSelect={(change) => choose(change, false)}
+              onToggle={(change) => toggle(change, true)}
+              onDiscard={discard}
+              onToggleAll={() => togglePaths(unstaged.map((change) => change.path), true)}
+              busy={busy}
+            />
           </div>
           <div className="commit-box">
             <textarea
@@ -503,7 +521,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             </>
           )}
           {selection && conflictSelected && (conflict?.path === selection.path
-            ? <ConflictView path={selection.path} model={conflict.model} choices={conflict.choices} onChoose={chooseConflict} onSave={saveConflictFile} saving={busy === 'resolve'} />
+            ? <ConflictView path={selection.path} model={conflict.model} choices={conflict.choices} onChoose={chooseConflict} onSave={saveConflictFile} onReset={resetConflictFile} busy={busy} />
             : <p className="hint">Loading conflict…</p>)}
           {selection && !conflictSelected && (
             <DiffView

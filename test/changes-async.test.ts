@@ -607,3 +607,4 @@ test('a failed load with new whitespace options shows the failure in place of th
 test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))
 test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
+test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

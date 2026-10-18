@@ -118,6 +118,7 @@ export const REPO_WORKING_LABELS: Record<string, string> = {
   // Saving a conflict resolution. The conflict writer uses this key.
   resolve: 'Saving resolution…',
   'conflict-save': 'Saving resolution…',
+  'conflict-reset': 'Resetting resolution…',
 }
 
 // A key can name a target after a colon, such as discard:<path>. The label depends only on the operation.

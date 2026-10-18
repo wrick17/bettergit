@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { Branch, BranchSelection } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
-import type { ConflictDocument, ConflictPreview, ConflictSave, ConflictSaved } from '../shared/conflict'
+import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
@@ -59,6 +59,8 @@ const api = {
     invoke('repo:conflict-preview', repo, file, save) as Promise<ConflictPreview>,
   conflictSave: (repo: string, file: string, save: ConflictSave) =>
     invoke('repo:conflict-save', repo, file, save) as Promise<ConflictSaved>,
+  conflictReset: (repo: string, file: string, request: ConflictReset) =>
+    invoke('repo:conflict-reset', repo, file, request) as Promise<ConflictResetResult>,
   // Drag-and-drop gives a File; webUtils turns it into a real path without exposing fs to the page.
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),

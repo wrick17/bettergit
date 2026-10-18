@@ -1,5 +1,11 @@
-import { applyChoices, conflictBlocks, splitLines, type Choice, type ChoiceKind, type Combine, type ConflictBlock, type ConflictDocument, type ConflictSave } from '../../shared/conflict'
+import { type ReactNode, useMemo, useState } from 'react'
+import type { MovedBlock } from '../../main/git/diff'
+import { applyChoices, conflictBlocks, type Choice, type ChoiceKind, type Combine, type ConflictDocument, type ConflictSave, type Part } from '../../shared/conflict'
+import { conflictFile, isMarker } from './conflict-rows'
+import { DiffView, useDiffLayout, type ConflictDecor } from './DiffView'
 import { IconButton } from './Icons'
+import { CONTEXT_OPTIONS, useContextLines } from './prefs'
+import { blockedReason } from './repo-busy'
 import './conflict.css'
 
 const CHOICES: { kind: ChoiceKind; label: string; hint: string }[] = [
@@ -16,6 +22,9 @@ const CHOICE_NAME: Record<ChoiceKind, string> = {
   combine: 'combination',
 }
 
+const NO_MOVES: MovedBlock[] = []
+const NO_CHOICES: Choice[] = []
+
 export interface ConflictViewProps {
   path: string
   model: ConflictDocument
@@ -24,14 +33,35 @@ export interface ConflictViewProps {
   onChoose: (index: number, choice: Choice) => void
   // Saves with the fingerprint from load, not a fresh one, so the write is bound to the file the user reviewed.
   onSave: (save: ConflictSave) => void
-  // True while the save runs. Every control stops, and the save button says so.
-  saving: boolean
+  // Asks, then replaces the whole file with the conflicts recreated from Git's index. The parent owns the confirmation.
+  onReset: () => void
+  // The write running in this repo, or null. Every control stops while it runs, and the running one says so.
+  busy: string | null
 }
 
-export function ConflictView({ path, model, choices, onChoose, onSave, saving }: ConflictViewProps) {
+// No hooks here: the diff below owns them, so this stays a plain function of its props.
+export function ConflictView({ path, model, choices, onChoose, onSave, onReset, busy }: ConflictViewProps) {
+  // The bar shows in every state, so a file with broken markers or none left can still be reset.
+  const bar = (middle: ReactNode, save?: ReactNode) => (
+    <header className="conflict-bar">
+      <span className="conflict-path" title={path}>{path}</span>
+      {middle}
+      <IconButton
+        icon="reset"
+        label="Reset resolution"
+        onClick={onReset}
+        busy={busy === 'conflict-reset'}
+        blocked={!model.reset.available ? model.reset.reason : busy !== null && busy !== 'conflict-reset' ? blockedReason(busy) : undefined}
+      />
+      {save}
+    </header>
+  )
+  // An empty count keeps the reset button at the end of the bar, where it sits beside Save.
+  const spacer = <span className="conflict-count" aria-hidden="true" />
   if (!model.supported) {
     return (
       <section className="conflict" aria-label={`Conflict in ${path}`}>
+        {bar(spacer)}
         <p className="conflict-unsupported" role="status">{model.message}</p>
       </section>
     )
@@ -41,134 +71,125 @@ export function ConflictView({ path, model, choices, onChoose, onSave, saving }:
   if (blocks.length === 0) {
     return (
       <section className="conflict" aria-label={`Conflict in ${path}`}>
+        {bar(spacer)}
         <p className="conflict-note" role="status">No conflict markers remain in this file. Stage it to mark it resolved.</p>
       </section>
     )
   }
+  const saving = busy === 'resolve'
   const resolved = blocks.filter((block) => choices[block.index] != null).length
   const result = applyChoices(model.parts, choices, model.combine)
-  const canSave = !saving && result.ok && resolved > 0
+  const canSave = busy === null && result.ok && resolved > 0
 
   return (
     <section className="conflict" aria-label={`Conflict in ${path}`}>
-      <header className="conflict-bar">
-        <span className="conflict-path" title={path}>{path}</span>
-        <span className="conflict-count" aria-live="polite">{resolved} of {blocks.length} resolved</span>
+      {bar(
+        <span className="conflict-count" aria-live="polite">{resolved} of {blocks.length} resolved</span>,
         <button type="button" className="conflict-save" disabled={!canSave} aria-busy={saving || undefined} onClick={() => onSave({ fingerprint, choices: Array.from({ length: blocks.length }, (_, index) => choices[index] ?? null) })}>
           {saving ? 'Saving…' : 'Save resolution'}
-        </button>
-      </header>
-      {blocks.map((block) => (
-        <ConflictBlockView
-          key={block.index}
-          block={block}
-          total={blocks.length}
-          choice={choices[block.index] ?? null}
-          combine={model.combine[block.index]}
-          disabled={saving}
-          onChoose={onChoose}
-        />
-      ))}
-      <section className="conflict-result" aria-label="Result">
-        <h3>Result</h3>
-        {result.ok
-          ? <CodeLines text={result.text} />
-          : <p className="conflict-unsupported" role="alert">{result.reason}</p>}
-        <p className="conflict-note">The saved text is not compiled or tested.</p>
-      </section>
+        </button>,
+      )}
+      {!result.ok && <p className="conflict-unsupported" role="alert">{result.reason}</p>}
+      <ConflictDiff
+        path={path}
+        parts={model.parts}
+        combine={model.combine}
+        choices={choices}
+        shown={result.ok ? choices : NO_CHOICES}
+        disabled={busy !== null}
+        onChoose={onChoose}
+      />
+      <p className="conflict-note">The saved text is not compiled or tested.</p>
     </section>
   )
 }
 
-function ConflictBlockView({ block, total, choice, combine, disabled, onChoose }: {
-  block: ConflictBlock
+// The file in the ordinary diff viewer, with each conflict's controls inline above it. Unchanged lines fold like in any
+// diff. Widening needs no Git read, since the whole file is already here. `shown` is what the rows preview: the choices,
+// or none when they cannot be applied.
+function ConflictDiff({ path, parts, combine, choices, shown, disabled, onChoose }: {
+  path: string
+  parts: Part[]
+  combine: Combine[]
+  choices: readonly Choice[]
+  shown: readonly Choice[]
+  disabled: boolean
+  onChoose: (index: number, choice: Choice) => void
+}) {
+  const preferred = useContextLines()
+  const layout = useDiffLayout()
+  const [widened, setWidened] = useState<{ path: string; lines: number }>()
+  const context = widened?.path === path ? widened.lines : preferred
+  const view = useMemo(() => conflictFile(path, parts, shown, combine, context), [path, parts, shown, combine, context])
+  const files = useMemo(() => [view.file], [view])
+  const total = combine.length
+  const controls = (index: number) => (
+    <ConflictControls key={index} split={layout === 'split'} index={index} total={total} choice={choices[index] ?? null} combine={combine[index]} disabled={disabled} onChoose={onChoose} />
+  )
+  const decor: ConflictDecor = {
+    splitRows: (hunk) => view.split.get(hunk) ?? [],
+    row: (line) => {
+      const kind = view.kinds.get(line)
+      return kind && { className: `conflict-row ${kind}${isMarker(kind) ? ' marker' : ''}`, plain: isMarker(kind) }
+    },
+    controls: (hunk, index) => (index < hunk.lines.length
+      ? view.before.get(hunk.lines[index])?.map(controls)
+      : hunk === view.file.hunks[view.file.hunks.length - 1] ? view.end.map(controls) : null),
+  }
+  return (
+    <DiffView
+      files={files}
+      moves={NO_MOVES}
+      onExpand={() => setWidened({ path, lines: CONTEXT_OPTIONS.find((lines) => lines > context) ?? context })}
+      conflict={decor}
+    />
+  )
+}
+
+// Compact actions above a conflict's first line. They are controls, not source, so they carry no line numbers.
+function ConflictControls({ index, total, choice, combine, disabled, onChoose, split }: {
+  split: boolean
+  index: number
   total: number
   choice: Choice
   combine: Combine
   disabled: boolean
   onChoose: (index: number, choice: Choice) => void
 }) {
-  const number = block.index + 1
-  const titleId = `conflict-title-${block.index}`
-  return (
-    <article className="conflict-block" aria-labelledby={titleId}>
-      <header className="conflict-block-head">
-        <h3 id={titleId}>Conflict {number} of {total}</h3>
-        <span className={`conflict-state${choice ? ' done' : ''}`}>
-          {choice ? `Resolved with ${CHOICE_NAME[choice]}` : 'Unresolved'}
-        </span>
-        {choice && (
-          <IconButton icon="undo" label={`Clear the choice for conflict ${number}`} onClick={() => onChoose(block.index, null)} disabled={disabled} />
-        )}
-      </header>
-      <div className="conflict-actions" role="group" aria-label={`Resolution for conflict ${number}`}>
-        {CHOICES.map(({ kind, label, hint }) => {
-          const available = kind !== 'combine' || combine.state === 'ready'
-          return (
-            <button
-              key={kind}
-              type="button"
-              className="conflict-choice"
-              aria-pressed={choice === kind}
-              disabled={disabled || !available}
-              title={available ? hint : combineNote(combine)}
-              onClick={() => onChoose(block.index, choice === kind ? null : kind)}
-            >
-              {label}
-            </button>
-          )
-        })}
-      </div>
-      {combine.state !== 'ready' && <p className="conflict-note">{combineNote(combine)}</p>}
-      <div className="conflict-sides">
-        <SideView tone="current" title="Current" label={block.currentLabel} text={block.current} />
-        <SideView tone="incoming" title="Incoming" label={block.incomingLabel} text={block.incoming} />
-      </div>
-      {block.fileBase !== null && (
-        <details className="conflict-base">
-          <summary>Base</summary>
-          <CodeLines text={block.fileBase} />
-        </details>
+  const number = index + 1
+  const label = `Resolution for conflict ${number} of ${total}`
+  const actions = (side?: 'incoming' | 'current') => (
+    <div className="conflict-lens" role="group" aria-label={side ? `${side === 'incoming' ? 'Incoming' : 'Current'} actions for conflict ${number} of ${total}` : label}>
+      {CHOICES.filter(({ kind }) => (!side || kind === side || kind === 'both' || kind === 'combine') && (kind !== 'combine' || combine.state === 'ready')).map(({ kind, label, hint }) => (
+        <button
+          key={kind}
+          type="button"
+          className="conflict-choice"
+          aria-pressed={choice === kind}
+          disabled={disabled}
+          title={hint}
+          onClick={() => onChoose(index, choice === kind ? null : kind)}
+        >
+          {label}
+        </button>
+      ))}
+      {choice && <span className="conflict-state">{`Resolved with ${CHOICE_NAME[choice]}`}</span>}
+      {choice && (
+        <IconButton icon="undo" label={`Clear the choice for conflict ${number}`} onClick={() => onChoose(index, null)} disabled={disabled} />
       )}
-    </article>
+      {combine.state !== 'ready' && <span className="conflict-hint">{combineNote(combine)}</span>}
+    </div>
   )
-}
-
-function SideView({ tone, title, label, text }: {
-  tone: 'current' | 'incoming'
-  title: string
-  label: string
-  text: string
-}) {
-  return (
-    <section className={`conflict-side ${tone}`} aria-label={title}>
-      <h4>{title}{label && <span className="conflict-label">{label}</span>}</h4>
-      <CodeLines text={text} />
-    </section>
-  )
+  return split ? (
+    <div className="split-row conflict-split-controls" role="group" aria-label={label}>
+      {actions('incoming')}
+      {actions('current')}
+    </div>
+  ) : actions()
 }
 
 function combineNote(combine: Combine): string {
   if (combine.state === 'overlap') return 'Both sides edit the same words, so only current, incoming, or both can be kept.'
   if (combine.state === 'unavailable') return combine.reason
   return 'Merges both edits from their common base.'
-}
-
-// One row per line. The line terminator is not shown. A carriage return inside a line shows as a visible glyph,
-// so no text is hidden and no control character reaches the page.
-const displayLine = (line: string) => line.replace(/\r?\n?$/, '').replace(/\r/g, '␍')
-
-function CodeLines({ text }: { text: string }) {
-  const lines = splitLines(text)
-  if (lines.length === 0) return <p className="conflict-empty">Empty</p>
-  return (
-    <div className="conflict-code">
-      {lines.map((line, index) => (
-        <div key={index} className="conflict-line">
-          <span className="conflict-gutter" aria-hidden="true">{index + 1}</span>
-          <code>{displayLine(line)}</code>
-        </div>
-      ))}
-    </div>
-  )
 }
