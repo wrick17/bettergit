@@ -72,8 +72,14 @@ export function useDiffLayout(): DiffLayout {
 export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
-  // The changed words of each paired line, per file and hunk. Pure text work, so it does not wait for colours.
-  const intra = useMemo(() => files.map((file) => file.hunks.map((hunk) => intralineSpans(hunk.lines))), [files])
+  // The changed words of each paired line, per hunk. Pure text work, so it does not wait for colours. Worked out only for a
+  // hunk on screen, since a collapsed file shows none, and kept for these files so a re-render does not compare again.
+  const intra = useMemo(() => new Map<DiffHunk, Map<number, Span[]>>(), [files])
+  const spansOf = (hunk: DiffHunk) => {
+    let spans = intra.get(hunk)
+    if (!spans) intra.set(hunk, (spans = intralineSpans(hunk.lines)))
+    return spans
+  }
   const current = useDiffLayout()
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
@@ -257,7 +263,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                 <div className="hunk">
                   <div className="hunk-header">{hunk.header}</div>
                   {formatted && isMarkdownPath(path)
-                    ? <MarkdownHunkView lines={hunk.lines} changes={intra[fileIndex][hunkIndex]} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
+                    ? <MarkdownHunkView lines={hunk.lines} changes={spansOf(hunk)} layout={current} prefix={`${fileIndex}:${hunkIndex}`} labels={labels} anchors={anchors} />
                     : current === 'unified'
                     ? hunk.lines.map((line, lineIndex) => {
                       const row = decorate(line, tokens[fileIndex]?.[hunkIndex]?.[lineIndex])
@@ -268,7 +274,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                             line={line}
                             segments={row.segments}
                             className={row.className}
-                            changed={intra[fileIndex][hunkIndex].get(lineIndex)}
+                            changed={spansOf(hunk).get(lineIndex)}
                             label={labels.get(key(fileIndex, hunkIndex, lineIndex))}
                             anchor={anchors.get(key(fileIndex, hunkIndex, lineIndex))}
                             source={key(fileIndex, hunkIndex, lineIndex)}
@@ -296,7 +302,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                               side="old"
                               segments={left?.segments}
                               className={left?.className}
-                              changed={row.left ? intra[fileIndex][hunkIndex].get(row.left.index) : undefined}
+                              changed={row.left ? spansOf(hunk).get(row.left.index) : undefined}
                               label={leftLabel}
                               anchor={row.left ? anchors.get(key(fileIndex, hunkIndex, row.left.index)) : undefined}
                               source={row.left ? key(fileIndex, hunkIndex, row.left.index) : undefined}
@@ -306,7 +312,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
                               side="new"
                               segments={right?.segments}
                               className={right?.className}
-                              changed={row.right ? intra[fileIndex][hunkIndex].get(row.right.index) : undefined}
+                              changed={row.right ? spansOf(hunk).get(row.right.index) : undefined}
                               label={rightLabel}
                               anchor={row.right ? anchors.get(key(fileIndex, hunkIndex, row.right.index)) : undefined}
                               source={row.right ? key(fileIndex, hunkIndex, row.right.index) : undefined}

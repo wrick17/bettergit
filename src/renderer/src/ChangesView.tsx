@@ -165,9 +165,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       // A failed refresh keeps the result for the same view. A result for other options is hidden, so its hunks never show under these.
       if (allFor.current === key) return
       allFor.current = null
+      // A first load that fails installs the failure too, so it stays on screen after the error banner clears.
       const hidden = { staged: LOAD_FAILED, unstaged: LOAD_FAILED }
-      if (currentRequest.current?.all) currentRequest.current.all = hidden
-      setAll((prev) => prev && hidden)
+      if (currentRequest.current) currentRequest.current.all = hidden
+      setAll(hidden)
     })
     return () => { stale = true }
   }, [repo, status, revision, context, ignoreWhitespace])
@@ -194,8 +195,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
         errorRef.current(failure)
         if (diffFor.current === key) return
         diffFor.current = null
-        if (currentRequest.current?.diff) currentRequest.current.diff = LOAD_FAILED
-        setDiff((prev) => prev && LOAD_FAILED)
+        if (currentRequest.current) currentRequest.current.diff = LOAD_FAILED
+        setDiff(LOAD_FAILED)
       })
     return () => { stale = true }
   }, [repo, status, selection, conflictSelected, revision, context, ignoreWhitespace])
