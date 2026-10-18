@@ -10,7 +10,7 @@ export function FindBar({ open, onClose, focusKey }: { open: boolean; onClose: (
   const input = useRef<HTMLInputElement>(null)
   const sources = useFindSources()
   const matches = useMemo(() => (open ? sources.flatMap((source) => findMatches(source.files, query).map((match) => ({ source, match }))) : []),
-    [open, sources.map((source) => source.files).join(), sources.length, query])
+    [open, sources, query])
   const current = matches.length ? Math.min(index, matches.length - 1) : -1
   const go = (step: number) => {
     if (!matches.length) return

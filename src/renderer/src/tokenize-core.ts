@@ -40,15 +40,17 @@ export async function tokenizeCode(code: string, language: string, stale?: () =>
     let grammarState: ReturnType<typeof shiki.getLastGrammarState> | undefined
     let sliceStart = performance.now()
     let size = SLICE_LINES
-    for (let index = 0; index < lines.length; index += size) {
+    // Invariant: `out` holds exactly the first `out.length` lines, so each slice starts where the last one ended.
+    while (out.length < lines.length) {
       if (performance.now() - sliceStart > SLICE_MS) {
         await nextTask()
         if (stale?.()) return null
         sliceStart = performance.now()
       }
+      const slice = lines.slice(out.length, out.length + size)
       const started = performance.now()
       // The grammar state carries open strings and comments across slices, so colours match one whole-file pass.
-      const tokens = shiki.codeToTokensWithThemes(lines.slice(index, index + size).join('\n'), {
+      const tokens = shiki.codeToTokensWithThemes(slice.join('\n'), {
         lang: language,
         themes: { light: 'github-light', dark: 'github-dark' },
         grammarState,
@@ -57,11 +59,16 @@ export async function tokenizeCode(code: string, language: string, stale?: () =>
       const took = performance.now() - started
       size = took > SLICE_MS * 2 ? Math.max(1, size >> 2) : took < SLICE_MS / 2 ? Math.min(SLICE_LINES, size * 2) : size
       grammarState = shiki.getLastGrammarState(tokens)
-      for (const line of tokens) out.push(line.map((token) => ({
-        text: token.content,
-        light: token.variants.light?.color,
-        dark: token.variants.dark?.color,
-      })))
+      slice.forEach((source, at) => {
+        const line = tokens[at] ?? []
+        // Token text is what the diff shows, so a line whose tokens do not spell its source (Shiki drops a trailing \r) is shown plain.
+        const spelled = line.map((token) => token.content).join('') === source.replace(/\r$/, '')
+        out.push(spelled ? line.map((token) => ({
+          text: token.content,
+          light: token.variants.light?.color,
+          dark: token.variants.dark?.color,
+        })) : [{ text: source }])
+      })
     }
     return out
   } catch {

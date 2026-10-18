@@ -190,9 +190,14 @@ export function useFindSources(): FindSource[] {
     listeners.add(listener)
     return () => { listeners.delete(listener) }
   }, () => version)
-  return [...sources]
+  const next = [...sources]
     .filter((source) => source.container.current?.isConnected && source.container.current.getClientRects().length > 0)
     .sort((a, b) => (a.container.current!.compareDocumentPosition(b.container.current!) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+  // The same sources keep the same array, so a memo on it reruns exactly when a diff mounts, goes or gets new files
+  // (new files register a new source).
+  const last = useRef(next)
+  if (next.length !== last.current.length || next.some((source, index) => source !== last.current[index])) last.current = next
+  return last.current
 }
 
 const nextFrame = () => new Promise<number>((resolve) => requestAnimationFrame(resolve))

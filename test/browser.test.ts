@@ -135,3 +135,71 @@ test.skipIf(!playwright)('find highlights matches in rows that mount after the q
   // The match split across two coloured spans counts too.
   expect(sizes).toEqual({ atStart: 1, mounted: 3, unmounted: 2, cleared: 0 })
 })
+
+// A click on the read-only rows of a file still loading keeps the keys typed until its editor mounts. The capture must
+// end when the load fails or the file unmounts, and must never take keys typed into another field.
+test.skipIf(!playwright)('keys typed while a file loads are not taken from other fields, nor after the load fails or the file goes', async () => {
+  const start = () => page.evaluate(async () => {
+    const { createElement, flushSync, createRoot, EditableDiff } = (window as any).under
+    document.body.insertAdjacentHTML('beforeend', '<input id="other">')
+    const w = window as any
+    w.root = createRoot(document.getElementById('root')!)
+    const edit = { repo: 'r', load: () => new Promise((_, fail) => { w.failLoad = () => fail(new Error('gone')) }), save: async () => true, onError: () => undefined }
+    const hunks = [{ header: '@@ -1 +1 @@', lines: [{ type: 'context', text: 'hello', oldNo: 1, newNo: 1 }] }]
+    const fallback = createElement('div', { 'data-source-row': '0:0:0', 'data-source-side': 'new' }, createElement('code', null, 'hello'))
+    flushSync(() => w.root.render(createElement(EditableDiff, { edit, path: 'a.ts', hunks, layout: 'unified', language: null, fallback, fileIndex: 0, onExtent: () => undefined })))
+    const row = document.querySelector('[data-source-row]')!.getBoundingClientRect()
+    for (const type of ['mousedown', 'mouseup']) {
+      document.querySelector('[data-source-row]')!.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: row.left + 2, clientY: row.top + 2 }))
+    }
+    while (!w.failLoad) await new Promise((resolve) => setTimeout(resolve, 10))
+  })
+  // Whether a key typed with nothing focused was taken, and what typing into another field gives it.
+  const probe = async () => {
+    const taken = await page.evaluate(() => {
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      return !document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', bubbles: true, cancelable: true }))
+    })
+    await page.fill('#other', '')
+    await page.focus('#other')
+    await page.keyboard.type('hi')
+    await page.keyboard.press('Backspace')
+    await page.keyboard.press('Enter')
+    return { taken, typed: await page.inputValue('#other') }
+  }
+  const reset = () => page.evaluate(() => {
+    ;(window as any).root?.unmount()
+    ;(window as any).failLoad = null
+    document.getElementById('other')?.remove()
+  })
+
+  await start()
+  expect(await probe()).toEqual({ taken: true, typed: 'h' })
+  await page.evaluate(async () => {
+    ;(window as any).failLoad()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  expect(await probe()).toEqual({ taken: false, typed: 'h' })
+  await reset()
+
+  await start()
+  await page.evaluate(() => (window as any).root.unmount())
+  expect(await probe()).toEqual({ taken: false, typed: 'h' })
+  await reset()
+})
+
+test.skipIf(!playwright)('find recounts matches when a diff refreshes with the same number of files', async () => {
+  const fileWith = (text: string) => [{ oldPath: 'a.ts', newPath: 'a.ts', status: 'modified', binary: false, hunks: [{ header: '@@ -1 +1 @@', lines: [{ type: 'add', text, oldNo: null, newNo: 1 }] }] }]
+  const render = (files: unknown) => page.evaluate((files: unknown) => {
+    const { createElement, flushSync, createRoot, FindBar, FindDiff } = (window as any).under
+    const w = window as any
+    w.findRoot ??= createRoot(document.getElementById('root')!)
+    flushSync(() => w.findRoot.render([createElement(FindDiff, { key: 'diff', files }), createElement(FindBar, { key: 'bar', open: true, focusKey: 0, onClose: () => undefined })]))
+  }, files)
+  await render(fileWith('one needle'))
+  await page.fill('.find-bar input', 'needle')
+  expect(await page.textContent('.find-count')).toBe('1 of 1')
+  await render(fileWith('needle and needle'))
+  expect(await page.textContent('.find-count')).toBe('1 of 2')
+  await page.evaluate(() => (window as any).findRoot.unmount())
+})

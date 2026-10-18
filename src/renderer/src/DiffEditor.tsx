@@ -129,6 +129,9 @@ export function bufferedKey(event: { key: string; metaKey: boolean; ctrlKey: boo
   return [...event.key].length === 1 ? event.key : null
 }
 
+// Keys are kept for a file that is still loading for at most this long, so a load that never ends cannot keep taking them.
+const TYPE_AHEAD_MS = 3000
+
 // The current-side line and column a caret position (from caretPositionFromPoint) falls on, or null when it is not on an
 // editable line: removed lines, the old side and folds stay read-only. A position in the gutter starts the line.
 export function lineColumnAt(node: Node | null, offset: number): At | null {
@@ -202,6 +205,14 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   const startAt = useRef<At | null>(null)
   const anchor = useRef<{ line: number; top: number } | null>(null)
   const typed = useRef<string[] | null>(null)
+  // Ends the key capture that keeps those keys. It runs when the editor mounts, the load fails, or the file goes.
+  const stopTyping = useRef<(() => void) | null>(null)
+  const dropTyping = () => {
+    stopTyping.current?.()
+    typed.current = null
+  }
+  useEffect(() => dropTyping, [key])
+  useEffect(() => { if (source && 'error' in source) dropTyping() }, [source])
   const [near, setNear] = useState(() => dirty(drafts.get(key)))
   const probe = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -303,6 +314,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
     const section = parent.closest<HTMLElement>('.diff-file')
     const unfollow = section ? editor.scrollers.map((element) => hscrollOf(section).follow(element)) : []
     // Keys typed before the editor was ready go in now, at the caret.
+    stopTyping.current?.()
     if (typed.current?.length) cm.typeKeys(editor.view, typed.current)
     typed.current = null
     // The editor draws on its next measure, before the frame paints. The clicked line is kept where it was on screen,
@@ -392,16 +404,35 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
       column = range.toString().length
     }
     startAt.current = { line: line.newNo, column }
-    if (typed.current) return
-    typed.current = []
+    if (stopTyping.current) return
+    const keys = typed.current ?? []
+    typed.current = keys
+    const file = event.currentTarget as HTMLElement
     const onKey = (key: KeyboardEvent) => {
-      if (!typed.current) return window.removeEventListener('keydown', onKey, true)
+      // Keys typed into a field are that field's.
+      const target = key.target
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
       const value = bufferedKey(key)
       if (value === null) return
       key.preventDefault()
-      typed.current.push(value)
+      keys.push(value)
     }
+    // A click anywhere else gives up the edit, so its keys never land in this file.
+    const onDown = (down: PointerEvent) => {
+      if (!file.contains(down.target as Node)) dropTyping()
+    }
+    const stop = () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('blur', stop)
+      clearTimeout(timer)
+      if (stopTyping.current === stop) stopTyping.current = null
+    }
+    const timer = setTimeout(stop, TYPE_AHEAD_MS)
     window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('blur', stop)
+    stopTyping.current = stop
   }
 
   if (!loaded || (!preview && !active)) {
