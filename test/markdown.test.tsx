@@ -196,6 +196,12 @@ test('table rows cut below their header by the hunk still render as a headerless
   // A header that is in the hunk is kept, and a pipe row after a blank line is not a table in the file either.
   expect(fragment('| H | I |\n|---|---|\n| A | one |')).toContain('<th')
   expect(fragment('text\n\n| A | one |')).not.toContain('<table')
+  // Lone pipe-led prose lines are paragraphs, not one-column tables.
+  for (const prose of ['| note', '| --- |']) {
+    const html = fragment(prose)
+    expect(html).not.toContain('<table')
+    expect(html).toContain('<p')
+  }
 })
 
 test('word edits keep intraline tints while syntax-only edits stay formatted', () => {

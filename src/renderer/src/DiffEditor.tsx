@@ -134,9 +134,23 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
   sourceRef.current = source
   const host = useRef<HTMLDivElement>(null)
   const mounted = useRef<Mounted | null>(null)
+  // A stacked diff can hold many files, so each loads, highlights and builds its editor only once its file nears the
+  // screen; until then the read-only diff holds its place. A dirty draft starts at once so its text shows.
+  // shortcut: an editor stays built after it scrolls away; unmount offscreen editors if very long sessions grow heavy.
+  const [near, setNear] = useState(() => dirty(drafts.get(key)))
+  const probe = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const file = probe.current?.parentElement
+    if (near || !file) return
+    const margin = '800px 0px'
+    const observer = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) setNear(true) }, { rootMargin: margin, scrollMargin: margin })
+    observer.observe(file)
+    return () => observer.disconnect()
+  }, [near])
 
   // Each new diff of the file reloads it. A dirty draft keeps the text and the old side it was typed against.
   useEffect(() => {
+    if (!near) return
     let stale = false
     const draft = drafts.get(key)
     if (dirty(draft)) {
@@ -155,7 +169,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
       (error) => { if (!stale) setSource({ error: messageOf(error) }) },
     )
     return () => { stale = true }
-  }, [key, path, hunks])
+  }, [key, path, hunks, near])
 
   const ready = !!source && !('error' in source)
 
@@ -216,6 +230,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback }: 
   if (!source || 'error' in source) {
     return (
       <>
+        {!near && <span ref={probe} hidden />}
         {source && <p className="hint diff-edit-note">Read-only: {source.error}</p>}
         {fallback}
       </>

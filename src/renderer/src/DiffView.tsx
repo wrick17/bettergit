@@ -225,7 +225,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
               className={`icon-button${formatMarkdown ? ' on' : ''}`}
               aria-label="Format Markdown"
               aria-pressed={formatMarkdown}
-              title="Format Markdown. Parse visible Markdown hunk fragments on each side. Missing surrounding content is not inferred; widen context for complete blocks. Links and images stay inert. Raw view preserves exact source."
+              title="Format Markdown. Parse visible Markdown hunk fragments on each side. Missing surrounding content is not inferred, except a blank header for table rows cut below theirs; widen context for complete blocks. Links and images stay inert. Raw view preserves exact source."
               onClick={() => {
                 captureSourceAnchors()
                 setFormatMarkdown(!formatMarkdown)

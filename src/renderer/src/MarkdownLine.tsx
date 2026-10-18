@@ -31,13 +31,17 @@ const cellCount = (text: string) => text.trim().replace(/^\|/, '').replace(/(?<!
 
 // A hunk often starts inside a table, below its header. Without a header and delimiter GFM reads the rows as a
 // paragraph of pipes, so an empty header (and delimiter, when that was cut too) is put back in front of them.
-// shortcut: only pipe-led rows are recognised; tables without a leading pipe stay raw until a wider context shows the header.
+// A lone pipe-led prose line (`| note`, `| --- |`) stays a paragraph: rows need two cells, or a delimiter a matching row.
+// shortcut: only pipe-led rows are recognised and one-column rows stay raw; widen context to show the header.
 function tablePrefix(texts: string[]): string {
   const [first, second] = texts
   if (first === undefined) return ''
-  if (isDelimiter(first)) return `|${' |'.repeat(cellCount(first))}\n`
-  if (!TABLE_ROW.test(first) || (second !== undefined && isDelimiter(second))) return ''
   const cells = cellCount(first)
+  if (isDelimiter(first)) {
+    const matched = cells >= 2 || (second !== undefined && TABLE_ROW.test(second) && cellCount(second) === cells)
+    return matched ? `|${' |'.repeat(cells)}\n` : ''
+  }
+  if (!TABLE_ROW.test(first) || cells < 2 || (second !== undefined && isDelimiter(second))) return ''
   return `|${' |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`
 }
 
