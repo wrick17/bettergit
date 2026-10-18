@@ -30,6 +30,8 @@ interface Props {
 
 // Reads and saves a repo-relative working file. `save` resolves false when the write failed and was already reported.
 export interface EditBridge {
+  // The repo the paths belong to. An open edit shows only in diffs of its own repo.
+  repo: string
   load: (path: string) => Promise<string>
   save: (path: string, loaded: string, text: string) => Promise<boolean>
   onError: (error: unknown) => void
@@ -79,6 +81,36 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
+// The one open inline edit. It lives outside every DiffView, so a reload, remount or view switch never loses the draft.
+interface OpenEdit { repo: string; path: string; loaded: string | null; draft: string }
+let openEdit: OpenEdit | null = null
+const editListeners = new Set<() => void>()
+function setOpenEdit(next: OpenEdit | null) {
+  openEdit = next
+  for (const listener of editListeners) listener()
+}
+function useOpenEdit() {
+  return useSyncExternalStore((listener) => {
+    editListeners.add(listener)
+    return () => { editListeners.delete(listener) }
+  }, () => openEdit)
+}
+
+// A textarea reports every line break as LF, so the file's CRLF endings are put back before saving.
+// shortcut: a file with mixed endings is saved with one kind; upgrade if mixed-ending files need editing here.
+function editText({ loaded, draft }: OpenEdit) {
+  return loaded?.includes('\r\n') ? draft.replace(/\r?\n/g, '\r\n') : draft
+}
+
+// Closes the open edit, asking first when it has unsaved text. False when the user keeps it. Editing `keep` (repo and
+// path) again is not a switch, so it never asks.
+export function confirmDropEdit(keep?: { repo: string; path: string }): boolean {
+  if (!openEdit || (keep && openEdit.repo === keep.repo && openEdit.path === keep.path)) return true
+  if (openEdit.loaded !== null && editText(openEdit) !== openEdit.loaded && !window.confirm(`Discard your edits to ${openEdit.path}?`)) return false
+  setOpenEdit(null)
+  return true
+}
+
 export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint, edit }: Props) {
   const { labels, anchors } = useMemo(() => indexMoves(files, moves), [files, moves])
   const stats = useMemo(() => files.map(countLines), [files])
@@ -116,8 +148,23 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
   }, [persistId, persistKey, choices])
 
   useSourceAnchor(containerRef, current, formatMarkdown, files)
-  // One file is edited at a time, by path, so a reload of the diff keeps the editor open.
-  const [editing, setEditing] = useState<string | null>(null)
+  const opened = useOpenEdit()
+  const editing = edit && opened?.repo === edit.repo ? opened : null
+  // A file that left this diff, such as one staged or reverted on disk, keeps its editor at the top until it is closed.
+  const orphan = editing && !files.some((file) => pathOf(file) === editing.path) ? editing : null
+  const startEdit = (path: string) => {
+    if (!edit || !confirmDropEdit()) return
+    const { repo } = edit
+    const pending = { repo, path, loaded: null, draft: '' }
+    setOpenEdit(pending)
+    edit.load(path).then(
+      (text) => { if (openEdit === pending) setOpenEdit({ ...pending, loaded: text, draft: text }) },
+      (error) => {
+        if (openEdit === pending) setOpenEdit(null)
+        edit.onError(error)
+      },
+    )
+  }
 
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
@@ -252,6 +299,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
       {!files.length && (
         <p className="hint">{emptyHint ?? (ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.')}</p>
       )}
+      {orphan && edit && <FileEditor open={orphan} edit={edit} orphan />}
       {files.map((file, fileIndex) => {
         const path = pathOf(file)
         const stat = stats[fileIndex]
@@ -262,8 +310,8 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         return (
           <section key={`${fileIndex}-${path}`} className="diff-file" data-path={path}>
             <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage}
-              onEdit={edit && !file.binary && file.status !== 'deleted' && editing !== path ? () => setEditing(path) : undefined} />
-            {edit && editing === path && <FileEditor key={path} path={path} edit={edit} onClose={() => setEditing(null)} />}
+              onEdit={edit && !file.binary && file.status !== 'deleted' && editing?.path !== path ? () => startEdit(path) : undefined} />
+            {edit && editing?.path === path && <FileEditor open={editing} edit={edit} />}
             {file.binary && <p className="hint">Binary file.</p>}
             {!open && file.hunks.length > 0 && (
               <div className="collapsed-note">
@@ -634,39 +682,26 @@ function FileHeader({ file, stat, open, onToggle, stage, onEdit }: {
 }
 
 // Edits the whole working file in place, above its diff. Saving writes it and the diff reloads under it.
-function FileEditor({ path, edit, onClose }: { path: string; edit: EditBridge; onClose: () => void }) {
-  const [loaded, setLoaded] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+function FileEditor({ open, edit, orphan }: { open: OpenEdit; edit: EditBridge; orphan?: boolean }) {
+  const { path, loaded, draft } = open
   const [saving, setSaving] = useState(false)
-  const bridge = useRef(edit)
-  bridge.current = edit
-  useEffect(() => {
-    let live = true
-    bridge.current.load(path).then(
-      (text) => { if (live) { setLoaded(text); setDraft(text) } },
-      (error) => { if (live) { bridge.current.onError(error); onClose() } },
-    )
-    return () => { live = false }
-  }, [path])
-  // A textarea reports every line break as LF, so the file's CRLF endings are put back before saving.
-  // shortcut: a file with mixed endings is saved with one kind; upgrade if mixed-ending files need editing here.
-  const text = loaded?.includes('\r\n') ? draft.replace(/\r?\n/g, '\r\n') : draft
+  const text = editText(open)
   const dirty = loaded !== null && text !== loaded
   const save = async () => {
     if (!dirty || saving || edit.disabled || loaded === null) return
     setSaving(true)
-    if (await edit.save(path, loaded, text)) setLoaded(text)
+    const ok = await edit.save(path, loaded, text)
     setSaving(false)
+    // Text typed while the save ran stays in the draft, and stays unsaved.
+    if (ok && openEdit?.repo === open.repo && openEdit.path === path) setOpenEdit({ ...openEdit, loaded: text })
   }
-  const cancel = () => {
-    if (!dirty || window.confirm(`Discard your edits to ${path}?`)) onClose()
-  }
+  const cancel = () => { confirmDropEdit() }
   if (loaded === null) return <p className="hint">Loading {path}…</p>
   return (
     <div className="diff-file-editor">
       <textarea
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => setOpenEdit({ ...open, draft: event.target.value })}
         onKeyDown={(event) => {
           if (event.key === 's' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()
@@ -681,6 +716,7 @@ function FileEditor({ path, edit, onClose }: { path: string; edit: EditBridge; o
         autoFocus
       />
       <div className="diff-file-editor-actions">
+        {orphan && <span className="note">{path} is no longer in this diff.</span>}
         <button type="button" onClick={cancel}>{dirty ? 'Cancel' : 'Close'}</button>
         <button type="button" className="primary" onClick={() => void save()} disabled={!dirty || saving || edit.disabled} aria-busy={saving || undefined}>
           {saving ? 'Saving…' : 'Save'} <kbd aria-hidden="true">⌘S</kbd>

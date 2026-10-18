@@ -461,6 +461,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-file-editor textarea { height: 40vh; min-height: 120px; resize: vertical; padding: 8px 12px; background: var(--sunken); font: 13px/1.5 var(--font-code); tab-size: 4; white-space: pre; overflow: auto; border-radius: var(--radius-sm); }
 .diff-file-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .diff-file-editor-actions kbd { font: 500 12px/1 var(--font-code); }
+.diff-file-editor-actions .note { margin-right: auto; align-self: center; color: var(--text-3); font: 13px/1.3 var(--font-ui); }
 /* Stands in for a collapsed file's hunks. */
 .collapsed-note { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 20px; color: var(--text-3); font: 13px/1 var(--font-ui); }
 .collapsed-note button { padding: 4px 10px; font-size: 13px; }

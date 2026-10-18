@@ -43,8 +43,15 @@ export async function resolveFileTarget(repo: string, relPath: string): Promise<
 // The diff's inline editor takes UTF-8 text only. Binary, invalid UTF-8 and very large files stay with a real editor.
 const MAX_EDIT_BYTES = 1024 * 1024
 
+// Git diffs a symlink as its link text, so the editor must never read or write through it to the target.
+async function editTarget(repo: string, relPath: string): Promise<string> {
+  const target = await resolveFileTarget(repo, relPath)
+  if ((await fs.lstat(path.join(repo, relPath))).isSymbolicLink()) throw new Error(`${relPath} is a symbolic link. Open it in your editor instead.`)
+  return target
+}
+
 export async function readWorkingFile(repo: string, relPath: string): Promise<string> {
-  const bytes = await fs.readFile(await resolveFileTarget(repo, relPath))
+  const bytes = await fs.readFile(await editTarget(repo, relPath))
   const text = bytes.toString('utf8')
   if (bytes.length > MAX_EDIT_BYTES || bytes.includes(0) || !Buffer.from(text, 'utf8').equals(bytes)) {
     throw new Error(`${relPath} is binary, not UTF-8, or too large to edit here.`)
@@ -55,7 +62,7 @@ export async function readWorkingFile(repo: string, relPath: string): Promise<st
 // `expected` is the text the editor loaded. A file changed on disk since then is refused, never overwritten.
 export async function writeWorkingFile(repo: string, relPath: string, expected: string, text: string): Promise<void> {
   if (typeof expected !== 'string' || typeof text !== 'string') throw new Error('Invalid file contents.')
-  const target = await resolveFileTarget(repo, relPath)
+  const target = await editTarget(repo, relPath)
   if ((await fs.readFile(target)).toString('utf8') !== expected) {
     throw new Error(`${relPath} changed on disk since it was opened. Cancel and edit it again.`)
   }

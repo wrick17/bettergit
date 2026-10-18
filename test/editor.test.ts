@@ -78,6 +78,11 @@ test('the inline editor saves only a file unchanged since it was loaded, inside 
   expect(await fs.readFile(path.join(root, 'secret.txt'), 'utf8')).toBe('outside the repo\n')
   await fs.writeFile(path.join(repo, 'blob.bin'), Buffer.from([0x66, 0x00, 0x67]))
   await expect(readWorkingFile(repo, 'blob.bin')).rejects.toThrow('binary')
+  // An in-repo symlink is refused both ways, so its target is never written through it.
+  await fs.symlink('app.ts', path.join(repo, 'src', 'alias.ts'))
+  await expect(readWorkingFile(repo, 'src/alias.ts')).rejects.toThrow('symbolic link')
+  await expect(writeWorkingFile(repo, 'src/alias.ts', 'export const a = 1\r\n', 'x')).rejects.toThrow('symbolic link')
+  expect(await fs.readFile(file, 'utf8')).toBe('export const a = 1\r\n')
 })
 
 test('file and folder targets must match their kind', async () => {

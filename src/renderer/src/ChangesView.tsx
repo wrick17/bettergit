@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
-import { DiffView, type EditBridge } from './DiffView'
+import { confirmDropEdit, DiffView, type EditBridge } from './DiffView'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton } from './Icons'
 import { splitPath } from './paths'
@@ -272,6 +272,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // The inline editor in working-tree diffs. Its save takes the repo slot like any write, and the diff reloads after it.
   const edit: EditBridge = {
+    repo,
     load: (path) => api.readFile(repo, path),
     save: (path, loaded, text) => write(`file-save:${path}`, () => api.writeFile(repo, path, loaded, text)),
     onError: (failure) => errorRef.current(failure),
@@ -318,6 +319,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   const choose = (change: FileChange, isStaged: boolean) => {
+    // Opening another file hides the editor, so an unsaved edit is confirmed and closed first.
+    if (!confirmDropEdit({ repo, path: change.path })) return
     revealRef.current = change.path
     setSelection({ path: change.path, staged: isStaged })
   }
