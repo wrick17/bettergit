@@ -40,6 +40,28 @@ export async function resolveFileTarget(repo: string, relPath: string): Promise<
   return target
 }
 
+// The diff's inline editor takes UTF-8 text only. Binary, invalid UTF-8 and very large files stay with a real editor.
+const MAX_EDIT_BYTES = 1024 * 1024
+
+export async function readWorkingFile(repo: string, relPath: string): Promise<string> {
+  const bytes = await fs.readFile(await resolveFileTarget(repo, relPath))
+  const text = bytes.toString('utf8')
+  if (bytes.length > MAX_EDIT_BYTES || bytes.includes(0) || !Buffer.from(text, 'utf8').equals(bytes)) {
+    throw new Error(`${relPath} is binary, not UTF-8, or too large to edit here.`)
+  }
+  return text
+}
+
+// `expected` is the text the editor loaded. A file changed on disk since then is refused, never overwritten.
+export async function writeWorkingFile(repo: string, relPath: string, expected: string, text: string): Promise<void> {
+  if (typeof expected !== 'string' || typeof text !== 'string') throw new Error('Invalid file contents.')
+  const target = await resolveFileTarget(repo, relPath)
+  if ((await fs.readFile(target)).toString('utf8') !== expected) {
+    throw new Error(`${relPath} changed on disk since it was opened. Cancel and edit it again.`)
+  }
+  await fs.writeFile(target, text, 'utf8')
+}
+
 export async function resolveRepoTarget(repo: string): Promise<string> {
   const target = await fs.realpath(repo)
   if (!(await fs.stat(target)).isDirectory()) throw new Error(`Not a folder: ${repo}`)

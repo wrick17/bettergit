@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell }
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { loadConfig, normalizeConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
-import { openFileInEditor, openRepoInEditor } from './editor'
+import { openFileInEditor, openRepoInEditor, readWorkingFile, writeWorkingFile } from './editor'
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
@@ -240,6 +240,10 @@ function registerIpc() {
     saveConflict(repoPath, filePath, parseConflictSave(save)))
   handleWrite('repo:conflict-reset', (_event, repoPath: string, filePath: string, request: unknown) =>
     resetConflict(repoPath, filePath, parseConflictReset(request)))
+  // The diff's inline editor. The write holds the repo lock, so it never lands in the middle of a Git write.
+  ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownRepo(repoPath), filePath))
+  handleWrite('repo:file-write', (_event, repoPath: string, filePath: string, expected: string, text: string) =>
+    writeWorkingFile(repoPath, filePath, expected, text))
   // Launching an editor does not write Git state, so it stays available while the repo is busy.
   ipcMain.handle('repo:open-in-editor', (_event, repoPath: string, filePath?: string) => {
     const repo = assertKnownWriteRepo(repoPath)

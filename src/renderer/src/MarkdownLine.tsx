@@ -17,13 +17,12 @@ export interface MarkdownSide {
   definitions: Map<string, Definition>
   footnotes: Map<string, FootnoteDefinition>
   changes: Map<number, Span[]>
-  annotations: Map<number, Span[]>
   moved: Set<number>
 }
 export interface MarkdownGroup { start: number; end: number; old: RootContent[]; new: RootContent[]; rows: Array<[number | null, number | null]>; unchanged: boolean }
 export interface MarkdownPlan { old: MarkdownSide; new: MarkdownSide; groups: MarkdownGroup[] }
 
-function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<number, Span[]>, edits: Map<number, Span[]>): MarkdownSide {
+function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<number, Span[]>): MarkdownSide {
   const entries: MarkdownSource[] = []
   let source = ''
   lines.forEach((line, index) => {
@@ -36,43 +35,13 @@ function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<numb
   const tree = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] })
   const definitions = new Map<string, Definition>()
   const footnotes = new Map<string, FootnoteDefinition>()
-  const visible: Span[] = []
   const collect = (node: Nodes) => {
-    const projection = project(node, source)
-    if (projection) visible.push(projection)
     if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node)
     if (node.type === 'footnoteDefinition' && !footnotes.has(node.identifier)) footnotes.set(node.identifier, node)
     if ('children' in node) node.children.forEach(collect)
   }
   collect(tree)
-  visible.sort((a, b) => a[0] - b[0])
-  const annotations = new Map<number, Span[]>()
-  for (const entry of entries) {
-    const hidden: Span[] = []
-    for (const [a, b] of edits.get(entry.index) ?? []) {
-      let cursor = entry.start + a
-      const end = entry.start + b
-      let low = 0
-      let high = visible.length
-      while (low < high) {
-        const middle = (low + high) >>> 1
-        if (visible[middle][1] <= cursor) low = middle + 1
-        else high = middle
-      }
-      for (let at = low; at < visible.length; at++) {
-        const [left, right] = visible[at]
-        if (left >= end) break
-        if (left > cursor) hidden.push([cursor - entry.start, Math.min(left, end) - entry.start])
-        cursor = Math.max(cursor, right)
-        if (cursor >= end) break
-      }
-      if (cursor < end) hidden.push([cursor - entry.start, end - entry.start])
-      // Collapsed paragraph whitespace is source meaning too, even when the text node contains it.
-      if (a < b && !entry.line.text.slice(a, b).trim()) hidden.push([a, b])
-    }
-    if (hidden.length) annotations.set(entry.index, hidden)
-  }
-  return { source, entries, nodes: tree.children, definitions, footnotes, changes, annotations, moved: new Set() }
+  return { source, entries, nodes: tree.children, definitions, footnotes, changes, moved: new Set() }
 }
 
 function sourceRange(node: Nodes, side: MarkdownSide): [number, number] | undefined {
@@ -108,20 +77,8 @@ function signature(nodes: Nodes[], side: MarkdownSide): string {
 
 // Every interval is closed over both AST blocks and replacement pairs. Neither side is reparsed or cut at a diff row.
 export function markdownHunk(lines: DiffLine[], changes = new Map<number, Span[]>(), pairs: Array<[number | null, number | null]> = [], moved = new Set<number>()): MarkdownPlan {
-  const edits = new Map(changes)
-  for (const [left, right] of pairs) {
-    if (left === null || right === null || lines[left].type !== 'del' || lines[right].type !== 'add' || edits.has(left)) continue
-    const before = lines[left].text
-    const after = lines[right].text
-    let start = 0
-    while (start < before.length && start < after.length && before[start] === after[start]) start++
-    let end = 0
-    while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++
-    edits.set(left, start < before.length - end ? [[start, before.length - end]] : [])
-    edits.set(right, start < after.length - end ? [[start, after.length - end]] : [])
-  }
-  const old = parseSide(lines, 'add', changes, edits)
-  const next = parseSide(lines, 'del', changes, edits)
+  const old = parseSide(lines, 'add', changes)
+  const next = parseSide(lines, 'del', changes)
   old.moved = next.moved = moved
   const ranges: Array<[number, number]> = lines.map((_, index) => [index, index])
   for (const side of [old, next]) for (const node of side.nodes) {
@@ -168,7 +125,7 @@ function project(node: Nodes, source: string): Span | undefined {
   if (at >= 0 && at === raw.lastIndexOf(node.value)) return [start + at, start + at + node.value.length]
 }
 
-// Positions and intraline spans both use UTF-16 offsets. Normalized leaves receive a coarse tint plus source annotations.
+// Positions and intraline spans both use UTF-16 offsets. Normalized leaves receive a coarse tint.
 function entriesWithin(side: MarkdownSide, start: number, end: number): MarkdownSource[] {
   let low = 0
   let high = side.entries.length
