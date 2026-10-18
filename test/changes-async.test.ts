@@ -326,6 +326,108 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     }
     unmount()
   }
+} else if (process.env.CHECK_MODE === 'option-pending') {
+  // While a load for new options runs, hunks, counts and row stats from the old options are not shown; the toolbar is.
+  const views = (selected) => (selected ? [false] : [false, true]).map((staged) => find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === staged))
+  const texts = (selected) => views(selected).map((view) => view.files.map((file) => file.hunks[0].lines.at(-1).text))
+  const counted = () => {
+    const out = []
+    const walk = (node) => { for (const child of Array.isArray(node) ? node : [node]) if (react.isValidElement(child)) { if (child.props.className === 'count') out.push(child); walk(child.props.children) } }
+    walk(tree)
+    return out.length
+  }
+  const rowStats = () => find(tree, (p) => p.title === 'Unstaged' && p.stats instanceof Map).stats.size
+  const settle = async (option, outcome) => {
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined && r.args[4] === option)) {
+      request.done = true
+      if (outcome instanceof Error) request.reject(outcome)
+      else request.resolve(working(outcome))
+    }
+    await flush()
+  }
+  for (const selected of [false, true]) {
+    await start(selected)
+    const loadedCounts = counted()
+    assert.ok(rowStats() > 0)
+    setIgnoreWhitespace(true); render()
+    for (const view of views(selected)) {
+      assert.ok(view, 'toolbar unmounted while the new option loads')
+      assert.deepEqual(view.files, [], 'old-option hunks shown while the new option loads')
+      assert.equal(view.emptyHint, 'Loading…')
+    }
+    assert.equal(rowStats(), 0, 'old-option row stats shown while the new option loads')
+    assert.equal(counted(), loadedCounts - (selected ? 0 : 2), 'old-option section counts shown while the new option loads')
+    // Switching back shows the result loaded for that option at once, while its refresh runs.
+    setIgnoreWhitespace(false); render()
+    assert.deepEqual(texts(selected), views(selected).map(() => ['initial', 'initial']))
+    // A reply for an option already left changes nothing; the current reply shows.
+    setIgnoreWhitespace(true); render()
+    await settle(false, 'obsolete')
+    for (const view of views(selected)) assert.equal(view.emptyHint, 'Loading…')
+    await settle(true, 'filtered')
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    assert.ok(rowStats() > 0)
+    // A refresh with the same options keeps its result while it runs and after it fails.
+    props = { ...props, revision: 2 }; render()
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    await settle(true, new Error('refresh failed'))
+    assert.deepEqual(texts(selected), views(selected).map(() => ['filtered', 'filtered']))
+    for (const view of views(selected)) assert.equal(view.emptyHint, undefined)
+    assert.deepEqual(errors, Array(selected ? 2 : 1).fill('Error: refresh failed'))
+    unmount()
+  }
+} else if (process.env.CHECK_MODE === 'option-scroll') {
+  // The pane models the browser: its height follows the files on screen once a frame lays them out, a shorter pane clamps
+  // scrollTop, and a clamp fires the pane's scroll event. A scrolled view keeps its place through an option reload.
+  const frames = new Map()
+  let nextFrame = 1
+  globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
+  globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+  let top = 0
+  const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [] }
+  Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
+  const scrolled = () => find(tree, (p) => p.className === 'diff-pane').onScroll({ currentTarget: pane })
+  const frame = () => {
+    const shown = []
+    const walk = (node) => { for (const child of Array.isArray(node) ? node : [node]) if (react.isValidElement(child)) { if (Array.isArray(child.props.files) && child.props.stage) shown.push(...child.props.files); walk(child.props.children) } }
+    walk(tree)
+    pane.scrollHeight = shown.length ? 3000 : 40
+    const before = pane.scrollTop
+    pane.scrollTop = before
+    if (pane.scrollTop !== before) scrolled()
+    const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback())
+  }
+  const saved = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return JSON.parse(stored.get('bettergit.session')).views['/repo|changes-diff']
+  }
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [change('a.ts'), change('b.ts')] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+  }
+  render()
+  find(tree, (p) => p.className === 'diff-pane').ref.current = pane
+  await load('initial')
+  frame(); frame()
+  pane.scrollTop = 900; scrolled()
+  setIgnoreWhitespace(true); render()
+  frame()
+  assert.equal(pane.scrollTop, 0)
+  await load('filtered')
+  frame(); frame()
+  assert.equal(pane.scrollTop, 900, 'scroll position lost across an option reload')
+  assert.deepEqual(await saved(), { key: 'all', value: 900 }, 'the clamp to the top was saved')
+  // Picking a file while an option reload runs leaves that file to its own reveal, not the old position.
+  setIgnoreWhitespace(false); render()
+  frame()
+  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  await load('picked')
+  frame(); frame(); frame()
+  assert.notEqual(pane.scrollTop, 900, 'old view position restored into a picked file')
+  setIgnoreWhitespace(false)
+  unmount()
 } else if (process.env.CHECK_MODE === 'status-loads') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
     await start(false)
@@ -503,3 +605,5 @@ test('a commit that finishes after the tab remounts clears its own draft but kee
 test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
 test('a failed load with new whitespace options shows the failure in place of the old hunks and keeps the toolbar', () => check('whitespace-failure'))
 test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))
+test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
+test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
