@@ -46,7 +46,8 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
           aria-expanded={open}
           // While open, a press on the trigger must not move focus first: the menu would close on blur, then the click reopen it.
           onMouseDown={(event) => { if (open) event.preventDefault() }}
-          onClick={() => setOpen((value) => !value)}
+          // Closing from the trigger also goes through close(), so focus lands back on it rather than on the body.
+          onClick={() => { if (open) close(); else setOpen(true) }}
           onKeyDown={(event) => { if (!open && event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}
         >
           Actions
