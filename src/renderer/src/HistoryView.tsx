@@ -140,6 +140,9 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
   const refreshed = useRef(refreshes)
   // Whether the list in the latest reply starts a fresh graph layout, rather than keeping the lanes already on screen.
   const relayout = useRef(true)
+  // A new list or an explicit refresh asks for a fresh layout. The ask stands until a current reply is applied, so a
+  // background refresh that replaces the request, or a reply that fails or is dropped, does not use it up.
+  const freshPending = useRef(true)
   const shownCount = useRef(0)
   shownCount.current = commits.length
   useEffect(() => {
@@ -147,7 +150,7 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     pageBusy.current = true
     const key = JSON.stringify([repo, query, authors])
     const limit = key === listKey.current ? Math.max(PAGE, shownCount.current) : PAGE
-    const fresh = key !== listKey.current || refreshes !== refreshed.current
+    if (key !== listKey.current || refreshes !== refreshed.current) freshPending.current = true
     listKey.current = key
     refreshed.current = refreshes
     const load = query.trim()
@@ -156,6 +159,8 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     load.then((rows: Commit[]) => {
       // A reply for an older query, repo, or refresh must not overwrite the current list.
       if (gen !== generation.current) return
+      const fresh = freshPending.current
+      freshPending.current = false
       // An unchanged list keeps its array, so the graph is not laid out again and no row re-renders. A fresh layout always
       // lays out again, so an explicit refresh drops lanes kept from earlier background refreshes.
       relayout.current = fresh
