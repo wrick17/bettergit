@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { ThemeMode } from '../../main/config'
 import type { Appearance } from '../../shared/editors'
-import { themeCss, type ColorTheme, type IconTheme, type InstalledExtension } from '../../shared/themes'
+import { themeCss, type ColorTheme, type IconTheme } from '../../shared/themes'
 import { setSyntaxThemes } from './highlight'
 
 const api = window.bettergit
@@ -9,8 +9,9 @@ const MODE_KEY = 'bettergit.themeMode'
 // The applied colour themes, so the next launch paints them before the config and the theme files arrive.
 const THEMES_KEY = 'bettergit.colorThemes'
 
-// Loaded themes by ref; null when missing or broken. Settings loads every installed theme up front, so a pick applies on
-// the next frame instead of after a round trip.
+// Loaded themes by ref; null when missing or broken. Only the chosen themes load at launch. A theme picker loads its
+// themes when it takes focus or a press, before its menu opens, so a pick applies on the next frame instead of after a
+// round trip, and themes nobody looks at are never read.
 const colorThemes = new Map<string, ColorTheme | null>()
 const iconThemes = new Map<string, IconTheme | null>()
 const loading = new Map<string, Promise<void>>()
@@ -33,11 +34,9 @@ function load(kind: 'color' | 'icons', ref: string): Promise<void> {
   return pending
 }
 
-export function preloadThemes(extensions: InstalledExtension[]) {
-  for (const extension of extensions) {
-    for (const theme of extension.themes) if (!colorThemes.has(theme.ref)) void load('color', theme.ref)
-    for (const theme of extension.iconThemes) if (!iconThemes.has(theme.ref)) void load('icons', theme.ref)
-  }
+export function preloadThemes(kind: 'color' | 'icons', refs: string[]) {
+  const cache = kind === 'color' ? colorThemes : iconThemes
+  for (const ref of refs) if (!cache.has(ref)) void load(kind, ref)
 }
 
 // After an extension is reinstalled or removed, its themes load again on next use.

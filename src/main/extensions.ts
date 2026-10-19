@@ -18,7 +18,12 @@ const MAX_UNPACKED = 100 * 1024 * 1024
 const MAX_ENTRIES = 20_000
 const MAX_FILE = 20 * 1024 * 1024
 const MAX_ICON = 512 * 1024
-const MAX_ICONS = 32 * 1024 * 1024
+// Caps on one icon theme, checked from the map and file sizes before any image is read. Bytes count once per icon id,
+// since each id carries its own copy of the data URL to the renderer. vscode-icons, the largest seen, has 1,668 images
+// in 4.4 MB.
+const MAX_ICON_COUNT = 5000
+const MAX_ICON_BYTES = 16 * 1024 * 1024
+const READERS = 8
 // Theme JSON and images only.
 const KEPT = /\.(?:json|jsonc|svg|png)$/i
 const PART = /^[a-z0-9][a-z0-9-]*$/i
@@ -356,7 +361,22 @@ function iconMaps(source: unknown): IconMaps {
   }
 }
 
-// Only icons the maps use are read, each as a data URL, so the renderer never loads a file path.
+// Runs `task` on every item, at most `limit` at a time, and keeps the results in order.
+async function pool<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = []
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++
+      out[index] = await task(items[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+// Only icons the maps use are read, each as a data URL, so the renderer never loads a file path. The whole load fails
+// when the theme is over a cap, and the caps are checked before any image is read.
 export async function loadIconTheme(root: string, ref: unknown): Promise<IconTheme | null> {
   const found = await locate(root, ref, 'iconThemes')
   if (!found) return null
@@ -367,19 +387,32 @@ export async function loadIconTheme(root: string, ref: unknown): Promise<IconThe
   const ids = new Set([base, light].flatMap(({ fileExtensions, fileNames, languageIds, ...single }) =>
     [...Object.values(single), ...Object.values(fileExtensions), ...Object.values(fileNames), ...Object.values(languageIds)]))
   let fontIcons = 0
-  let total = 0
-  const loaded = await Promise.all([...ids].map(async (id): Promise<[string, string] | null> => {
+  // Icon id and the image's path, before touching the disk.
+  const wanted: [string, string][] = []
+  for (const id of ids) {
     const definition = typeof id === 'string' && Object.hasOwn(definitions, id) ? definitions[id] : undefined
     const iconPath = text(definition?.iconPath)
-    if (!iconPath) {
-      if (definition?.fontCharacter) fontIcons++
-      return null
-    }
-    const type = /\.svg$/i.test(iconPath) ? 'image/svg+xml' : /\.png$/i.test(iconPath) ? 'image/png' : null
-    const file = type && await resolveInside(found.dir, path.dirname(found.file), iconPath)
-    const data = file && await readCapped(file, MAX_ICON).catch(() => null)
-    if (!data || (total += data.length) > MAX_ICONS) return null
-    return [id as string, `data:${type};base64,${data.toString('base64')}`]
+    if (/\.(?:svg|png)$/i.test(iconPath)) wanted.push([id as string, path.resolve(path.dirname(found.file), iconPath)])
+    else if (definition?.fontCharacter) fontIcons++
+  }
+  if (wanted.length > MAX_ICON_COUNT) throw new Error(`The icon theme uses more than ${MAX_ICON_COUNT} icons.`)
+  // Each distinct path is resolved and sized once. Files outside the extension, missing or over MAX_ICON are skipped.
+  const files = new Map(await pool([...new Set(wanted.map(([, file]) => file))], READERS, async (file) => {
+    const real = await resolveInside(found.dir, found.dir, file)
+    const stat = real && /\.(?:svg|png)$/i.test(real) ? await fs.stat(real).catch(() => null) : null
+    return [file, real && stat?.isFile() && stat.size <= MAX_ICON ? { real, size: stat.size } : null] as const
   }))
-  return { name: found.name, ...base, light, icons: Object.fromEntries(loaded.filter((entry) => entry !== null)), fontIcons }
+  const total = wanted.reduce((sum, [, file]) => sum + (files.get(file)?.size ?? 0), 0)
+  if (total > MAX_ICON_BYTES) throw new Error(`The icon theme's images add up to more than ${MAX_ICON_BYTES / 1024 / 1024} MB.`)
+  // Each real file is read once; ids that share it share one data URL.
+  const reals = [...new Set([...files.values()].flatMap((entry) => (entry ? [entry.real] : [])))]
+  const urls = new Map(await pool(reals, READERS, async (real) => {
+    const data = await readCapped(real, MAX_ICON).catch(() => null)
+    return [real, data && `data:${real.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : 'image/png'};base64,${data.toString('base64')}`] as const
+  }))
+  const icons = Object.fromEntries(wanted.flatMap(([id, file]) => {
+    const url = urls.get(files.get(file)?.real ?? '')
+    return url ? [[id, url]] : []
+  }))
+  return { name: found.name, ...base, light, icons, fontIcons }
 }

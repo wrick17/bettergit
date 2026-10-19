@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, promises as fsPromises, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
@@ -121,4 +121,50 @@ test('a redirect is checked before it is followed, so a hop off the allowed host
   expect(['127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', '::', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1']
     .filter((address) => !isInternalAddress(address))).toEqual([])
   expect(['104.18.12.1', '172.32.0.1', '2606:4700::1'].filter(isInternalAddress)).toEqual([])
+})
+
+test('icon caps are checked from the map and file sizes before any image is read, each file is read once, a few at a time', async () => {
+  const icons = (count: number, file: (index: number) => string) => JSON.stringify({
+    iconDefinitions: Object.fromEntries(Array.from({ length: count }, (_, index) => [`icon${index}`, { iconPath: file(index) }])),
+    fileExtensions: Object.fromEntries(Array.from({ length: count }, (_, index) => [`ext${index}`, `icon${index}`])),
+  })
+  const svg = (bytes: number) => `<svg xmlns="http://www.w3.org/2000/svg"/>${' '.repeat(bytes)}`
+  extension('acme.flood', {
+    'package.json': JSON.stringify({ name: 'flood', publisher: 'acme', version: '1.0.0', contributes: { iconThemes: [
+      { id: 'big', label: 'Big', path: './big.json' }, { id: 'many', label: 'Many', path: './many.json' }, { id: 'fine', label: 'Fine', path: './fine.json' },
+    ] } }),
+    // Sol's probe: 256 ids on one 500 KB file, 125 MB of data URLs from one file.
+    'big.json': icons(256, () => './one.svg'),
+    'one.svg': svg(500_000),
+    'many.json': icons(5001, () => './small.svg'),
+    'small.svg': svg(10),
+    'fine.json': icons(80, (index) => `./fine/${index % 40}.svg`),
+    ...Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`fine/${index}.svg`, svg(index)])),
+  })
+  const original = fsPromises.readFile
+  const reads: string[] = []
+  let active = 0
+  let most = 0
+  fsPromises.readFile = (async (...args: Parameters<typeof original>) => {
+    if (!String(args[0]).endsWith('.svg')) return original(...args)
+    reads.push(String(args[0]))
+    most = Math.max(most, ++active)
+    try {
+      return await original(...args)
+    } finally {
+      active--
+    }
+  }) as typeof original
+  try {
+    await expect(loadIconTheme(root, 'acme.flood/big.json')).rejects.toThrow('add up to more than 16 MB')
+    await expect(loadIconTheme(root, 'acme.flood/many.json')).rejects.toThrow('more than 5000 icons')
+    expect(reads).toEqual([])
+    const fine = await loadIconTheme(root, 'acme.flood/fine.json')
+    expect(reads.length).toBe(40)
+    expect(most).toBeLessThanOrEqual(8)
+    expect(Object.keys(fine!.icons).length).toBe(80)
+    expect(fine!.icons.icon3).toBe(fine!.icons.icon43)
+  } finally {
+    fsPromises.readFile = original
+  }
 })
