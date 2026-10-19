@@ -92,6 +92,29 @@ Issues and pull requests are welcome. Run `bun run typecheck` and `bun run test`
 
 The app icon and in-app icons are from [Lucide](https://lucide.dev) (the app icon uses [`git-branch-plus`](https://lucide.dev/icons/git-branch-plus)), licensed under the [ISC License](https://github.com/lucide-icons/lucide/blob/main/LICENSE). Copyright (c) 2026 Lucide Icons and Contributors.
 
+<details>
+<summary>Lucide license (ISC)</summary>
+
+```text
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+</details>
+
 The [Git logo](https://git-scm.com/community/logos) by [Jason Long](https://bsky.app/profile/jasonlong.me) is licensed under the [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/). This README uses the unmodified black and white logomarks to refer to Git.
 
 Git and the Git logo are either registered trademarks or trademarks of Software Freedom Conservancy, Inc., corporate home of the Git Project, in the United States and/or other countries. BetterGit is not affiliated with or endorsed by the Git Project or Software Freedom Conservancy.
