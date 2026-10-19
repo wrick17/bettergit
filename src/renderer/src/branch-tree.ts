@@ -64,7 +64,7 @@ function fold(id: string, entries: Entry[]): Folder {
   return root
 }
 
-export function buildSections({ branches, head, tags, stashes, worktrees, repo }: {
+export function buildSections({ branches, head, tags, stashes, worktrees }: {
   branches: Branch[]
   // Undefined hides the Starting point section; null is an unborn HEAD.
   head?: BranchSelection | null
@@ -72,7 +72,6 @@ export function buildSections({ branches, head, tags, stashes, worktrees, repo }
   tags?: Tag[] | null
   stashes?: Stash[] | null
   worktrees?: Worktree[] | null
-  repo?: string
 }): Section[] {
   const section = (id: string, label: string, entries: Entry[] | null, folders: boolean, open = false, count?: number): Section =>
     ({ id, label, entries, folders, open, count, root: entries && folders ? fold(id, entries) : null })
@@ -91,7 +90,7 @@ export function buildSections({ branches, head, tags, stashes, worktrees, repo }
     entry(`i:stash:${stash.ref}`, stash.message, { kind: 'stash', stash }, { detail: stash.ref })), false))
   if (worktrees !== undefined) sections.push(section('worktree', 'Worktrees', worktrees && worktrees.map((worktree) =>
     entry(`i:wt:${worktree.path}`, worktree.branch ?? `detached at ${worktree.hash.slice(0, 7)}`, { kind: 'worktree', worktree },
-      { detail: worktree.path, lower: `${worktree.branch ?? ''}\n${worktree.path}`.toLowerCase(), current: worktree.path === repo, disabled: worktree.path === repo })), false))
+      { detail: worktree.path, lower: `${worktree.branch ?? ''}\n${worktree.path}`.toLowerCase(), current: worktree.current, disabled: worktree.current })), false))
   return sections
 }
 

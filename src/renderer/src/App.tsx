@@ -18,7 +18,7 @@ import { CloneDialog, SettingsDialog } from './Dialogs'
 import { BranchPicker } from './BranchPicker'
 import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { blockedReason, busyKey, connectRepoLocks, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
+import { blockedReason, busyKey, connectRepoLocks, repoIdentity, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 import { FindBar } from './FindBar'
@@ -304,9 +304,11 @@ export function App() {
             onError={reportError}
             onCleanChange={setRepoClean}
             // A worktree picked in the branch picker opens like a sidebar repo, added as a source first if it is not one.
+            // Its path is canonical, so a sidebar entry reached through a symlink is matched by identity, not added twice.
             onOpenRepo={(path) => {
-              (repos.some((node) => node.path === path) ? Promise.resolve() : addPaths([path]))
-                .then(() => { setSelected(path); setTab('changes') }).catch(reportError)
+              const known = repos.find((node) => node.path === path || repoIdentity(node.path) === path)?.path
+              ;(known ? Promise.resolve() : addPaths([path]))
+                .then(() => { setSelected(known ?? path); setTab('changes') }).catch(reportError)
             }}
           />
         )}

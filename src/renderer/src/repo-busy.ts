@@ -19,12 +19,16 @@ export interface RepoLockSnapshot {
 
 let remote: RepoLockSnapshot = { seq: -1, holders: {} }
 
+// The canonical path main reported for a sidebar path, or the path itself before main has reported it.
+export function repoIdentity(displayPath: string): string {
+  return remote.identities?.[displayPath] ?? displayPath
+}
+
 // A local claim wins over main's report, so a write this window started stays busy until its own finally runs.
 export function busyKey(repo: string): string | null {
-  const identity = (displayPath: string) => remote.identities?.[displayPath] ?? displayPath
-  const canonical = identity(repo)
+  const canonical = repoIdentity(repo)
   for (const [displayPath, local] of running) {
-    if (identity(displayPath) === canonical) return local
+    if (repoIdentity(displayPath) === canonical) return local
   }
   const holder = remote.holders[canonical]
   return holder ? holder.replace(/^repo:/, '') : null

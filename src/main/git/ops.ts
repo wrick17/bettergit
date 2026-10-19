@@ -2,6 +2,7 @@ import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
+import { canonicalRepoPath } from '../repo-lock'
 import { GitError, git, gitOk, gitRaw } from './exec'
 import { readStatus } from './status'
 
@@ -33,11 +34,13 @@ export interface Stash {
   message: string
 }
 
+// Paths are canonical, so a repo opened through a symlink still finds its own worktree (`current`).
 export interface Worktree {
   path: string
   branch: string | null
   hash: string
   locked: boolean
+  current: boolean
 }
 
 // Staging a file that still holds conflict markers would commit the markers. Only unmerged paths are checked, so text
@@ -389,7 +392,7 @@ export async function readWorktrees(repo: string): Promise<Worktree[]> {
   for (const line of output.split('\n')) {
     if (line.startsWith('worktree ')) {
       if (current?.path) entries.push(current as Worktree)
-      current = { path: line.slice('worktree '.length), branch: null, hash: '', locked: false }
+      current = { path: line.slice('worktree '.length), branch: null, hash: '', locked: false, current: false }
     } else if (!current) {
       continue
     } else if (line.startsWith('HEAD ')) current.hash = line.slice(5)
@@ -397,7 +400,13 @@ export async function readWorktrees(repo: string): Promise<Worktree[]> {
     else if (line.startsWith('locked')) current.locked = true
   }
   if (current?.path) entries.push(current as Worktree)
-  return entries
+  const self = canonicalRepoPath(repo)
+  return entries.map((entry) => {
+    // A pruned worktree's folder is gone, so it keeps the path Git listed.
+    let canonical = entry.path
+    try { canonical = canonicalRepoPath(entry.path) } catch {}
+    return { ...entry, path: canonical, current: canonical === self }
+  })
 }
 
 export async function addWorktree(repo: string, path: string, branch: string): Promise<void> {

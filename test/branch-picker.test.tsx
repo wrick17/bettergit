@@ -7,6 +7,11 @@ import { runInNewContext } from 'node:vm'
 import type { Branch } from '../src/main/git/ops'
 import * as busy from '../src/renderer/src/repo-busy'
 import * as refs from '../src/renderer/src/branch-tree'
+import { readWorktrees } from '../src/main/git/ops'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 const hash = 'a'.repeat(40)
 const branches: Branch[] = [
@@ -71,11 +76,11 @@ const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve()
 
 const tags = [{ name: 'v1.0.0', fullRef: 'refs/tags/v1.0.0', hash }, { name: 'release/2609', fullRef: 'refs/tags/release/2609', hash }]
 const stashes = [{ ref: 'stash@{0}', message: 'WIP on main: topic' }]
-const worktrees = [{ path: '/picker-test', branch: 'main', hash, locked: false }, { path: '/elsewhere', branch: null, hash, locked: false }]
+const worktrees = [{ path: '/picker-test', branch: 'main', hash, locked: false, current: true }, { path: '/elsewhere', branch: null, hash, locked: false, current: false }]
 
 test('sections fold refs by prefix, count them, and filter every section by whole name', () => {
   const sections = refs.buildSections({ branches: [...branches, { ...branches[0], name: 'feat/a', fullRef: 'refs/heads/feat/a', current: false },
-    { ...branches[0], name: 'feat/b', fullRef: 'refs/heads/feat/b', current: false }], tags, stashes, worktrees: null, repo: '/picker-test' })
+    { ...branches[0], name: 'feat/b', fullRef: 'refs/heads/feat/b', current: false }], tags, stashes, worktrees: null })
   const labels = (rows: refs.Row[]) => rows.map((row) => `${row.level}:${row.label}${row.type === 'section' ? `(${row.count ?? '…'})` : ''}${row.type !== 'item' && !row.expanded ? '+' : ''}`)
   // Branches open, others folded; folders sit where their first branch does and start folded unless they hold HEAD.
   expect(labels(refs.flattenRows(sections, '', new Set()))).toEqual(['1:Branches(3)', '2:main', '2:feat+', '1:Remotes(2)+', '1:Tags(2)+', '1:Stashes(1)+', '1:Worktrees(…)+'])
@@ -88,11 +93,29 @@ test('sections fold refs by prefix, count them, and filter every section by whol
   expect(labels(refs.flattenRows(sections, 'topic', new Set(['s:remote'])))[0]).toBe('1:Remotes(2)+')
 })
 
+test('a repo opened through a symlink finds its own worktree as current, by canonical path', async () => {
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'picker-wt-')))
+  try {
+    const repo = path.join(dir, 'repo'), alias = path.join(dir, 'alias'), linked = path.join(dir, 'linked')
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['init', '-q', '-b', 'main', repo])
+    run('-c', 'user.name=T', '-c', 'user.email=t@e.x', 'commit', '-q', '--allow-empty', '-m', 'c')
+    run('worktree', 'add', '-q', '-b', 'side', linked)
+    symlinkSync(repo, alias)
+    const listed = await readWorktrees(alias)
+    expect(listed.map(({ path, current }) => ({ path, current }))).toEqual([{ path: repo, current: true }, { path: linked, current: false }])
+    const rows = refs.flattenRows(refs.buildSections({ branches: [], worktrees: listed }), 'main', new Set())
+    expect(rows.flatMap((row) => row.type === 'item' ? [{ current: row.entry.current, disabled: row.entry.disabled }] : [])).toEqual([{ current: true, disabled: true }])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the tree list keeps keyboard folding and picks branches, tags, stashes and worktrees by exact identity', async () => {
   const h = await harness()
   const picked: refs.RefItem[] = []
   let active = null as string | null
-  const view = (query = '') => h.choices({ branches, tags, stashes, worktrees, repo: '/picker-test', query, active, onQuery() {},
+  const view = (query = '') => h.choices({ branches, tags, stashes, worktrees, query, active, onQuery() {},
     onActive: (key) => { active = key }, onPick: (item) => picked.push(item), id: 'list', disabled: false })
   const all = renderToStaticMarkup(view())
   expect(all).toContain('role="tree"')

@@ -15,13 +15,12 @@ const OVERSCAN = 8
 
 // Controlled so filtering, keyboard activation and exact identities share one list. `active` is a row key, so a
 // background refresh or a fold keeps the highlight on the same ref.
-export function BranchChoices({ branches, current, tags, stashes, worktrees, repo, query, active, onQuery, onActive, onPick, id, disabled }: {
+export function BranchChoices({ branches, current, tags, stashes, worktrees, query, active, onQuery, onActive, onPick, id, disabled }: {
   branches: Branch[]
   current?: BranchSelection | null
   tags?: Tag[] | null
   stashes?: Stash[] | null
   worktrees?: Worktree[] | null
-  repo?: string
   query: string
   active: string | null
   onQuery: (query: string) => void
@@ -30,7 +29,7 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, rep
   id: string
   disabled: boolean
 }) {
-  const sections = useMemo(() => buildSections({ branches, head: current, tags, stashes, worktrees, repo }), [branches, current, tags, stashes, worktrees, repo])
+  const sections = useMemo(() => buildSections({ branches, head: current, tags, stashes, worktrees }), [branches, current, tags, stashes, worktrees])
   // Folds flipped while browsing persist; folds flipped while filtering last only for that query.
   const [browseToggled, setBrowseToggled] = useState<ReadonlySet<string>>(() => new Set())
   const [filterToggled, setFilterToggled] = useState<{ query: string; keys: ReadonlySet<string> }>({ query: '', keys: new Set() })
@@ -256,7 +255,7 @@ export function BranchPicker({ repo, branches, headHash, onRefresh, onChanged, o
             <p className="dialog-sub">The new branch will have no upstream.</p>
           </> : <BranchChoices
             id={id} branches={branches} current={mode === 'base' ? baseHead : undefined}
-            {...(mode === 'switch' ? { ...extras, repo, worktrees: onOpenRepo ? extras.worktrees : undefined } : {})}
+            {...(mode === 'switch' ? { ...extras, worktrees: onOpenRepo ? extras.worktrees : undefined } : {})}
             query={query} active={active} onQuery={(value) => { setQuery(value); setActive(null) }} onActive={setActive}
             onPick={pick} disabled={submitting || busy !== null}
           />}
