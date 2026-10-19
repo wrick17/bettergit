@@ -2,6 +2,7 @@ import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
+import { canonicalRepoPath } from '../repo-lock'
 import { GitError, git, gitOk, gitRaw } from './exec'
 import { readStatus } from './status'
 
@@ -21,16 +22,25 @@ export interface BranchSelection {
   hash: string
 }
 
+// A tag's hash is the commit it peels to, so checking it out never depends on the tag moving later.
+export interface Tag {
+  name: string
+  fullRef: string
+  hash: string
+}
+
 export interface Stash {
   ref: string
   message: string
 }
 
+// Paths are canonical, so a repo opened through a symlink still finds its own worktree (`current`).
 export interface Worktree {
   path: string
   branch: string | null
   hash: string
   locked: boolean
+  current: boolean
 }
 
 // Staging a file that still holds conflict markers would commit the markers. Only unmerged paths are checked, so text
@@ -312,6 +322,15 @@ export async function deleteBranch(repo: string, name: string, force = false): P
   await git(repo, ['branch', force ? '-D' : '-d', name])
 }
 
+// Newest version first, which is the order a tag picker is read in.
+export async function readTags(repo: string): Promise<Tag[]> {
+  const output = await git(repo, ['for-each-ref', '--sort=-v:refname', '--format=%(refname)%1f%(objectname)%1f%(*objectname)', 'refs/tags'])
+  return output.split('\n').filter(Boolean).map((line) => {
+    const [fullRef, hash, peeled] = line.split('\x1f')
+    return { name: fullRef.slice('refs/tags/'.length), fullRef, hash: peeled || hash }
+  })
+}
+
 export async function readStashes(repo: string): Promise<Stash[]> {
   const output = await git(repo, ['stash', 'list', '--format=%gd%x1f%s'])
   return output.split('\n').filter(Boolean).map((line) => {
@@ -419,7 +438,7 @@ export async function readWorktrees(repo: string): Promise<Worktree[]> {
   for (const line of output.split('\n')) {
     if (line.startsWith('worktree ')) {
       if (current?.path) entries.push(current as Worktree)
-      current = { path: line.slice('worktree '.length), branch: null, hash: '', locked: false }
+      current = { path: line.slice('worktree '.length), branch: null, hash: '', locked: false, current: false }
     } else if (!current) {
       continue
     } else if (line.startsWith('HEAD ')) current.hash = line.slice(5)
@@ -427,7 +446,13 @@ export async function readWorktrees(repo: string): Promise<Worktree[]> {
     else if (line.startsWith('locked')) current.locked = true
   }
   if (current?.path) entries.push(current as Worktree)
-  return entries
+  const self = canonicalRepoPath(repo)
+  return entries.map((entry) => {
+    // A pruned worktree's folder is gone, so it keeps the path Git listed.
+    let canonical = entry.path
+    try { canonical = canonicalRepoPath(entry.path) } catch {}
+    return { ...entry, path: canonical, current: canonical === self }
+  })
 }
 
 export async function addWorktree(repo: string, path: string, branch: string): Promise<void> {
@@ -481,7 +506,7 @@ export async function revertCommit(repo: string, hash: string): Promise<string> 
 }
 
 export async function checkoutDetached(repo: string, hash: string): Promise<void> {
-  await git(repo, ['switch', '--detach', await resolveCommit(repo, hash)])
+  await git(repo, ['switch', '--detach', '--no-overwrite-ignore', await resolveCommit(repo, hash)])
 }
 
 // What a write puts in the working tree: the tree it writes (`theirs`) and, for a three-way write such as a merge,

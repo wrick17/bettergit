@@ -18,7 +18,7 @@ import { CloneDialog, SettingsDialog } from './Dialogs'
 import { BranchPicker } from './BranchPicker'
 import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { blockedReason, busyKey, connectRepoLocks, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
+import { blockedReason, busyKey, connectRepoLocks, repoIdentity, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 import { FindBar } from './FindBar'
@@ -303,6 +303,13 @@ export function App() {
             onChanged={() => setRevision((value) => value + 1)}
             onError={reportError}
             onCleanChange={setRepoClean}
+            // A worktree picked in the branch picker opens like a sidebar repo, added as a source first if it is not one.
+            // Its path is canonical, so a sidebar entry reached through a symlink is matched by identity, not added twice.
+            onOpenRepo={(path) => {
+              const known = repos.find((node) => node.path === path || repoIdentity(node.path) === path)?.path
+              ;(known ? Promise.resolve() : addPaths([path]))
+                .then(() => { setSelected(known ?? path); setTab('changes') }).catch(reportError)
+            }}
           />
         )}
       </main>
@@ -342,7 +349,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange, onOpenRepo }: {
   titlebar: HTMLElement | null
   repo: RepoNode
   // The Open in … apps chosen in Settings (InstalledApp ids). Unset means the default.
@@ -360,6 +367,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   onChanged: () => void
   onError: (error: unknown) => void
   onCleanChange: (clean: boolean) => void
+  onOpenRepo: (path: string) => void
 }) {
   // Resolved once here, so the toolbar and every file's open button name the same app with the same icon.
   const editor = useSelectedApp('editor', editorApp, onError)
@@ -464,7 +472,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         titlebar,
       )}
       {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
-        onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} />}
+        onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} onOpenRepo={onOpenRepo} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
         <nav

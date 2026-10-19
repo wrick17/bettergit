@@ -30,6 +30,8 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   branches: (repo: string) => ops.readBranches(repo),
   remotes: (repo: string) => ops.readRemotes(repo),
   stashes: (repo: string) => ops.readStashes(repo),
+  tags: (repo: string) => ops.readTags(repo),
+  worktrees: (repo: string) => ops.readWorktrees(repo),
   mergeBase: (repo: string, a: string, b: string) => ops.mergeBase(repo, a, b),
   readFile: (repo: string, file: string) => readWorkingFile(repo, file),
 }
