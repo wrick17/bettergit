@@ -1,7 +1,8 @@
 import type { AppKind, InstalledApp } from '../../shared/editors'
 
-// App icons as data URLs, loaded once per app path and kept for the session. null means the app has no readable icon.
-const icons = new Map<string, string | null>()
+// App icons as data URLs, loaded once per app path and kept for the session. A miss is not kept: the button shows the
+// generic glyph, and its next mount or app change asks again, so one failed Quick Look call never hides an icon for good.
+const icons = new Map<string, string>()
 const requests = new Map<string, Promise<string | null>>()
 
 export const cachedAppIcon = (path: string) => icons.get(path)
@@ -9,7 +10,11 @@ export const cachedAppIcon = (path: string) => icons.get(path)
 export function loadAppIcon(path: string): Promise<string | null> {
   let request = requests.get(path)
   if (!request) {
-    request = window.bettergit.appIcon(path).catch(() => null).then((url) => { icons.set(path, url); return url })
+    request = window.bettergit.appIcon(path).catch(() => null).then((url) => {
+      if (url) icons.set(path, url)
+      else requests.delete(path)
+      return url
+    })
     requests.set(path, request)
   }
   return request

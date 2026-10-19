@@ -61,7 +61,41 @@ export interface ExtensionResult {
   downloads: number
 }
 
-export const isHexColor = (value: unknown): value is string =>
+// An Open VSX extension's themes, loaded before install. Each list lines up with the extension's choices; null where one
+// failed to load.
+export interface ExtensionPreview {
+  extension: InstalledExtension
+  colorThemes: (ColorTheme | null)[]
+  iconThemes: (IconTheme | null)[]
+}
+
+// The files an icon theme preview shows, with their VS Code language ids.
+export const PREVIEW_FILES: [string, string | null][] = [
+  ['package.json', 'json'], ['README.md', 'markdown'], ['index.ts', 'typescript'], ['App.tsx', 'typescriptreact'],
+  ['main.js', 'javascript'], ['styles.css', 'css'], ['index.html', 'html'], ['config.yml', 'yaml'], ['main.py', 'python'],
+  ['main.go', 'go'], ['lib.rs', 'rust'], ['build.sh', 'shellscript'], ['Dockerfile', 'dockerfile'], ['.gitignore', 'ignore'],
+  ['logo.svg', null], ['notes.txt', 'plaintext'],
+]
+
+// The foreground VS Code would most likely give `scope`: the rule whose selector matches the most of it, the later rule
+// on a tie. shortcut: parent selectors ("a b") and exclusions are skipped; it only colours the preview's sample code.
+export function tokenColor(rules: TokenRule[], scope: string): string | undefined {
+  let best: string | undefined
+  let bestLength = 0
+  for (const rule of rules) {
+    if (!rule.settings.foreground || !rule.scope) continue
+    const selectors = (Array.isArray(rule.scope) ? rule.scope : [rule.scope]).flatMap((entry) => entry.split(',')).map((entry) => entry.trim())
+    for (const selector of selectors) {
+      if (selector && !selector.includes(' ') && (scope === selector || scope.startsWith(`${selector}.`)) && selector.length >= bestLength) {
+        best = rule.settings.foreground
+        bestLength = selector.length
+      }
+    }
+  }
+  return best
+}
+
+export const isHexColor =(value: unknown): value is string =>
   typeof value === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value)
 
 // App variable to the workbench colours that can fill it, best first. A variable the theme cannot fill keeps the built-in

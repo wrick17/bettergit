@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { promises as fs } from 'node:fs'
 import { isIP, isIPv4 } from 'node:net'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
-import { isHexColor, type ColorTheme, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
+import { fileIconId, isHexColor, PREVIEW_FILES, type ColorTheme, type ExtensionPreview, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
 
 // VS Code extensions, used only for the colour and file icon themes they contribute. An extension is untrusted input:
 // its code is never unpacked, so it can never run, and every file read back must stay inside the extension's folder.
@@ -281,8 +282,10 @@ export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolea
   throw new Error('Open VSX redirected too many times.')
 }
 
+// An empty query lists the most downloaded themes.
 export async function searchOpenVsx(query: unknown): Promise<ExtensionResult[]> {
-  const params = new URLSearchParams({ query: text(query).trim().slice(0, 100), category: 'Themes', size: '30' })
+  const words = text(query).trim().slice(0, 100)
+  const params = new URLSearchParams({ ...(words ? { query: words } : { sortBy: 'downloadCount', sortOrder: 'desc' }), category: 'Themes', size: '30' })
   const body = await (await fetchOk(`${OPEN_VSX}/-/search?${params}`)).json() as { extensions?: unknown }
   if (!Array.isArray(body.extensions)) return []
   return body.extensions.flatMap((entry): ExtensionResult[] => (PART.test(text(entry?.namespace)) && PART.test(text(entry?.name))
@@ -440,4 +443,29 @@ export async function loadIconTheme(root: string, ref: unknown): Promise<IconThe
     return url ? [[id, url]] : []
   }))
   return { name: found.name, ...base, light, icons, fontIcons }
+}
+
+// Only the icons the preview shows, so a large icon theme sends a few dozen images, not thousands.
+function previewIcons(theme: IconTheme): IconTheme {
+  const ids = new Set([
+    ...PREVIEW_FILES.flatMap(([name, language]) => [fileIconId(theme, name, language, false), fileIconId(theme, name, language, true)]),
+    ...[theme, theme.light].flatMap((map) => [map.folder, map.folderExpanded, map.rootFolder]),
+  ])
+  return { ...theme, icons: Object.fromEntries(Object.entries(theme.icons).filter(([id]) => ids.has(id))) }
+}
+
+// Downloads, unpacks and checks an extension exactly as an install does, but into a temporary folder that is deleted
+// once its themes are in memory, so a preview never installs or keeps anything.
+export async function previewFromOpenVsx(namespace: unknown, name: unknown): Promise<ExtensionPreview> {
+  const root = await fs.mkdtemp(path.join(tmpdir(), 'bettergit-preview-'))
+  try {
+    const extension = await installFromOpenVsx(root, namespace, name)
+    const [colorThemes, iconThemes] = await Promise.all([
+      Promise.all(extension.themes.map((theme) => loadColorTheme(root, theme.ref).catch(() => null))),
+      Promise.all(extension.iconThemes.map((theme) => loadIconTheme(root, theme.ref).then((icons) => icons && previewIcons(icons), () => null))),
+    ])
+    return { extension, colorThemes, iconThemes }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
 }

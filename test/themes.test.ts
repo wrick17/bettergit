@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { DEFAULT_APPEARANCE } from '../src/shared/editors'
 import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
 import * as shared from '../src/shared/themes'
-import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
+import { fileIconId, themeCss, themeVariables, tokenColor, type IconTheme } from '../src/shared/themes'
 
 const root = mkdtempSync(path.join(tmpdir(), 'bettergit-themes-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -34,6 +34,22 @@ test('workbench colours fill app variables best key first, and anything but a he
   expect(themeVariables({ focusBorder: '#ffd' }, false)['--on-accent']).toBe('#111114')
   const css = themeCss(null, { name: 'x', label: 'X', dark: true, colors: { 'editor.background': '#000' }, tokenColors: [] })
   expect(css).toBe(":root:root[data-theme='dark'] { --window: #000; --glass-fill: #000; --content: #000; --list: #000; --glass-strong: #000; }")
+})
+
+test('preview code takes the rule whose selector matches the most of the scope, the later rule on a tie', () => {
+  const rules = [
+    { scope: 'keyword', settings: { foreground: '#111111' } },
+    { scope: ['string', 'keyword.control'], settings: { foreground: '#222222' } },
+    { scope: 'keyword.control, comment', settings: { foreground: '#333333' } },
+    { scope: 'meta.block keyword.control.flow', settings: { foreground: '#444444' } },
+    { scope: 'keywordish', settings: { foreground: '#555555' } },
+    { settings: { foreground: '#666666' } },
+  ]
+  expect(tokenColor(rules, 'keyword.control.flow')).toBe('#333333')
+  expect(tokenColor(rules, 'keyword.operator')).toBe('#111111')
+  expect(tokenColor(rules, 'comment.line')).toBe('#333333')
+  expect(tokenColor(rules, 'keywordish.x')).toBe('#555555')
+  expect(tokenColor(rules, 'constant.numeric')).toBeUndefined()
 })
 
 test('JSONC keeps comment-like text in strings and drops comments and trailing commas', () => {
