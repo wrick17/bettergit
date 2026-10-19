@@ -385,8 +385,9 @@ async function integrateFetched(repo: string, mode: 'merge' | 'rebase', forkPoin
 // git pull's pull.ff setting, which a plain merge would not read.
 async function pullFastForward(repo: string): Promise<string[]> {
   const value = (await git(repo, ['config', '--get', 'pull.ff']).catch(() => '')).trim()
-  if (value === 'only') return ['--ff-only']
   if (!value) return []
+  // git pull turns pull.ff=only into --ff when told --rebase or --no-rebase, as this app always tells it.
+  if (value === 'only') return ['--ff']
   return (await git(repo, ['config', '--type=bool', '--get', 'pull.ff']).catch(() => '')).trim() === 'false' ? ['--no-ff'] : ['--ff']
 }
 
@@ -500,8 +501,11 @@ async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Pr
   let head: Set<string> | undefined
   const written = new Set<string>()
   for (const { theirs, base } of writes) {
-    let missing = (await tree(theirs)).filter((file) => !indexed.has(file))
-    if (missing.length && base) {
+    // merge-ort's own result counts best: its renames can write where neither side has a file, as into a folder HEAD
+    // renamed. Git before 2.40 lacks merge-tree --merge-base, and there the change itself stands in.
+    const merged = base && await mergedTree(repo, theirs, base)
+    let missing = (await tree(merged || theirs)).filter((file) => !indexed.has(file))
+    if (missing.length && base && !merged) {
       head ??= new Set(await tree('HEAD').catch(() => []))
       const changed = new Set(await list(['diff', '--name-only', '-z', '--no-renames', base, theirs, '--']))
       missing = missing.filter((file) => head!.has(file) || changed.has(file))
@@ -510,6 +514,18 @@ async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Pr
   }
   if (!written.size) return
   const root = await fs.realpath(repo)
+  // Git names a file on disk by NFC under core.precomposeUnicode and in any case under core.ignorecase.
+  let tracked: Promise<(file: string) => boolean> | undefined
+  const isTracked = (file: string) => (tracked ??= (async () => {
+    const config = await git(repo, ['config', '--type=bool', '--get-regexp', '^core\\.(precomposeunicode|ignorecase)$']).catch(() => '')
+    const precompose = /^core\.precomposeunicode true$/m.test(config), ignorecase = /^core\.ignorecase true$/m.test(config)
+    const key = (name: string) => {
+      const form = precompose ? name.normalize('NFC') : name
+      return ignorecase ? form.toLowerCase() : form
+    }
+    const keys = new Set([...indexed].map(key))
+    return (name: string) => keys.has(key(name))
+  })()).then((has) => has(file))
   const blocked = new Set<string>()
   const folders = new Set<string>()
   await Promise.all([...written].map(async (file) => {
@@ -523,9 +539,9 @@ async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Pr
         continue
       }
       if (indexed.has(at)) return
-      // On a case-insensitive disk a tracked file can answer to another spelling, as in a case-only rename.
+      // A tracked file can answer to another spelling, as in a case-only rename. realpath gives its name on disk.
       const real = stat.isSymbolicLink() ? at : path.relative(root, await fs.realpath(path.join(root, at)).catch(() => path.join(root, at)))
-      if (!indexed.has(real)) blocked.add(at)
+      if (!await isTracked(real)) blocked.add(at)
       return
     }
   }))
@@ -536,6 +552,14 @@ async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Pr
   const sorted = [...blocked].sort()
   const shown = sorted.slice(0, 5).join(', ') + (sorted.length > 5 ? `, and ${sorted.length - 5} more` : '')
   throw new Error(`This would overwrite untracked or ignored files: ${shown}. Move or delete them first.`)
+}
+
+// The tree a three-way write of `theirs` onto HEAD leaves on disk, conflicts included, or undefined where Git can't say.
+async function mergedTree(repo: string, theirs: string, base: string): Promise<string | undefined> {
+  const { code, stdout } = await gitRaw(repo, ['merge-tree', '--write-tree', '-z', `--merge-base=${base}`, 'HEAD', theirs])
+  const tree = stdout.toString('utf8').split('\0')[0]
+  // Exit 1 is a conflicted merge, whose files Git still writes.
+  return (code === 0 || code === 1) && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tree) ? tree : undefined
 }
 
 async function firstParent(repo: string, commit: string): Promise<string | undefined> {

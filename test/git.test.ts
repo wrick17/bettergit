@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
@@ -1142,6 +1142,17 @@ describe('writes that could overwrite untracked or ignored files', () => {
     })
   }
 
+  test('a merge pull with pull.ff=only merges diverged branches, as git pull --no-rebase does', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'b.txt': 'b\n' }, 'b')
+    writeFileSync(path.join(local, 'c.txt'), 'c\n')
+    await git(local, ['add', 'c.txt'])
+    await git(local, ['commit', '-qm', 'c'])
+    await git(local, ['config', 'pull.ff', 'only'])
+    await pull(local, 'merge')
+    expect((await git(local, ['rev-list', '--parents', '-n1', 'HEAD'])).trim().split(' ')).toHaveLength(3)
+  })
+
   // HEAD and the upstream both track .env; the user untracks it with git rm --cached and keeps a secret in it.
   const untracked = async () => {
     const { local, other } = await fixture()
@@ -1205,5 +1216,47 @@ describe('writes that could overwrite untracked or ignored files', () => {
     unlinkSync(path.join(local, 'dócs', 'nëw näme.secret'))
     await cherryPick(local, renamed)
     expect(read(local, 'dócs/nëw näme.secret')).toBe('tracked\n')
+  })
+
+  test('a cherry-pick into a folder HEAD renamed is checked where Git puts the file', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'D/a.txt': 'a\n', 'D/b.txt': 'b\n' }, 'folder')
+    await git(local, ['pull', '-q'])
+    const added = await publish(other, { 'D/new.secret': 'COMMITTED=1\n' }, 'add')
+    await git(local, ['fetch', '-q'])
+    await git(local, ['mv', 'D', 'E'])
+    await git(local, ['commit', '-qm', 'rename'])
+    writeFileSync(path.join(local, 'E', 'new.secret'), 'SECRET=local\n')
+    const head = await sha(local)
+    await expect(cherryPick(local, added)).rejects.toThrow('E/new.secret')
+    expect(read(local, 'E/new.secret')).toBe('SECRET=local\n')
+    expect(await sha(local)).toBe(head)
+  })
+
+  // macOS disks match names across case and Unicode form, and Git does too under core.ignorecase and precomposeUnicode.
+  test('a tracked file under another case and Unicode form is not untracked, but an untracked one in either form is', async () => {
+    const { local, other } = await fixture()
+    const nfc = 'café.txt'.normalize('NFC'), secret = 'clé.secret'.normalize('NFC')
+    await publish(other, { [nfc]: 'tracked\n' }, 'cafe')
+    await git(local, ['pull', '-q'])
+    // The upstream renames it by case only, and adds a file the local clone keeps as an ignored secret.
+    const blob = (await git(other, ['rev-parse', `HEAD:${nfc}`])).trim()
+    await git(other, ['rm', '-q', '--cached', nfc])
+    await git(other, ['update-index', '--add', '--cacheinfo', `100644,${blob},CAFÉ.txt`.normalize('NFC')])
+    await publish(other, { [secret]: 'COMMITTED=1\n' }, 'rename')
+    await git(local, ['fetch', '-q'])
+    // The local clone's tracked file becomes NFD on disk, which Git still sees as unchanged.
+    renameSync(path.join(local, nfc), path.join(local, 'moving'))
+    renameSync(path.join(local, 'moving'), path.join(local, nfc.normalize('NFD')))
+    expect(await git(local, ['status', '--porcelain'])).toBe('')
+    writeFileSync(path.join(local, secret.normalize('NFD')), 'SECRET=local\n')
+    await expect(resetToUpstream(local)).rejects.toThrow(`files: ${secret}. Move`)
+    await git(local, ['config', 'core.precomposeUnicode', 'false'])
+    await expect(resetToUpstream(local)).rejects.toThrow(secret)
+    expect(read(local, secret)).toBe('SECRET=local\n')
+    await git(local, ['config', 'core.precomposeUnicode', 'true'])
+    unlinkSync(path.join(local, secret))
+    await resetToUpstream(local)
+    expect(read(local, 'CAFÉ.txt')).toBe('tracked\n')
   })
 })
