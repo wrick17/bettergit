@@ -7,13 +7,13 @@
 
 # BetterGit
 
-**A fast, keyboard-friendly Git client for macOS, built for people who keep a lot of repositories open.**
+**A fast, keyboard-friendly Git® client for macOS, built for people who keep a lot of repositories open.**
 
 Electron · React · TypeScript · Bun · macOS only
 
 </div>
 
-BetterGit runs the `git` CLI you already have, with your SSH keys and credential helpers. It stores no tokens.
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/git-logo/Git-Icon-White.svg"><img alt="Git logo" src="docs/git-logo/Git-Icon-Black.svg" width="16" height="16"></picture> BetterGit is a third-party client for Git. It runs the `git` CLI you already have, with your SSH keys and credential helpers. It stores no tokens.
 
 > [!NOTE]
 > Personal project in active development. Unsigned, no packaged release, runs from source.
@@ -87,3 +87,9 @@ bun run dev
 ## Contributing
 
 Issues and pull requests are welcome. Run `bun run typecheck` and `bun run test` before you open a pull request.
+
+## Credits and trademarks
+
+The [Git logo](https://git-scm.com/community/logos) by [Jason Long](https://bsky.app/profile/jasonlong.me) is licensed under the [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/). This README uses the unmodified black and white logomarks to refer to Git.
+
+Git and the Git logo are either registered trademarks or trademarks of Software Freedom Conservancy, Inc., corporate home of the Git Project, in the United States and/or other countries. BetterGit is not affiliated with or endorsed by the Git Project or Software Freedom Conservancy.
