@@ -1142,6 +1142,39 @@ describe('writes that could overwrite untracked or ignored files', () => {
     })
   }
 
+  // HEAD and the upstream both track .env; the user untracks it with git rm --cached and keeps a secret in it.
+  const untracked = async () => {
+    const { local, other } = await fixture()
+    await publish(other, { '.env': 'COMMITTED=1\n' }, 'env')
+    await git(local, ['pull', '-q'])
+    await git(local, ['rm', '-q', '--cached', '.env'])
+    writeFileSync(path.join(local, '.env'), 'SECRET=local\n')
+    return { local, other }
+  }
+  const refused = /untracked or ignored files: \.env\b/
+
+  test('reset to upstream keeps a file untracked with git rm --cached, even when the upstream did not change it', async () => {
+    const { local } = await untracked()
+    const head = await sha(local)
+    await expect(resetToUpstream(local)).rejects.toThrow(refused)
+    expect(read(local, '.env')).toBe('SECRET=local\n')
+    expect(await sha(local)).toBe(head)
+  })
+
+  test('pull and cherry-pick refuse to write back a file untracked with git rm --cached', async () => {
+    const pulled = await untracked()
+    const head = await sha(pulled.local)
+    await publish(pulled.other, { 'b.txt': 'b\n' }, 'b')
+    await expect(pull(pulled.local, 'merge')).rejects.toThrow(refused)
+    expect(read(pulled.local, '.env')).toBe('SECRET=local\n')
+    expect(await sha(pulled.local)).toBe(head)
+    const picked = await untracked()
+    const commit = await publish(picked.other, { 'b.txt': 'b\n' }, 'b')
+    await git(picked.local, ['fetch', '-q'])
+    await expect(cherryPick(picked.local, commit)).rejects.toThrow(refused)
+    expect(read(picked.local, '.env')).toBe('SECRET=local\n')
+  })
+
   test('a folder of tracked files may become a file, but not while it holds an ignored file', async () => {
     const { local, other } = await fixture()
     await publish(other, { 'config/old.txt': 'old\n' }, 'folder')
