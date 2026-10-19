@@ -1234,19 +1234,55 @@ describe('writes that could overwrite untracked or ignored files', () => {
     expect(read(local, 'dócs/nëw näme.secret')).toBe('tracked\n')
   })
 
-  test('a cherry-pick into a folder HEAD renamed is checked where Git puts the file', async () => {
+  const index = (dir: string) => git(dir, ['ls-files', '-s'])
+  // Runs `run` with a git on PATH that fails like an older Git on any argument matching `reject`.
+  const withOlderGit = async <T>(dir: string, reject: string | undefined, run: () => Promise<T>) => {
+    if (!reject) return run()
+    const bin = path.join(dir, 'older-git')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nfor arg do case "$arg" in ${reject}) echo "error: unknown option $arg" >&2; exit 129;; esac; done\nexec '${Bun.which('git')}' "$@"\n`)
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const saved = process.env.PATH
+    process.env.PATH = `${bin}:${saved}`
+    try { return await run() } finally { process.env.PATH = saved }
+  }
+
+  // Git 2.38 and 2.39 have merge-tree --write-tree but not --merge-base; Git before 2.38 can't preview at all.
+  for (const [git_, reject, refused] of [['this', undefined, 'E/new.secret'], ['2.39', '--merge-base=*', 'E/new.secret'], ['2.37', '--write-tree', 'needs Git 2.38']] as const) {
+    test(`a cherry-pick into a folder HEAD renamed is checked where Git puts the file, with Git ${git_}`, async () => {
+      const { dir, local, other } = await fixture()
+      await publish(other, { 'D/a.txt': 'a\n', 'D/b.txt': 'b\n' }, 'folder')
+      await git(local, ['pull', '-q'])
+      const added = await publish(other, { 'D/new.secret': 'COMMITTED=1\n' }, 'add')
+      await git(local, ['fetch', '-q'])
+      await git(local, ['mv', 'D', 'E'])
+      await git(local, ['commit', '-qm', 'rename'])
+      writeFileSync(path.join(local, 'E', 'new.secret'), 'SECRET=local\n')
+      const head = await sha(local), staged = await index(local)
+      await expect(withOlderGit(dir, reject, () => cherryPick(local, added))).rejects.toThrow(refused)
+      expect(read(local, 'E/new.secret')).toBe('SECRET=local\n')
+      expect(await sha(local)).toBe(head)
+      expect(await index(local)).toBe(staged)
+    })
+  }
+
+  test('a rebase pull checks where its replayed local commits write, as into a folder the upstream renamed', async () => {
     const { local, other } = await fixture()
     await publish(other, { 'D/a.txt': 'a\n', 'D/b.txt': 'b\n' }, 'folder')
     await git(local, ['pull', '-q'])
-    const added = await publish(other, { 'D/new.secret': 'COMMITTED=1\n' }, 'add')
-    await git(local, ['fetch', '-q'])
-    await git(local, ['mv', 'D', 'E'])
-    await git(local, ['commit', '-qm', 'rename'])
+    writeFileSync(path.join(local, 'D', 'new.secret'), 'COMMITTED=1\n')
+    await git(local, ['add', '-f', 'D/new.secret'])
+    await git(local, ['commit', '-qm', 'local adds secret'])
+    await git(other, ['mv', 'D', 'E'])
+    await publish(other, {}, 'rename')
+    mkdirSync(path.join(local, 'E'))
     writeFileSync(path.join(local, 'E', 'new.secret'), 'SECRET=local\n')
-    const head = await sha(local)
-    await expect(cherryPick(local, added)).rejects.toThrow('E/new.secret')
+    const head = await sha(local), staged = await index(local)
+    await expect(pull(local, 'rebase')).rejects.toThrow('E/new.secret')
     expect(read(local, 'E/new.secret')).toBe('SECRET=local\n')
     expect(await sha(local)).toBe(head)
+    expect(await index(local)).toBe(staged)
+    expect(await git(local, ['status', '--porcelain'])).toBe('')
   })
 
   // macOS disks match names across case and Unicode form, and Git does too under core.ignorecase and precomposeUnicode.

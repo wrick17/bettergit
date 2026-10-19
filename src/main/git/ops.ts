@@ -349,7 +349,8 @@ export async function stashAction(repo: string, action: 'pop' | 'apply' | 'drop'
   if (!ref || ref.startsWith('-')) throw new Error(`Invalid stash: ${ref}`)
   if (action !== 'drop') {
     // A stash applies its working tree and its index against its base. Git checks its untracked part itself.
-    await assertNoUntrackedOverwrite(repo, [{ theirs: ref, base: `${ref}^1` }, { theirs: `${ref}^2`, base: `${ref}^1` }])
+    const merged = [await previewMerge(repo, 'HEAD', ref, `${ref}^1`), await previewMerge(repo, 'HEAD', `${ref}^2`, `${ref}^1`)]
+    await assertNoUntrackedOverwrite(repo, [...await treePaths(repo, merged[0].tree), ...await treePaths(repo, merged[1].tree)])
   }
   await git(repo, ['stash', action, ref])
 }
@@ -389,13 +390,11 @@ async function integrateFetched(repo: string, mode: 'merge' | 'rebase', forkPoin
   const target = heads[0].split('\t')[0]
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(target)) throw new Error('The fetch did not record a commit to merge.')
   if (mode === 'rebase') {
-    // A rebase first checks out the target whole, so every path in it counts.
-    await assertNoUntrackedOverwrite(repo, [{ theirs: target }])
+    await assertNoUntrackedOverwrite(repo, await rebaseWrites(repo, target, forkPoint || target))
     await git(repo, ['rebase', '--onto', target, forkPoint || target])
     return
   }
-  const base = (await git(repo, ['merge-base', 'HEAD', target]).catch(() => '')).trim()
-  await assertNoUntrackedOverwrite(repo, [{ theirs: target, base: base || undefined }])
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, (await previewMerge(repo, 'HEAD', target)).tree))
   // The message git pull would write, read from the same FETCH_HEAD line.
   const message = (await git(repo, ['fmt-merge-msg'], { input: `${heads[0]}\n` })).trim()
   await git(repo, ['merge', '--no-overwrite-ignore', '--no-edit', ...await pullFastForward(repo), '-m', message, target])
@@ -471,7 +470,7 @@ export async function createBackupRef(repo: string, label: string): Promise<stri
 export async function restoreBackup(repo: string, ref: string): Promise<void> {
   const hash = (await git(repo, ['rev-parse', ref])).trim()
   // --keep refuses to overwrite local changes, so an undo never discards work. It would still replace ignored files.
-  await assertNoUntrackedOverwrite(repo, [{ theirs: hash }])
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, hash))
   await git(repo, ['reset', '--keep', hash])
 }
 
@@ -480,7 +479,7 @@ export async function resetToUpstream(repo: string): Promise<string> {
   const upstream = (await git(repo, ['rev-parse', '--verify', '--quiet', '@{u}^{commit}']).catch(() => '')).trim()
   if (!upstream) throw new Error('This HEAD has no upstream branch to reset to.')
   // Tracked edits are what the reset discards. Untracked and ignored files are not, though reset --hard replaces them.
-  await assertNoUntrackedOverwrite(repo, [{ theirs: upstream }])
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, upstream))
   const backup = await createBackupRef(repo, 'reset')
   await git(repo, ['reset', '--hard', upstream])
   return backup
@@ -489,7 +488,8 @@ export async function resetToUpstream(repo: string): Promise<string> {
 export async function cherryPick(repo: string, hash: string): Promise<string> {
   const commit = await resolveCommit(repo, hash)
   const parent = await firstParent(repo, commit)
-  await assertNoUntrackedOverwrite(repo, [{ theirs: commit, base: parent }])
+  // A root commit has no base: everything in it is added.
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, parent ? (await previewMerge(repo, 'HEAD', commit, parent)).tree : commit))
   const backup = await createBackupRef(repo, 'cherry-pick')
   await git(repo, ['cherry-pick', commit])
   return backup
@@ -499,7 +499,7 @@ export async function revertCommit(repo: string, hash: string): Promise<string> 
   const commit = await resolveCommit(repo, hash)
   // A revert applies the parent against the commit. Reverting a root commit only deletes.
   const parent = await firstParent(repo, commit)
-  if (parent) await assertNoUntrackedOverwrite(repo, [{ theirs: parent, base: commit }])
+  if (parent) await assertNoUntrackedOverwrite(repo, await treePaths(repo, (await previewMerge(repo, 'HEAD', parent, commit)).tree))
   const backup = await createBackupRef(repo, 'revert')
   await git(repo, ['revert', '--no-edit', commit])
   return backup
@@ -509,34 +509,16 @@ export async function checkoutDetached(repo: string, hash: string): Promise<void
   await git(repo, ['switch', '--detach', '--no-overwrite-ignore', await resolveCommit(repo, hash)])
 }
 
-// What a write puts in the working tree: the tree it writes (`theirs`) and, for a three-way write such as a merge,
-// cherry-pick, revert or stash, the tree it applies that against (`base`). A reset writes its target whole: no base.
-interface TreeWrite { theirs: string; base?: string }
-
 // Git treats ignored files as expendable: reset, rebase, cherry-pick, revert and stash apply replace an ignored local
 // file (a .env, say) with a tracked one without asking, and reset --hard does the same to any untracked file, including
 // one just untracked with git rm --cached. Only switch and merge take --no-overwrite-ignore, so the other writes check here.
 // A path is at risk when the write puts it in the working tree, it is not in the index, and something untracked is on
 // disk there: a file, or a folder that a file replaces while it holds untracked or ignored files. A folder of tracked
-// files only is Git's to replace. A three-way write keeps deleted a path HEAD lacks and the change leaves alone.
-async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Promise<void> {
+// files only is Git's to replace.
+async function assertNoUntrackedOverwrite(repo: string, paths: string[]): Promise<void> {
   const list = async (args: string[]) => (await git(repo, args)).split('\0').filter(Boolean)
-  const tree = (rev: string) => list(['ls-tree', '-r', '-z', '--name-only', '--full-tree', rev])
   const indexed = new Set(await list(['ls-files', '-z']))
-  let head: Set<string> | undefined
-  const written = new Set<string>()
-  for (const { theirs, base } of writes) {
-    // merge-ort's own result counts best: its renames can write where neither side has a file, as into a folder HEAD
-    // renamed. Git before 2.40 lacks merge-tree --merge-base, and there the change itself stands in.
-    const merged = base && await mergedTree(repo, theirs, base)
-    let missing = (await tree(merged || theirs)).filter((file) => !indexed.has(file))
-    if (missing.length && base && !merged) {
-      head ??= new Set(await tree('HEAD').catch(() => []))
-      const changed = new Set(await list(['diff', '--name-only', '-z', '--no-renames', base, theirs, '--']))
-      missing = missing.filter((file) => head!.has(file) || changed.has(file))
-    }
-    for (const file of missing) written.add(file)
-  }
+  const written = new Set(paths.filter((file) => !indexed.has(file)))
   if (!written.size) return
   const root = await fs.realpath(repo)
   // Git names a file on disk by NFC under core.precomposeUnicode and in any case under core.ignorecase.
@@ -579,12 +561,43 @@ async function assertNoUntrackedOverwrite(repo: string, writes: TreeWrite[]): Pr
   throw new Error(`This would overwrite untracked or ignored files: ${shown}. Move or delete them first.`)
 }
 
-// The tree a three-way write of `theirs` onto HEAD leaves on disk, conflicts included, or undefined where Git can't say.
-async function mergedTree(repo: string, theirs: string, base: string): Promise<string | undefined> {
-  const { code, stdout } = await gitRaw(repo, ['merge-tree', '--write-tree', '-z', `--merge-base=${base}`, 'HEAD', theirs])
+// Every path in a tree, which a reset to it, or a checkout of it, writes.
+async function treePaths(repo: string, rev: string): Promise<string[]> {
+  return (await git(repo, ['ls-tree', '-r', '-z', '--name-only', '--full-tree', rev])).split('\0').filter(Boolean)
+}
+
+// The tree a three-way write of `theirs` onto `ours` leaves in the working tree, conflicts included, as merge-ort works
+// it out. Renames can put a file where neither side has one, as into a folder one side renamed, so no list of paths
+// from the change alone will do. With no base Git finds the merge bases, as a merge does. With one, as for a
+// cherry-pick, two throwaway commits on `base` stand in for the sides, so `base` is their only merge base; this needs
+// merge-tree --write-tree from Git 2.38, not --merge-base from 2.40. When Git can't tell, the write is refused.
+async function previewMerge(repo: string, ours: string, theirs: string, base?: string): Promise<{ tree: string; conflicted: boolean }> {
+  const side = async (rev: string) => (await git(repo, ['-c', 'user.name=BetterGit', '-c', 'user.email=bettergit@localhost',
+    'commit-tree', '--no-gpg-sign', '-p', base!, '-m', 'BetterGit preview', `${rev}^{tree}`])).trim()
+  const sides = base ? [await side(ours), await side(theirs)] : [ours, theirs]
+  const { code, stdout, stderr } = await gitRaw(repo, ['merge-tree', '--write-tree', '-z', ...sides])
   const tree = stdout.toString('utf8').split('\0')[0]
   // Exit 1 is a conflicted merge, whose files Git still writes.
-  return (code === 0 || code === 1) && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tree) ? tree : undefined
+  if ((code !== 0 && code !== 1) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tree)) {
+    throw new Error(`Could not check which files this would write, so nothing changed. This needs Git 2.38 or newer.${stderr ? ` Git said: ${stderr}` : ''}`)
+  }
+  return { tree, conflicted: code === 1 }
+}
+
+// A rebase checks out `onto`, then replays each local commit onto it like a cherry-pick, stopping at a conflict. Each
+// replay writes what it changes, so a file a later commit removes still lands on disk first.
+async function rebaseWrites(repo: string, onto: string, upstream: string): Promise<string[]> {
+  const written = await treePaths(repo, onto)
+  let ours = onto
+  for (const commit of (await git(repo, ['rev-list', '--reverse', '--no-merges', `${upstream}..HEAD`])).split('\n').filter(Boolean)) {
+    const parent = await firstParent(repo, commit)
+    if (!parent) throw new Error('Could not check which files this rebase would write, so nothing changed: it replays a root commit.')
+    const { tree, conflicted } = await previewMerge(repo, ours, commit, parent)
+    written.push(...(await git(repo, ['diff-tree', '-r', '-z', '--name-only', '--no-renames', '--diff-filter=d', ours, tree])).split('\0').filter(Boolean))
+    ours = tree
+    if (conflicted) break
+  }
+  return written
 }
 
 async function firstParent(repo: string, commit: string): Promise<string | undefined> {
