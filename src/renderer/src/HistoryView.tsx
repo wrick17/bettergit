@@ -53,13 +53,15 @@ interface Props {
   repo: string
   head: string | null
   revision: number
+  // Counts explicit Refresh commands. Only those, and a new repo or filter, lay the graph out from scratch.
+  refreshes: number
   listOpen: boolean
   detailOpen: boolean
   onError: (error: unknown) => void
   onChanged?: () => void
 }
 
-export function HistoryView({ repo, head, revision, listOpen, detailOpen, onError, onChanged }: Props) {
+export function HistoryView({ repo, head, revision, refreshes, listOpen, detailOpen, onError, onChanged }: Props) {
   const [commits, setCommits] = useState<Commit[]>([])
   const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   // Author names the list is limited to. Empty shows every author.
@@ -135,6 +137,9 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
 
   // A refresh of the same list reloads every row already shown, so paged rows stay and the scroll does not jump.
   const listKey = useRef('')
+  const refreshed = useRef(refreshes)
+  // Whether the list in the latest reply starts a fresh graph layout, rather than keeping the lanes already on screen.
+  const relayout = useRef(true)
   const shownCount = useRef(0)
   shownCount.current = commits.length
   useEffect(() => {
@@ -142,22 +147,26 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     pageBusy.current = true
     const key = JSON.stringify([repo, query, authors])
     const limit = key === listKey.current ? Math.max(PAGE, shownCount.current) : PAGE
+    const fresh = key !== listKey.current || refreshes !== refreshed.current
     listKey.current = key
+    refreshed.current = refreshes
     const load = query.trim()
       ? api.searchHistory(repo, query.trim(), authors)
       : api.history(repo, 0, limit, authors)
     load.then((rows: Commit[]) => {
       // A reply for an older query, repo, or refresh must not overwrite the current list.
       if (gen !== generation.current) return
-      // An unchanged list keeps its array, so the graph is not laid out again and no row re-renders.
-      setCommits((shown) => JSON.stringify(shown) === JSON.stringify(rows) ? shown : rows)
+      // An unchanged list keeps its array, so the graph is not laid out again and no row re-renders. A fresh layout always
+      // lays out again, so an explicit refresh drops lanes kept from earlier background refreshes.
+      relayout.current = fresh
+      setCommits((shown) => !fresh && JSON.stringify(shown) === JSON.stringify(rows) ? shown : rows)
       setExhausted(rows.length < limit)
     }).catch((failure: unknown) => {
       if (gen === generation.current) errorRef.current(failure)
     }).finally(() => {
       if (gen === generation.current) pageBusy.current = false
     })
-  }, [repo, query, authors, revision])
+  }, [repo, query, authors, revision, refreshes])
 
   // Errors go through the ref, so a parent render with a new callback starts no reload that could fail again.
   useEffect(() => {
@@ -249,17 +258,18 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     if (selected && selected === selectedRef.current) setTarget({ hash: selected, label, ref })
   }
 
-  // Paging appends to the list, so only the new page is laid out, from where the last layout left off. Any other new list
-  // (a repo, search, filter or refresh) is laid out from the start, with HEAD's line kept in the first lane. HEAD comes
-  // from the list's own decorations in its first page, never from the status reply, so the first layout is already final
-  // and a page that brings HEAD in later lays out the same either way.
+  // Paging appends to the list, so only the new page is laid out, from where the last layout left off. A new repo, search,
+  // filter or explicit refresh is laid out from the start, with HEAD's line kept in the first lane. A background refresh
+  // is laid out against the rows on screen, so commits already shown keep their lanes and colors. HEAD comes from the
+  // list's own decorations in its first page, never from the status reply, so the first layout is already final and a
+  // page that brings HEAD in later lays out the same either way.
   const graph = useRef<Graph>(EMPTY_GRAPH)
   const rows = useMemo(() => {
     const last = graph.current
     const kept = last.commits.length
     const appended = kept > 0 && commits.length >= kept && commits[0] === last.commits[0] && commits[kept - 1] === last.commits[kept - 1]
     const base = appended ? last : EMPTY_GRAPH
-    const state = appended ? { ...base.state } : startGraph(commits, commits.slice(0, PAGE).find(isHeadCommit)?.hash ?? null)
+    const state = appended ? { ...base.state } : startGraph(commits, commits.slice(0, PAGE).find(isHeadCommit)?.hash ?? null, relayout.current ? undefined : last)
     const added = layoutGraph(commits.slice(base.commits.length), state)
     graph.current = { commits, rows: base.rows.concat(added), state }
     return graph.current.rows

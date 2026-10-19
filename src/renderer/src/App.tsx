@@ -37,6 +37,7 @@ export function App() {
   // Uncommitted-file counts by repo path. The main process fills these in the background.
   const [dirty, setDirty] = useState<Record<string, number>>({})
   const [revision, setRevision] = useState(0)
+  const [refreshes, setRefreshes] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(initial.sidebarOpen)
   const [listOpen, setListOpen] = useState(initial.listOpen)
   const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
@@ -114,7 +115,7 @@ export function App() {
         case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch(reportErrorRef.current)
         case 'clone': return setCloneOpen(true)
         case 'open-settings': return setSettingsOpen(true)
-        case 'refresh': return void refreshTree().then(() => setRevision((value) => value + 1))
+        case 'refresh': return void refreshTree().then(() => { setRefreshes((value) => value + 1); setRevision((value) => value + 1) })
         case 'fetch': return void runRepo('fetch', () => api.fetch(repo!))
         case 'pull': return void runRepo('pull-merge', () => api.pull(repo!))
         case 'push': return void runRepo('push', () => api.push(repo!))
@@ -300,6 +301,7 @@ export function App() {
             detailOpen={detailOpen}
             onToggleDetail={() => setDetailOpen((open) => !open)}
             revision={revision}
+            refreshes={refreshes}
             onChanged={() => setRevision((value) => value + 1)}
             onError={reportError}
             onCleanChange={setRepoClean}
@@ -342,7 +344,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, refreshes, onChanged, onError, onCleanChange }: {
   titlebar: HTMLElement | null
   repo: RepoNode
   // The Open in … apps chosen in Settings (InstalledApp ids). Unset means the default.
@@ -357,6 +359,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   detailOpen: boolean
   onToggleDetail: () => void
   revision: number
+  refreshes: number
   onChanged: () => void
   onError: (error: unknown) => void
   onCleanChange: (clean: boolean) => void
@@ -497,7 +500,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
       )}
       {tab === 'history' && (
         <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" style={PANEL_STYLE}>
-          <HistoryView repo={repo.path} head={status?.headHash ?? null} revision={revision} listOpen={listOpen} detailOpen={detailOpen} onError={onError} onChanged={onChanged} />
+          <HistoryView repo={repo.path} head={status?.headHash ?? null} revision={revision} refreshes={refreshes} listOpen={listOpen} detailOpen={detailOpen} onError={onError} onChanged={onChanged} />
         </div>
       )}
     </EditorContext.Provider>

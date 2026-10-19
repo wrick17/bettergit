@@ -83,6 +83,33 @@ test('laying out an appended page from the saved state matches one layout of the
   expect([...layoutGraph(commits.slice(0, 3), state), ...layoutGraph(commits.slice(3), state)]).toEqual(layoutGraph(commits))
 })
 
+test('a background refresh keeps the lanes, colors and widths of commits already on screen', () => {
+  // main (HEAD) and side branches a, b, c from one base, then a new commit lands on a.
+  const before = [
+    { hash: 'c', parents: ['base'] },
+    { hash: 'b', parents: ['base'] },
+    { hash: 'a', parents: ['base'] },
+    { hash: 'main', parents: ['base'] },
+    { hash: 'base', parents: [] },
+  ]
+  const shownState = startGraph(before, 'main')
+  const shown = layoutGraph(before, shownState)
+  const after = [{ hash: 'a2', parents: ['a'] }, ...before]
+  const rows = layoutGraph(after, startGraph(after, 'main', { rows: shown, state: shownState }))
+  const byHash = new Map(rows.map((row) => [row.commit.hash, row]))
+  for (const row of shown) {
+    expect([byHash.get(row.commit.hash)!.lane, byHash.get(row.commit.hash)!.color]).toEqual([row.lane, row.color])
+  }
+  // The new line from a2 to a takes a slot right of every lane it passes, and bends into a's lane where that is free.
+  expect(byHash.get('a2')!.lane).toBe(Math.max(...shown.slice(0, 2).map((row) => row.laneCount)))
+  expect(byHash.get('a2')!.color).toBe(byHash.get('a')!.color)
+  // Rows the new line never crosses keep their width.
+  for (const hash of ['main', 'base']) expect(byHash.get(hash)!.laneCount).toBe(shown.find((row) => row.commit.hash === hash)!.laneCount)
+  // A full layout of the same list would have moved b and c right, which is what the refresh must avoid.
+  const fresh = layoutGraph(after, startGraph(after, 'main'))
+  expect(fresh.find((row) => row.commit.hash === 'c')!.lane).toBeGreaterThan(shown[0].lane)
+})
+
 describe('rollbackTargets', () => {
   test('only loaded ancestors of HEAD can be reset to', () => {
     const targets = rollbackTargets([
