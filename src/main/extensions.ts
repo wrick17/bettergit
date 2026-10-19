@@ -17,6 +17,8 @@ const MAX_DOWNLOAD = 50 * 1024 * 1024
 const MAX_UNPACKED = 100 * 1024 * 1024
 const MAX_ENTRIES = 20_000
 const MAX_FILE = 20 * 1024 * 1024
+// Theme, include and manifest JSON. The largest real one seen is 1.5 MB (vscode-icons); the cap bounds parse memory.
+const MAX_JSON = 4 * 1024 * 1024
 const MAX_ICON = 512 * 1024
 // Caps on one icon theme, checked from the map and file sizes before any image is read. Bytes count once per icon id,
 // since each id carries its own copy of the data URL to the renderer. vscode-icons, the largest seen, has 1,668 images
@@ -31,32 +33,53 @@ const PART = /^[a-z0-9][a-z0-9-]*$/i
 export const isExtensionId = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 200 && value.split('.').length === 2 && value.split('.').every((part) => PART.test(part))
 
-// JSON with comments and trailing commas, as VS Code reads theme and manifest files.
+// JSON with comments and trailing commas, as VS Code reads theme and manifest files. Text between the characters that
+// matter is copied as whole slices, so parsing costs about the size of the text.
 export function parseJsonc(text: string): unknown {
-  const out: string[] = []
-  // Where the last comma went in `out`, while only whitespace or comments followed it.
-  let comma = -1
-  for (let at = text.charCodeAt(0) === 0xfeff ? 1 : 0; at < text.length; at++) {
-    const char = text[at]
-    if (char === '"') {
+  const parts: string[] = []
+  // The start of text not yet copied.
+  let from = text.charCodeAt(0) === 0xfeff ? 1 : 0
+  // Where the comment starting at `at` ends, or -1 when none starts there. An unclosed block comment runs to the end.
+  const commentEnd = (at: number) => {
+    if (text[at] !== '/') return -1
+    if (text[at + 1] === '/') {
+      const end = text.indexOf('\n', at)
+      return end < 0 ? text.length : end
+    }
+    if (text[at + 1] !== '*') return -1
+    const end = text.indexOf('*/', at + 2)
+    return end < 0 ? text.length : end + 2
+  }
+  const special = /["/,]/g
+  special.lastIndex = from
+  for (let match = special.exec(text); match; match = special.exec(text)) {
+    const at = match.index
+    if (text[at] === '"') {
       let end = at + 1
       while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1
-      out.push(text.slice(at, end + 1))
-      at = end
-      comma = -1
-    } else if (char === '/' && text[at + 1] === '/') {
-      while (at + 1 < text.length && text[at + 1] !== '\n') at++
-    } else if (char === '/' && text[at + 1] === '*') {
-      const end = text.indexOf('*/', at + 2)
-      at = end < 0 ? text.length : end + 1
+      special.lastIndex = end + 1
+    } else if (text[at] === '/') {
+      const end = commentEnd(at)
+      if (end < 0) continue
+      parts.push(text.slice(from, at), ' ')
+      special.lastIndex = from = end
     } else {
-      if ((char === '}' || char === ']') && comma >= 0) out[comma] = ''
-      if (char === ',') comma = out.length
-      else if (char.trim()) comma = -1
-      out.push(char)
+      // A comma followed only by whitespace and comments before a closing bracket is dropped.
+      let next = at + 1
+      for (;;) {
+        while (/\s/.test(text[next] ?? '')) next++
+        const end = commentEnd(next)
+        if (end < 0) break
+        next = end
+      }
+      if (text[next] === '}' || text[next] === ']') {
+        parts.push(text.slice(from, at))
+        from = at + 1
+      }
     }
   }
-  return JSON.parse(out.join(''))
+  parts.push(text.slice(from))
+  return JSON.parse(parts.join(''))
 }
 
 // A zip entry's path inside the extension folder, or null for anything outside `extension/` or unsafe to write.
@@ -121,7 +144,7 @@ export function unzip(data: Buffer, keep: (name: string) => boolean): Map<string
 }
 
 async function readCapped(file: string, max: number): Promise<Buffer> {
-  if ((await fs.stat(file)).size > max) throw new Error(`${path.basename(file)} is too large.`)
+  if ((await fs.stat(file)).size > max) throw new Error(`${path.basename(file)} is larger than ${max / 1024 / 1024} MB.`)
   return fs.readFile(file)
 }
 
@@ -172,8 +195,8 @@ function describe(id: string, manifest: Manifest, nls: Record<string, unknown>):
 
 async function readExtension(root: string, id: string): Promise<InstalledExtension> {
   const dir = path.join(root, id)
-  const manifest = parseJsonc((await readCapped(path.join(dir, 'package.json'), MAX_FILE)).toString('utf8')) as Manifest
-  const nls = await readCapped(path.join(dir, 'package.nls.json'), MAX_FILE).then((data) => parseJsonc(data.toString('utf8')) as Record<string, unknown>, () => ({}))
+  const manifest = await readJson(path.join(dir, 'package.json')) as Manifest
+  const nls = await readCapped(path.join(dir, 'package.nls.json'), MAX_JSON).then((data) => parseJsonc(data.toString('utf8')) as Record<string, unknown>, () => ({}))
   return describe(id, manifest, nls)
 }
 
@@ -189,10 +212,11 @@ export async function installVsix(root: string, data: Buffer): Promise<Installed
   const files = unzip(data, (name) => KEPT.test(entryPath(name) ?? ''))
   const manifestData = files.get('extension/package.json')
   if (!manifestData) throw new Error('Not a VS Code extension: the .vsix has no extension/package.json.')
+  const nlsData = files.get('extension/package.nls.json')
+  if (manifestData.length > MAX_JSON || (nlsData?.length ?? 0) > MAX_JSON) throw new Error(`The extension manifest is larger than ${MAX_JSON / 1024 / 1024} MB.`)
   const manifest = parseJsonc(manifestData.toString('utf8')) as Manifest
   const id = `${text(manifest.publisher)}.${text(manifest.name)}`.toLowerCase()
   if (!isExtensionId(id)) throw new Error('The extension has no valid publisher and name.')
-  const nlsData = files.get('extension/package.nls.json')
   const described = describe(id, manifest, nlsData ? parseJsonc(nlsData.toString('utf8')) as Record<string, unknown> : {})
   if (!described.themes.length && !described.iconThemes.length) throw new Error(`${described.name || id} has no colour or file icon themes.`)
   await fs.mkdir(root, { recursive: true })
@@ -312,7 +336,8 @@ async function locate(root: string, ref: unknown, kind: 'themes' | 'iconThemes')
   return file ? { dir, file, choice: choice!, name: `${ref}@${extension!.version}` } : null
 }
 
-const readJson = async (file: string) => parseJsonc((await readCapped(file, MAX_FILE)).toString('utf8')) as Record<string, any>
+// Theme files, the files they include, and manifests: refused from their size alone when over MAX_JSON, never read.
+const readJson = async (file: string) => parseJsonc((await readCapped(file, MAX_JSON)).toString('utf8')) as Record<string, any>
 
 function tokenRules(value: unknown): TokenRule[] {
   // A string here names a .tmTheme file, which is not supported.

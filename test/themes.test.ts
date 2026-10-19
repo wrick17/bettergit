@@ -130,13 +130,14 @@ test('icon caps are checked from the map and file sizes before any image is read
   })
   const svg = (bytes: number) => `<svg xmlns="http://www.w3.org/2000/svg"/>${' '.repeat(bytes)}`
   extension('acme.flood', {
-    'package.json': JSON.stringify({ name: 'flood', publisher: 'acme', version: '1.0.0', contributes: { iconThemes: [
+    'package.json': JSON.stringify({ name: 'flood', publisher: 'acme', version: '1.0.0', contributes: { themes: [{ label: 'Huge', uiTheme: 'vs-dark', path: './huge.json' }], iconThemes: [
       { id: 'big', label: 'Big', path: './big.json' }, { id: 'many', label: 'Many', path: './many.json' }, { id: 'fine', label: 'Fine', path: './fine.json' },
     ] } }),
     // Sol's probe: 256 ids on one 500 KB file, 125 MB of data URLs from one file.
     'big.json': icons(256, () => './one.svg'),
     'one.svg': svg(500_000),
     'many.json': icons(5001, () => './small.svg'),
+    'huge.json': `{ "colors": {} }${' '.repeat(4 * 1024 * 1024)}`,
     'small.svg': svg(10),
     'fine.json': icons(80, (index) => `./fine/${index % 40}.svg`),
     ...Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`fine/${index}.svg`, svg(index)])),
@@ -146,7 +147,7 @@ test('icon caps are checked from the map and file sizes before any image is read
   let active = 0
   let most = 0
   fsPromises.readFile = (async (...args: Parameters<typeof original>) => {
-    if (!String(args[0]).endsWith('.svg')) return original(...args)
+    if (!/\.svg$|huge\.json$/.test(String(args[0]))) return original(...args)
     reads.push(String(args[0]))
     most = Math.max(most, ++active)
     try {
@@ -158,6 +159,7 @@ test('icon caps are checked from the map and file sizes before any image is read
   try {
     await expect(loadIconTheme(root, 'acme.flood/big.json')).rejects.toThrow('add up to more than 16 MB')
     await expect(loadIconTheme(root, 'acme.flood/many.json')).rejects.toThrow('more than 5000 icons')
+    await expect(loadColorTheme(root, 'acme.flood/huge.json')).rejects.toThrow('huge.json is larger than 4 MB')
     expect(reads).toEqual([])
     const fine = await loadIconTheme(root, 'acme.flood/fine.json')
     expect(reads.length).toBe(40)
