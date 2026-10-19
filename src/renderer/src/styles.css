@@ -583,8 +583,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   flex: 0 1 auto; min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: var(--radius-chip); font: 600 calc(11px + var(--ui-delta))/17px var(--font-code);
   background: var(--accent-soft); color: var(--accent);
 }
-/* A branch pill carries its lane's color on its left edge, so it reads as the label of that line. */
-.commit .ref[style] { border-left: 3px solid; }
+/* Keep the branch pill's inset without a colored border. */
+.commit .ref[style] { padding-left: 9px; }
 .ref.head { background: var(--accent-fill); color: var(--on-accent); }
 .commit.active .ref { background: rgba(0, 0, 0, 0.2); color: var(--on-accent); }
 .commit.active .ref.head { background: #ffffff; color: var(--accent-fill); }
