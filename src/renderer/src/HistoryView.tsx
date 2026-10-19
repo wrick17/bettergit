@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type RefObject, type UIEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { layoutGraph, type GraphRow, type GraphState } from '../../main/git/graph'
+import { layoutGraph, startGraph, type GraphRow, type GraphState } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
@@ -21,11 +21,16 @@ const COMMIT_CACHE = 24
 type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
 // Geometry and colors match better-source-control's graph, so the two read the same.
 const LANE_WIDTH = 11
-const MAX_LANES = 10
-// Rows take --row-h-eff (styles.css: density plus a larger UI font). appearance.ts writes its inputs on :root, so the height
+// The graph column always fits every lane, so each commit's marker is drawn on its own lane. Past this many lanes the
+// spacing tightens, down to MIN_LANE_WIDTH, instead of the column growing at full width.
+const FULL_WIDTH_LANES = 12
+const MIN_LANE_WIDTH = 7
+// A commit row holds two lines, the subject over the author and refs, so it is this many single rows tall.
+const ROW_LINES = 1.65
+// Rows scale --row-h-eff (styles.css: density plus a larger UI font). appearance.ts writes its inputs on :root, so the height
 // is read once per :root change and cached, never per row or per render.
 let rowHeightCache: number | undefined
-const measureRowHeight = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-h-eff')) || 28
+const measureRowHeight = () => Math.round((parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-h-eff')) || 28) * ROW_LINES)
 const readRowHeight = () => (rowHeightCache ??= measureRowHeight())
 function subscribeRowHeight(onChange: () => void) {
   const observer = new MutationObserver(() => {
@@ -247,18 +252,18 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   // Paging appends to the list, so only the new page is laid out, from where the last layout left off. Any other new list
-  // (a repo, search, filter or refresh) is laid out from the start.
+  // (a repo, search, filter, refresh or checkout) is laid out from the start, with HEAD's line kept in the first lane.
   const graph = useRef<Graph>(EMPTY_GRAPH)
   const { rows, lanes } = useMemo(() => {
     const last = graph.current
     const kept = last.commits.length
-    const appended = kept > 0 && commits.length >= kept && commits[0] === last.commits[0] && commits[kept - 1] === last.commits[kept - 1]
+    const appended = kept > 0 && last.head === head && commits.length >= kept && commits[0] === last.commits[0] && commits[kept - 1] === last.commits[kept - 1]
     const base = appended ? last : EMPTY_GRAPH
-    const state = { ...base.state }
+    const state = appended ? { ...base.state } : startGraph(commits, head)
     const added = layoutGraph(commits.slice(base.commits.length), state)
-    graph.current = { commits, rows: base.rows.concat(added), state, lanes: added.reduce((most, row) => Math.max(most, row.laneCount), base.lanes) }
+    graph.current = { commits, head, rows: base.rows.concat(added), state, lanes: added.reduce((most, row) => Math.max(most, row.laneCount), base.lanes) }
     return graph.current
-  }, [commits])
+  }, [commits, head])
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row.commit.hash, index])), [rows])
   // History opens on the newest commit when nothing is selected. Only once per open: a commit that fails to load is not picked again.
   const opened = useRef(false)
@@ -268,8 +273,8 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     if (!selected) setSelected(rows[0].commit.hash)
   }, [rows, selected])
   // One fixed graph column for every row, so the commit text lines up down the list.
-  const laneCount = Math.min(MAX_LANES, lanes)
-  const graphWidth = LANE_WIDTH * (laneCount + 1)
+  const pitch = Math.max(MIN_LANE_WIDTH, Math.min(LANE_WIDTH, Math.floor((LANE_WIDTH * FULL_WIDTH_LANES) / lanes)))
+  const graphWidth = pitch * (lanes + 1)
   const picked = commits.find((commit) => commit.hash === selected) ?? null
   // Detail for another commit is not shown, so moving the selection clears it until its own reply arrives.
   const current = detail && detail.hash === selected ? detail : null
@@ -451,6 +456,7 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             selected={picked ? selected : null}
             head={head}
             graphWidth={graphWidth}
+            pitch={pitch}
             onSelect={setSelected}
             onMenu={openMenu}
             onKeyDown={onKeyDown}
@@ -544,53 +550,41 @@ interface Segment {
   color: string
 }
 
-// Ported from better-source-control's graphSvg: rounded lane shifts, straight pass-through lanes,
-// and merge curves that leave the commit dot toward each extra parent. Every y value scales with the row height.
-function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
-  const { commit } = row
+// Lanes keep their slot, so most lines run straight through a row. A line that changes slot, and a line from the commit dot
+// to a parent in another lane, runs to the row's middle, across, and on, with rounded corners. Every y value scales with
+// the row height.
+function graphSegments(row: GraphRow<Commit>, rowHeight: number, pitch: number): Segment[] {
+  const { commit, lane } = row
   const MID = rowHeight / 2
-  const TOP = Math.round(rowHeight * 0.27)
-  const LOW = rowHeight - TOP
-  const x = (lane: number) => LANE_WIDTH * (lane + 1)
+  const x = (slot: number) => pitch * (slot + 1)
   const color = (index: number) => COLORS[index % COLORS.length]
+  const outputOf = (hash: string) => row.output.findIndex((slot) => slot?.hash === hash)
   const segments: Segment[] = []
-  let outputIndex = 0
-  row.input.forEach((input, index) => {
-    if (input.hash === commit.hash) {
-      if (index !== row.lane) {
-        segments.push({ d: `M${x(index)} 0V${TOP}Q${x(index)} ${MID} ${x(index) - 5} ${MID}H${x(row.lane)}`, color: color(input.color) })
-      } else {
-        outputIndex++
-      }
-    } else if (row.output[outputIndex]?.hash === input.hash) {
-      const to = outputIndex++
-      segments.push({
-        d: index === to
-          ? `M${x(index)} 0V${rowHeight}`
-          : `M${x(index)} 0V${TOP}Q${x(index)} ${MID} ${x(index) - 5} ${MID}H${x(to) + 5}Q${x(to)} ${MID} ${x(to)} ${LOW}V${rowHeight}`,
-        color: color(input.color),
-      })
+  row.input.forEach((slot, index) => {
+    if (!slot) return
+    if (slot.hash === commit.hash) {
+      segments.push({ d: index === lane ? `M${x(lane)} 0V${MID}` : elbow(x(index), 0, x(lane), MID, MID, pitch), color: color(slot.color) })
+      return
     }
+    const to = row.output[index]?.hash === slot.hash ? index : outputOf(slot.hash)
+    if (to !== -1) segments.push({ d: to === index ? `M${x(index)} 0V${rowHeight}` : elbow(x(index), 0, x(to), rowHeight, MID, pitch), color: color(slot.color) })
   })
-  for (let index = 1; index < commit.parents.length; index++) {
-    let parentIndex = -1
-    for (let lane = row.output.length - 1; lane >= 0; lane--) {
-      if (row.output[lane].hash === commit.parents[index]) {
-        parentIndex = lane
-        break
-      }
-    }
-    if (parentIndex !== -1) {
-      segments.push({
-        d: `M${x(row.lane)} ${MID}H${x(parentIndex) - 11}Q${x(parentIndex)} ${MID} ${x(parentIndex)} ${rowHeight}`,
-        color: color(row.output[parentIndex].color),
-      })
-    }
+  for (const parent of commit.parents) {
+    const to = outputOf(parent)
+    if (to !== -1) segments.push({ d: to === lane ? `M${x(lane)} ${MID}V${rowHeight}` : elbow(x(lane), MID, x(to), rowHeight, MID, pitch), color: color(row.output[to]!.color) })
   }
-  const input = row.input[row.lane]
-  if (input?.hash === commit.hash) segments.push({ d: `M${x(row.lane)} 0V${MID}`, color: color(input.color) })
-  if (commit.parents.length) segments.push({ d: `M${x(row.lane)} ${MID}V${rowHeight}`, color: color(row.color) })
   return segments
+}
+
+// A path from (x1, y1) to (x2, y2) that turns through the row's middle: down to it, across, and down again, rounding each
+// turn by up to one lane width. An end that sits on the middle line has no turn.
+function elbow(x1: number, y1: number, x2: number, y2: number, mid: number, pitch: number) {
+  const sign = Math.sign(x2 - x1)
+  const turns = (y1 < mid ? 1 : 0) + (y2 > mid ? 1 : 0)
+  const radius = Math.min(pitch, mid, Math.abs(x2 - x1) / Math.max(turns, 1))
+  const enter = y1 < mid ? `V${mid - radius}Q${x1} ${mid} ${x1 + sign * radius} ${mid}` : ''
+  const leave = y2 > mid ? `Q${x2} ${mid} ${x2} ${mid + radius}V${y2}` : ''
+  return `M${x1} ${y1}${enter}H${y2 > mid ? x2 - sign * radius : x2}${leave}`
 }
 
 // The DOM id of a commit row. The list points aria-activedescendant at the selected one.
@@ -602,9 +596,19 @@ function bodyBelow(message: string, subject: string) {
   return message.startsWith(subject) && (rest === '' || rest.startsWith('\n')) ? rest.trim() : message
 }
 
-// Compact DD/MM keeps the subject readable in a narrow list. The full local timestamp is in the tooltip.
+// Short times like Sublime Merge: the time today, the weekday and time this week, else the date. The full local timestamp
+// is in the tooltip. The formatters are built once; building one per row would cost more than the row.
+const TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const WEEKDAY_TIME = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+const DAY = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+const DAY_YEAR = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 function formatListDate(seconds: number) {
-  return new Date(seconds * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })
+  const date = new Date(seconds * 1000)
+  const now = new Date()
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) / 86_400_000)
+  if (days === 0) return TIME.format(date)
+  if (days > 0 && days < 7) return WEEKDAY_TIME.format(date)
+  return (date.getFullYear() === now.getFullYear() ? DAY : DAY_YEAR).format(date)
 }
 
 // Adds and removes across a diff, with its file count, for the compare bar.
@@ -617,18 +621,19 @@ function totalLines(files: DiffFile[]) {
   }
 }
 
-type Graph = { commits: Commit[]; rows: GraphRow<Commit>[]; state: GraphState; lanes: number }
-const EMPTY_GRAPH: Graph = { commits: [], rows: [], state: { lanes: [], nextColor: 0 }, lanes: 1 }
+type Graph = { commits: Commit[]; head: string | null; rows: GraphRow<Commit>[]; state: GraphState; lanes: number }
+const EMPTY_GRAPH: Graph = { commits: [], head: null, rows: [], state: { lanes: [], nextColor: 0 }, lanes: 1 }
 
 // The commit listbox. Rows are a fixed height, so only the window near the pane's viewport mounts, with padding standing in
 // for the rows above and below it. Each row draws its own slice of the graph, so lanes run on unbroken across the window.
-function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSelect, onMenu, onKeyDown }: {
+function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, pitch, onSelect, onMenu, onKeyDown }: {
   listRef: RefObject<HTMLUListElement | null>
   rows: GraphRow<Commit>[]
   indexOf: Map<string, number>
   selected: string | null
   head: string | null
   graphWidth: number
+  pitch: number
   onSelect: (hash: string) => void
   onMenu: (hash: string, x: number, y: number) => void
   onKeyDown: (event: KeyboardEvent<HTMLUListElement>) => void
@@ -694,6 +699,7 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
           key={row.commit.hash}
           row={row}
           graphWidth={graphWidth}
+          pitch={pitch}
           rowHeight={rowHeight}
           active={selected === row.commit.hash}
           isHead={row.commit.hash === head}
@@ -705,9 +711,10 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
   )
 }
 
-const CommitRow = memo(function CommitRow({ row, graphWidth, rowHeight, active, isHead, onSelect, onMenu }: {
+const CommitRow = memo(function CommitRow({ row, graphWidth, pitch, rowHeight, active, isHead, onSelect, onMenu }: {
   row: GraphRow<Commit>
   graphWidth: number
+  pitch: number
   rowHeight: number
   active: boolean
   isHead: boolean
@@ -715,36 +722,58 @@ const CommitRow = memo(function CommitRow({ row, graphWidth, rowHeight, active, 
   onMenu: (hash: string, x: number, y: number) => void
 }) {
   const { commit } = row
-  const x = LANE_WIDTH * (row.lane + 1)
-  const radius = isHead ? 4.5 : commit.parents.length > 1 ? 3.5 : 3
+  const x = pitch * (row.lane + 1)
   const nodeColor = COLORS[row.color % COLORS.length]
   const refs = commit.refs.map((ref) => ref.replace('HEAD -> ', ''))
   return (
     <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} style={{ height: rowHeight }} onClick={() => onSelect(commit.hash)} onContextMenu={(event) => { event.preventDefault(); onMenu(commit.hash, event.clientX, event.clientY) }}>
       <svg className="lanes" width={graphWidth} height={rowHeight} aria-hidden="true">
-        {graphSegments(row, rowHeight).map((segment, index) => (
+        {graphSegments(row, rowHeight, pitch).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
         ))}
-        <circle
-          cx={x}
-          cy={rowHeight / 2}
-          r={radius}
-          fill={isHead ? 'var(--content)' : nodeColor}
-          stroke={nodeColor}
-          strokeWidth={isHead ? 2 : 1}
-        />
+        <CommitMarker x={x} y={rowHeight / 2} color={nodeColor} merge={commit.parents.length > 1} tip={refs.length > 0} head={isHead} />
       </svg>
+      {/* Two lines, like Sublime Merge: the subject, then the author with the refs at right, or the time when there are none. */}
       <span className="text">
-        {refs.length > 0 && <span className="ref" title={refs.join(', ')}>{refs[0]}</span>}
-        {refs.length > 1 && <span className="ref" title={refs.join(', ')}>+{refs.length - 1}</span>}
-        {isHead && <span className="ref head">HEAD</span>}
-        <span className="subject">{commit.subject}</span>
+        <span className="commit-line">
+          <span className="subject">{commit.subject}</span>
+          <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
+        </span>
+        <span className="commit-line">
+          <span className="author">{commit.author}</span>
+          {isHead && <span className="ref head">HEAD</span>}
+          {refs.length > 0 && <span className="ref" title={refs.join(', ')} style={{ borderLeftColor: nodeColor }}>{refs[0]}</span>}
+          {refs.length > 1 && <span className="ref" title={refs.join(', ')}>+{refs.length - 1}</span>}
+          {!isHead && !refs.length && (
+            <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
+          )}
+        </span>
       </span>
-      <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
-      <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
     </li>
   )
 })
+
+// Sublime Merge's markers: a filled square for a commit, a hollow one for a merge. A branch tip is a size larger, and HEAD
+// also gets a ring. Drawn after the lines, so no line covers it.
+function CommitMarker({ x, y, color, merge, tip, head }: { x: number; y: number; color: string; merge: boolean; tip: boolean; head: boolean }) {
+  const size = head || tip ? 9 : 8
+  return (
+    <>
+      {head && <rect x={x - size / 2 - 2.5} y={y - size / 2 - 2.5} width={size + 5} height={size + 5} rx={3.5} fill="none" stroke="var(--text)" strokeWidth={1.25} />}
+      <rect
+        className="marker"
+        x={x - size / 2}
+        y={y - size / 2}
+        width={size}
+        height={size}
+        rx={2}
+        fill={merge ? 'var(--content)' : color}
+        stroke={color}
+        strokeWidth={merge ? 1.5 : 0}
+      />
+    </>
+  )
+}
 
 // The author filter beside the search field: a button that opens a checklist of the repo's authors, and a chip per picked author.
 function AuthorFilter({ repo, authors, onChange, onError }: {
