@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { promises as fs } from 'node:fs'
+import { isIP, isIPv4 } from 'node:net'
 import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { isHexColor, type ColorTheme, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
@@ -8,6 +10,9 @@ import { isHexColor, type ColorTheme, type ExtensionResult, type IconMaps, type 
 // its code is never unpacked, so it can never run, and every file read back must stay inside the extension's folder.
 
 const OPEN_VSX = 'https://open-vsx.org/api'
+// The API host, and the storage host its file URLs redirect to (a 302 to openvsx.eclipsecontent.org, seen 2026-10-19).
+const OPEN_VSX_HOSTS = new Set(['open-vsx.org', 'openvsx.eclipsecontent.org'])
+const MAX_REDIRECTS = 3
 const MAX_DOWNLOAD = 50 * 1024 * 1024
 const MAX_UNPACKED = 100 * 1024 * 1024
 const MAX_ENTRIES = 20_000
@@ -208,10 +213,43 @@ export async function removeExtension(root: string, id: unknown): Promise<void> 
   await fs.rm(path.join(root, id), { recursive: true, force: true })
 }
 
-async function fetchOk(url: string): Promise<Response> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) })
-  if (!response.ok) throw new Error(`Open VSX answered ${response.status}.`)
-  return response
+// Loopback, private, link-local, CGNAT and unspecified addresses, IPv4-mapped IPv6 included.
+export function isInternalAddress(address: string): boolean {
+  const v4 = address.toLowerCase().replace(/^::ffff:/, '')
+  if (isIPv4(v4)) {
+    const [a, b] = v4.split('.').map(Number)
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b < 128)
+  }
+  return v4 === '::' || v4 === '::1' || /^f[cd]/.test(v4) || /^fe[89ab]/.test(v4)
+}
+
+// Whether a request may go to `url`: https on the default port to an Open VSX host by name, never an IP literal, and
+// only while that name resolves to public addresses.
+// shortcut: the resolver's answer is checked, not the socket's; pin the connection's lookup if a host on the list could
+// ever be pointed at an internal address by someone else.
+export async function isOpenVsxUrl(url: URL): Promise<boolean> {
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || isIP(host) || !OPEN_VSX_HOSTS.has(host)) return false
+  const addresses = await lookup(host, { all: true }).catch(() => [])
+  return addresses.length > 0 && !addresses.some(({ address }) => isInternalAddress(address))
+}
+
+// Redirects are followed by hand, so every hop is checked before it is requested: a redirect to a host off the list
+// fails without ever reaching it.
+export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolean> = isOpenVsxUrl): Promise<Response> {
+  let next = new URL(url)
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    if (!await allowed(next)) throw new Error(`Refusing to fetch from ${next.host}: not an Open VSX address.`)
+    const response = await fetch(next, { redirect: 'manual', signal: AbortSignal.timeout(30_000) })
+    const location = response.headers.get('location')
+    if (response.status < 300 || response.status > 399 || !location) {
+      if (!response.ok) throw new Error(`Open VSX answered ${response.status}.`)
+      return response
+    }
+    await response.body?.cancel()
+    next = new URL(location, next)
+  }
+  throw new Error('Open VSX redirected too many times.')
 }
 
 export async function searchOpenVsx(query: unknown): Promise<ExtensionResult[]> {
@@ -237,7 +275,8 @@ export async function installFromOpenVsx(root: string, namespace: unknown, name:
   if (!download.startsWith(`${OPEN_VSX}/`)) throw new Error('Open VSX has no download for this extension.')
   const response = await fetchOk(download)
   if (Number(response.headers.get('content-length')) > MAX_DOWNLOAD) throw new Error('The .vsix file is too large.')
-  // Counted as it arrives, so a server that lies about the length still cannot send more than the cap.
+  // Counted as it arrives, so a server that lies about the length still cannot send more than the cap. Redirect hops
+  // carry no body (fetchOk discards them), so this one count covers the whole download.
   const chunks: Uint8Array[] = []
   let size = 0
   const reader = response.body!.getReader()

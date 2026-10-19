@@ -2,7 +2,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { entryPath, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
+import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
 import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
 
 const root = mkdtempSync(path.join(tmpdir(), 'bettergit-themes-'))
@@ -99,4 +99,26 @@ test('file icons resolve by name, then longest extension, then language, then th
   expect(fileIconId(theme, 'main.ts', 'typescript', false)).toBe('ts')
   expect(fileIconId(theme, 'tool.py', 'python', false)).toBe('py')
   expect(fileIconId(theme, 'README', null, false)).toBe('file')
+})
+
+test('a redirect is checked before it is followed, so a hop off the allowed hosts is never requested', async () => {
+  const hits: string[] = []
+  const target = Bun.serve({ port: 0, fetch: (request) => { hits.push(request.url); return new Response('PK') } })
+  const start = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 302, headers: { location: `http://127.0.0.1:${target.port}/private-target` } }) })
+  try {
+    const first = `http://127.0.0.1:${start.port}/`
+    await expect(fetchOk(`${first}file.vsix`, async (url) => url.href.startsWith(first))).rejects.toThrow('Refusing to fetch')
+    expect(hits).toEqual([])
+  } finally {
+    start.stop(true)
+    target.stop(true)
+  }
+  // The real policy refuses these before any lookup or request.
+  for (const url of ['http://open-vsx.org/api', 'https://127.0.0.1/x', 'https://[::1]/x', 'https://169.254.169.254/x', 'https://localhost/x',
+    'https://open-vsx.org.evil.example/x', 'https://evil.example/x', 'https://open-vsx.org:8443/x', 'https://user@open-vsx.org/x']) {
+    expect(await isOpenVsxUrl(new URL(url))).toBe(false)
+  }
+  expect(['127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', '::', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1']
+    .filter((address) => !isInternalAddress(address))).toEqual([])
+  expect(['104.18.12.1', '172.32.0.1', '2606:4700::1'].filter(isInternalAddress)).toEqual([])
 })
