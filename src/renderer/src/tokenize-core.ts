@@ -2,7 +2,14 @@ import { createHighlighterCore, type HighlighterCore } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 import { bundledLanguages, type BundledLanguage } from 'shiki/langs'
 import { bundledThemes } from 'shiki/themes'
+import type { ColorTheme } from '../../shared/themes'
 import type { Segment } from './highlight'
+
+// The pair of themes to colour with. A missing side uses the built-in GitHub theme.
+export interface SyntaxThemes {
+  light?: ColorTheme
+  dark?: ColorTheme
+}
 
 // Shiki tokenising, shared by the highlight worker and the in-page fallback used where workers cannot start.
 let highlighter: Promise<HighlighterCore> | null = null
@@ -26,15 +33,28 @@ const SLICE_MS = 6
 const LINE_MS = 15
 const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+// A theme's name in Shiki, loading it the first time. A theme Shiki refuses falls back to the built-in one.
+async function themeName(shiki: HighlighterCore, theme: ColorTheme | undefined, fallback: string): Promise<string> {
+  if (!theme) return fallback
+  if (shiki.getLoadedThemes().includes(theme.name)) return theme.name
+  try {
+    await shiki.loadTheme({ name: theme.name, type: theme.dark ? 'dark' : 'light', colors: theme.colors, tokenColors: theme.tokenColors })
+    return theme.name
+  } catch {
+    return fallback
+  }
+}
 
 // Null when the code is not coloured, or when `stale` turns true before it finishes (such as text typed since).
 // One list of coloured segments per line, or null when colouring fails or `stale` turns true before it finishes.
-export async function tokenizeCode(code: string, language: string, stale?: () => boolean): Promise<Segment[][] | null> {
+export async function tokenizeCode(code: string, language: string, stale?: () => boolean, themes?: SyntaxThemes): Promise<Segment[][] | null> {
   try {
     const shiki = await getHighlighter()
     if (!shiki.getLoadedLanguages().includes(language)) {
       await shiki.loadLanguage(bundledLanguages[language as BundledLanguage]())
     }
+    const light = await themeName(shiki, themes?.light, 'github-light')
+    const dark = await themeName(shiki, themes?.dark, 'github-dark')
     const lines = code.split('\n')
     const out: Segment[][] = []
     let grammarState: ReturnType<typeof shiki.getLastGrammarState> | undefined
@@ -52,7 +72,7 @@ export async function tokenizeCode(code: string, language: string, stale?: () =>
       // The grammar state carries open strings and comments across slices, so colours match one whole-file pass.
       const tokens = shiki.codeToTokensWithThemes(slice.join('\n'), {
         lang: language,
-        themes: { light: 'github-light', dark: 'github-dark' },
+        themes: { light, dark },
         grammarState,
         tokenizeTimeLimit: LINE_MS,
       })

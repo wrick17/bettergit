@@ -17,6 +17,7 @@ import * as ops from './git/ops'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
+import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -134,6 +135,19 @@ function handleWrite(channel: string, handler: (...args: any[]) => unknown) {
 }
 
 const appIcons = new Map<string, Promise<string | null>>()
+
+const extensionsDir = () => path.join(app.getPath('userData'), 'extensions')
+// Loaded themes by kind and ref. Installs and removals clear it, since either can change what a ref points at.
+const themes = new Map<string, Promise<unknown>>()
+function loadTheme(kind: 'color' | 'icons', ref: unknown) {
+  const key = `${kind}:${String(ref)}`
+  if (!themes.has(key)) {
+    const load = kind === 'color' ? loadColorTheme(extensionsDir(), ref) : loadIconTheme(extensionsDir(), ref)
+    themes.set(key, load.catch((error) => { themes.delete(key); throw error }))
+  }
+  return themes.get(key)
+}
+const changingExtensions = <T>(change: Promise<T>) => change.finally(() => themes.clear())
 
 function registerIpc() {
   ipcMain.handle('repo:locks', () => repoLockSnapshot())
@@ -306,6 +320,20 @@ function registerIpc() {
     await persist({ ...config, settings: { ...config.settings, customApps: [...(config.settings.customApps ?? []), chosen] } })
     return chosen
   })
+  ipcMain.handle('extensions:list', () => listExtensions(extensionsDir()))
+  ipcMain.handle('extensions:search', (_event, query: unknown) => searchOpenVsx(query))
+  ipcMain.handle('extensions:install', (_event, namespace: unknown, name: unknown) =>
+    changingExtensions(installFromOpenVsx(extensionsDir(), namespace, name)))
+  // The file comes from the open panel here, never from the renderer, so the page cannot make main read a path it chose.
+  ipcMain.handle('extensions:install-file', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const picked = await dialog.showOpenDialog(window!, { properties: ['openFile'], filters: [{ name: 'VS Code extension', extensions: ['vsix'] }] })
+    if (picked.canceled || !picked.filePaths[0]) return null
+    return changingExtensions(installVsixFile(extensionsDir(), picked.filePaths[0]))
+  })
+  ipcMain.handle('extensions:remove', (_event, id: unknown) => changingExtensions(removeExtension(extensionsDir(), id)))
+  ipcMain.handle('themes:color', (_event, ref: unknown) => loadTheme('color', ref))
+  ipcMain.handle('themes:icons', (_event, ref: unknown) => loadTheme('icons', ref))
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
   ipcMain.handle('clone', async (_event, url: string, parent: string) => {
     const destination = path.join(parent, path.basename(url.replace(/\.git$/, '')))
@@ -395,6 +423,8 @@ function createWindow() {
 app.whenReady().then(async () => {
   config = await loadConfig(configFile())
   nativeTheme.themeSource = config.settings.theme
+  // The renderer waits for the icon theme before its first frame, so its files start loading now, alongside the window.
+  if (config.settings.appearance?.iconTheme) loadTheme('icons', config.settings.appearance.iconTheme)?.catch(() => {})
   registerIpc()
   nativeTheme.themeSource = config.settings.theme
   installMenu()

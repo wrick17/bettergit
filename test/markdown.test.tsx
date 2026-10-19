@@ -2,7 +2,11 @@ import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { parseDiff, type DiffFile, type DiffLine, type MovedBlock } from '../src/main/git/diff'
-import { isMarkdownPath, MarkdownContent, markdownHunk } from '../src/renderer/src/MarkdownLine'
+
+// MarkdownLine reads the syntax prefs, which load saved choices from localStorage, so stub it before the import as
+// session.test.ts does.
+Object.assign(globalThis, { localStorage: { getItem: () => null, setItem: () => undefined } })
+const { isMarkdownPath, MarkdownContent, markdownHunk } = await import('../src/renderer/src/MarkdownLine')
 
 const line = (text: string, type: DiffLine['type'] = 'context', number = 1): DiffLine => ({
   text, type, oldNo: type === 'add' || type === 'note' ? null : number, newNo: type === 'del' || type === 'note' ? null : number,
@@ -168,8 +172,10 @@ test('hunk sides keep independent fence state and never infer missing reference 
   const parsed = markdownHunk(lines)
   expect(parsed.old.nodes[0].type).toBe('code')
   expect(parsed.new.nodes[0].type).toBe('heading')
-  expect(fragment('```\n# unfinished')).toContain('<pre')
-  expect(fragment('```\n# unfinished')).not.toContain('<h1')
+  // A code block reads the syntax prefs store, so it renders in the isolated DiffView process, not through fragment().
+  const unfinished = render([file('unfinished.md', [line('```'), line('# unfinished', 'context', 2)])]).html
+  expect(unfinished).toContain('<pre')
+  expect(unfinished).not.toContain('<h1')
   expect(fragment('[label][missing]')).toContain('[label][missing]')
   const separated = file('fragment.md', [line('[label][ref]')])
   separated.hunks.push({ header: '@@ -20 +20 @@', lines: [line('[ref]: https://outside.test', 'context', 20), line('# separate', 'context', 21)] })

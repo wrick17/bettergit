@@ -6,6 +6,7 @@ import type { Nodes, RootContent, Definition, FootnoteDefinition, Code } from 'm
 import type { DiffLine } from '../../main/git/diff'
 import { emphasize, type Span } from './intraline'
 import { highlightLines, languageFor, type Segment } from './highlight'
+import { useLanguageOverrides } from './prefs'
 import './markdown.css'
 
 export const isMarkdownPath = (path: string) => /\.(md|markdown)$/i.test(path)
@@ -213,14 +214,16 @@ function leaf(value: string, node: Nodes, side: MarkdownSide): ReactNode {
 
 function MarkdownCode({ node, side }: { node: Code; side: MarkdownSide }) {
   const [colors, setColors] = useState<{ value: string; lang: string | null | undefined; segments: Segment[][] }>()
+  // A new identity on a syntax theme change. The last colours stay until the new ones land; the render below shows
+  // colours only for the code and language they were made for.
+  const recoloured = useLanguageOverrides()
   useEffect(() => {
     let stale = false
-    setColors(undefined)
     const lang = node.lang ?? ''
     const language = languageFor(`code.${lang}`, {}) ?? languageFor(`code.${lang}`, { [lang]: lang })
     if (language) highlightLines(node.value.split('\n'), language).then(segments => { if (!stale) setColors({ value: node.value, lang: node.lang, segments }) })
     return () => { stale = true }
-  }, [node.value, node.lang])
+  }, [node.value, node.lang, recoloured])
   const projection = project(node, side.source)
   let content: ReactNode = leaf(node.value, node, side)
   if (colors?.value === node.value && colors.lang === node.lang && projection && !movedRanges(side, ...projection).length) {

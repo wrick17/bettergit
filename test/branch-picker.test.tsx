@@ -40,13 +40,14 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     'react/jsx-dev-runtime': jsxDev,
     'react-dom': { createPortal: (node: unknown) => node },
     './Dialogs': { useDialogFocus() {} },
+    './confirm': { confirmOverBlur: async () => { confirms++; return discard } },
     './Icons': { Icon: () => null },
     './branch-tree': refs,
     './repo-busy': { ...busy, useRepoBusy: () => busy.busyKey('/picker-test') },
   }
   runInNewContext(await compiled.outputs[0].text(), {
     Error, module, exports: module.exports, require: (id: string) => imports[id] ?? {},
-    window: { bettergit: api, confirm: () => { confirms++; return discard } },
+    window: { bettergit: api },
     document: { getElementById: () => null },
   })
   const props = { repo: '/picker-test', branches, headHash, onRefresh: async () => { refreshed++ }, onChanged: () => { changed++ }, onClose: () => { closed++ } }
@@ -167,8 +168,8 @@ test('creation retains its name through base selection, refuses dismissal while 
   expect(h.stats()).toEqual({ closed: 0, refreshed: 1, changed: 0, confirms: 0 })
   expect(h.find((p) => p.role === 'alert').children).toBe('Selected branch changed')
   expect(h.find((p) => p.name === 'branch-name').value).toBe('draft/topic')
-  h.click('Cancel'); expect(h.stats().closed).toBe(0)
-  h.discard(); h.click('Cancel'); expect(h.stats().closed).toBe(1)
+  h.click('Cancel'); await flush(); expect(h.stats().closed).toBe(0)
+  h.discard(); h.click('Cancel'); await flush(); expect(h.stats().closed).toBe(1)
 })
 
 test('search-only cancel makes no Git call, and successful creation closes after one write and reload', async () => {

@@ -75,7 +75,7 @@
   --move-bg: rgba(175, 82, 222, 0.11);
   --tip: rgba(20, 20, 24, 0.9);
   --tip-text: #ffffff;
-  --scrim: rgba(18, 22, 34, 0.16);
+  --scrim: rgba(0, 0, 0, 0.28);
 }
 :root[data-theme='dark'] {
   --find-match: rgba(255, 214, 10, 0.3);
@@ -120,27 +120,10 @@
   --move-bg: rgba(191, 90, 242, 0.16);
   --tip: rgba(236, 236, 242, 0.96);
   --tip-text: #111114;
-  --scrim: rgba(0, 0, 0, 0.36);
+  --scrim: rgba(0, 0, 0, 0.5);
 }
 
-/* Accents from Settings. Each keeps its text colour readable on the theme's surfaces and white text readable on its fill. */
 :root[data-density='compact'] { --row-h: 24px; }
-:root[data-theme='light'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 14%, transparent); }
-:root[data-theme='dark'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 30%, transparent); }
-:root[data-theme='light'][data-accent='purple'] { --accent: #7536b3; --accent-fill: #8944d1; }
-:root[data-theme='dark'][data-accent='purple'] { --accent: #c69bff; --accent-fill: #8346c9; }
-:root[data-theme='light'][data-accent='pink'] { --accent: #b51f58; --accent-fill: #c92a64; }
-:root[data-theme='dark'][data-accent='pink'] { --accent: #ff85b0; --accent-fill: #c02a62; }
-:root[data-theme='light'][data-accent='red'] { --accent: #b8231c; --accent-fill: #c62c25; }
-:root[data-theme='dark'][data-accent='red'] { --accent: #ff8a80; --accent-fill: #c22f28; }
-:root[data-theme='light'][data-accent='orange'] { --accent: #9e4a00; --accent-fill: #b35300; }
-:root[data-theme='dark'][data-accent='orange'] { --accent: #ffad5c; --accent-fill: #ad5000; }
-:root[data-theme='light'][data-accent='green'] { --accent: #17702f; --accent-fill: #1d7d37; }
-:root[data-theme='dark'][data-accent='green'] { --accent: #66d983; --accent-fill: #1b7834; }
-:root[data-theme='light'][data-accent='teal'] { --accent: #096676; --accent-fill: #0b7385; }
-:root[data-theme='dark'][data-accent='teal'] { --accent: #5fd3e3; --accent-fill: #0a6f80; }
-:root[data-theme='light'][data-accent='graphite'] { --accent: #4a515c; --accent-fill: #5b626d; }
-:root[data-theme='dark'][data-accent='graphite'] { --accent: #c3c8d0; --accent-fill: #5b626d; }
 
 /* Registered so its computed value is a resolved length; HistoryView reads it for its virtual rows. */
 @property --row-h-eff { syntax: '<length>'; inherits: true; initial-value: 28px; }
@@ -150,8 +133,8 @@ html, body, #root { height: 100%; margin: 0; background: transparent; }
 body {
   font: calc(14px + var(--ui-delta))/1.45 var(--font-ui);
   color: var(--text);
-  /* Transparent so the window's native material shows through the glass panels. */
-  background: transparent;
+  /* Transparent so the window's native material shows through the glass panels. An extension theme paints --window. */
+  background: var(--window, transparent);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -454,6 +437,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .row-stat .del { color: var(--del); }
 .group li.active .row-stat .add, .group li.active .row-stat .del, .tree-row.selected .row-stat .add, .tree-row.selected .row-stat .del { color: var(--on-accent); }
 .file-icon { flex: none; width: 14px; height: 14px; }
+/* Icon themes with a separate light icon draw both; FileIcon.tsx. */
+:root[data-theme='light'] .icon-dark, :root[data-theme='dark'] .icon-light { display: none; }
 /* Badges are decorative (aria-hidden); the file name beside them carries the meaning. */
 
 /* A floating glass card pinned to the bottom of the list. */
@@ -636,10 +621,18 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-body { margin: 0; white-space: pre-wrap; font: calc(14px + var(--ui-delta))/1.55 var(--font-ui); color: var(--text-2); }
 
 /* Sheets and dialogs. Each dialog is head, body, footer. */
-.scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); animation: fade 160ms var(--ease); }
+/* The underlay blurs the app root itself, titlebar included, and the scrim only tints. A backdrop-filter on the scrim left
+   some panels sharp in the live window, because it reads back what the compositor drew; a filter renders the root as one surface.
+   Every dialog portals its scrim to the body, beside the root. A native confirmation adds one too (confirm.ts), which also
+   blurs a dialog it opens over. */
+body:has(> .scrim) > #root, body > .scrim:has(~ .scrim) > * { filter: blur(20px); }
+.scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); animation: fade 160ms var(--ease); }
+/* No fade: the sheet blocks the page, and the tint must be whole before it opens. */
+.confirm-scrim { animation: none; }
+/* Opaque, so the panel stays crisp over the blur: the theme's glass over the canvas colour. */
 .dialog {
   width: min(480px, 90vw); overflow: hidden; border-radius: var(--radius-lg);
-  background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  background: linear-gradient(var(--glass-strong) 0 0) Canvas;
   box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 var(--glass-edge), var(--glass-shadow);
   animation: dialog-in 200ms var(--ease);
 }
@@ -884,7 +877,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .hscroll > div { height: 1px; }
 
 /* Settings: a sidebar of sections and a scrolling pane, like System Settings. */
-.settings-dialog { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; width: min(820px, calc(100vw - 48px)); height: min(580px, calc(100vh - 48px)); }
+.settings-dialog { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; width: min(960px, 90vw); height: min(720px, 85vh); }
 .settings-dialog > .dialog-body { grid-template-columns: 210px minmax(0, 1fr); gap: 0; padding: 0; max-height: none; overflow: hidden; }
 .settings-nav { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 20px 10px; overflow: auto; border-right: 1px solid var(--line); background: var(--sunken); }
 .settings-nav h2 { margin: 0 10px; font-size: calc(17px + var(--ui-delta)); }
@@ -900,6 +893,14 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .settings-section > h4 { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; }
 .setting-label { flex: 1 1 180px; display: grid; min-width: 0; }
 .settings-actions { display: flex; justify-content: flex-end; }
+/* Theme pickers keep their status slot whether or not it shows anything, so a loading or error mark never moves the select. */
+.theme-picker { display: inline-flex; align-items: center; gap: 8px; }
+.theme-status { display: inline-grid; place-items: center; width: 16px; height: 16px; color: var(--text-3); }
+.theme-status svg { width: 16px; height: 16px; }
+.theme-status.broken { color: var(--del); }
+.settings-note { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
+/* Publisher line, then at most two lines of description. */
+.extension-detail { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: pre-line; }
 /* Narrow windows keep the section icons and drop their names. */
 @media (max-width: 640px) {
   .settings-dialog > .dialog-body { grid-template-columns: 56px minmax(0, 1fr); }
@@ -907,10 +908,6 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   .settings-nav [role='tab'] { justify-content: center; padding: 0; }
 }
 
-.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-.swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15); }
-.swatch:hover:not(:disabled) { filter: brightness(1.1); }
-.swatch.on { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px var(--text-3); }
 
 .app-picker { display: grid; gap: 4px; justify-items: end; }
 .app-picker-trigger { display: flex; align-items: center; gap: 8px; min-width: 200px; max-width: 280px; height: 32px; padding: 0 10px 0 8px; text-align: left; }

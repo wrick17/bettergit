@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { createPortal } from 'react-dom'
 import type { Stash } from '../../main/git/ops'
 import type { Run } from './RepoMenu'
+import { confirmOverBlur } from './confirm'
 import { useDialogFocus } from './Dialogs'
 import { Icon } from './Icons'
 import { REPO_WORKING_LABELS, useRepoBusy } from './repo-busy'
@@ -76,7 +77,7 @@ export function PullFromDialog({ repo, branch, run, onError, onClose }: {
   const [name, setName] = useState(branch)
   const busy = useRepoBusy(repo)
   // A typed branch name survives a stray Escape or scrim click until the user confirms discarding it.
-  const requestClose = () => { if (name === branch || window.confirm('Discard this pull?')) onClose() }
+  const requestClose = async () => { if (name === branch || await confirmOverBlur('Discard this pull?')) onClose() }
 
   useEffect(() => {
     api.remotes(repo).then((list) => {

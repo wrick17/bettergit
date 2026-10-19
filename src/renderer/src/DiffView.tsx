@@ -535,7 +535,7 @@ const LANE_COLUMNS = 3
 const colours = new WeakMap<DiffFile, { overrides: Record<string, string>; tokens: Segment[][][] }>()
 // The last colours of each path's lines. A file reloaded after an edit paints its unchanged lines coloured while its own
 // colours load. shortcut: cleared whole past 500 paths; an LRU is worth it only if a clear is ever seen.
-const linesByPath = new Map<string, { overrides: Record<string, string>; lines: Map<string, Segment[]> }>()
+const linesByPath = new Map<string, Map<string, Segment[]>>()
 
 // The file's own colours, also when the same code was coloured before under another file object (a refresh).
 function exactTokens(file: DiffFile, overrides: Record<string, string>) {
@@ -551,16 +551,17 @@ function keepColours(file: DiffFile, overrides: Record<string, string>, tokens: 
   if (linesByPath.size > 500) linesByPath.clear()
   const lines = new Map<string, Segment[]>()
   file.hunks.forEach((hunk, hunkIndex) => hunk.lines.forEach((line, lineIndex) => lines.set(line.text, tokens[hunkIndex][lineIndex])))
-  linesByPath.set(pathOf(file), { overrides, lines })
+  linesByPath.set(pathOf(file), lines)
 }
 
-// Until a file's own colours arrive, its lines borrow the colours they had in the path's last coloured version.
+// Until a file's own colours arrive, its lines borrow the colours they had in the path's last coloured version, also from
+// before a theme or language change, so a re-colour swaps colours instead of flashing plain text.
 function fileTokens(file: DiffFile, overrides: Record<string, string>) {
   const tokens = exactTokens(file, overrides)
   if (tokens) return tokens
   const last = linesByPath.get(pathOf(file))
-  if (last?.overrides !== overrides) return undefined
-  return file.hunks.map((hunk) => hunk.lines.map((line) => last.lines.get(line.text) ?? [{ text: line.text }]))
+  if (!last) return undefined
+  return file.hunks.map((hunk) => hunk.lines.map((line) => last.get(line.text) ?? [{ text: line.text }]))
 }
 
 // The files to show. A refresh that keeps some of the paths on screen holds the shown files until the new or changed

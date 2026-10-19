@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { confirmOverBlur } from './confirm'
 import { useDialogFocus } from './Dialogs'
 
 interface Props {
@@ -21,7 +22,7 @@ export function PromptDialog({ title, label, initial = '', multiline, note, subm
   const dialogRef = useRef<HTMLFormElement>(null)
   useDialogFocus(dialogRef)
   // Typed text survives a stray Escape or scrim click until the user confirms discarding it.
-  const requestClose = () => { if (value === initial || window.confirm('Discard this text?')) onClose() }
+  const requestClose = async () => { if (value === initial || await confirmOverBlur('Discard this text?')) onClose() }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') requestClose() }
