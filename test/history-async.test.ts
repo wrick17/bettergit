@@ -218,6 +218,38 @@ const compareBase = () => commitItems(find(tree, (p) => p.input?.onCompare).inpu
 }
 console.log('paging cases passed')
 
+// A background refresh keeps the lanes on screen; an explicit refresh lays the graph out afresh, even when a background
+// refresh starts before its reply. The reply it replaced is dropped and does not use up the fresh layout.
+{
+  const history = window.bettergit.history
+  const commit = (hash, parents, refs = []) => ({ hash, parents, refs, author: 'x', date: 0, subject: hash })
+  const before = () => [commit('c', ['main']), commit('b', ['main']), commit('a', ['main']), commit('main', ['root'], ['HEAD -> main']), commit('root', [])]
+  let list = before
+  const held = []
+  let hold = false
+  window.bettergit.history = () => hold ? new Promise((resolve) => held.push(resolve)) : Promise.resolve(list())
+  props.refreshes = 0
+  await mount({ places: {} })
+  const lane = (hash) => find(tree, (p) => p.rows && p.onSelect).rows.find((row) => row.commit.hash === hash).lane
+  assert.equal(lane('c'), 1)
+  list = () => [commit('a2', ['a']), ...before()]
+  props.revision = 2; render(); await flush()
+  assert.equal(lane('c'), 1, 'a background refresh moved a commit already on screen')
+  hold = true
+  props.refreshes = 1; render(); await flush()
+  props.revision = 3; render(); await flush()
+  assert.equal(held.length, 2)
+  held[0](list()); await flush()
+  assert.equal(lane('c'), 1, 'the reply of a replaced request was applied')
+  held[1](list()); await flush()
+  assert.equal(lane('c'), 2, 'a background refresh swallowed the explicit refresh')
+  hold = false
+  props.revision = 1; delete props.refreshes
+  unmount()
+  window.bettergit.history = history
+}
+console.log('refresh layout cases passed')
+
 // A merge-base lookup started on A that answers after B is selected must not compare A under B's heading.
 await mount({ places: { '/repo': { commit: 'A' } } })
 await detail('A')
@@ -626,6 +658,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   expect(child.stdout.toString()).toContain('compare selection and restore cases passed')
   expect(child.stdout.toString()).toContain('paging cases passed')
+  expect(child.stdout.toString()).toContain('refresh layout cases passed')
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')

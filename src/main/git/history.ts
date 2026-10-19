@@ -37,11 +37,13 @@ function authorArgs(authors: string[]): string[] {
   return ['--basic-regexp', ...authors.map((name) => `--author=^${name.replace(/[\\.[\]*^$]/g, '\\$&')} <`)]
 }
 
-// Commits from every local and remote ref, newest topological first. Pages are offset-based and count only matching commits.
+// Commits from every local and remote ref, newest first. --date-order still lists every child before its parents but keeps
+// concurrent branches interleaved by time, like Sublime Merge, so a merge sits near the commits it brings in and the graph
+// holds few lines open at once. Pages are offset-based and count only matching commits.
 export async function readHistory(repo: string, skip: number, limit: number, authors: string[] = []): Promise<Commit[]> {
   const format = `%H${FIELD}%P${FIELD}%D${FIELD}%an${FIELD}%at${FIELD}%s${RECORD}`
   // Branches only: checkpoint and backup refs stay out of the list.
-  const output = await git(repo, ['log', '--branches', '--remotes', '--topo-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${format}`], {
+  const output = await git(repo, ['log', '--branches', '--remotes', '--date-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${format}`], {
     optionalLocks: true,
   })
   return parseLog(output)
