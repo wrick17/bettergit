@@ -1,12 +1,14 @@
-/* A row of icon actions that never clips. Items that do not fit move into a "..." menu. */
-/* The measuring copy and the visible row share one grid cell. The bar is as wide as all its items, so its parent can size to it and still shrink it. */
-.overflow-bar { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1 1 auto; min-width: 0; }
-.overflow-bar > * { grid-area: 1 / 1; min-width: 0; }
-/* Off-screen copy of every item, measured once so the bar knows how many fit. It is laid out but hidden. */
-.overflow-probe { display: flex; visibility: hidden; pointer-events: none; white-space: nowrap; }
-.overflow-row { display: flex; align-items: center; }
-.overflow-bar.end .overflow-row { justify-content: flex-end; }
-/* Each item keeps 2px after it. The measured width includes that gap. */
-.overflow-item { display: flex; align-items: center; flex: none; padding-right: 2px; }
+/* The title-bar "Actions" button and its menu (ActionsMenu). */
 .overflow-more { position: relative; flex: none; }
 .overflow-menu { top: calc(100% + 6px); right: 0; }
+.actions-trigger {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 12px;
+  border: 0; border-radius: var(--radius-pill); background: transparent; box-shadow: none;
+  color: var(--text-2); font-weight: 500; font-size: calc(13px + var(--ui-delta)); white-space: nowrap; cursor: default;
+}
+.actions-trigger:hover, .actions-trigger.on { background: var(--press); color: var(--text); }
+.actions-trigger:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.actions-trigger .chevron-down { width: 10px; height: 10px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; color: var(--text-3); }
+/* The key equivalent sits at the row's end, dimmer than the label, as in the macOS menu bar. */
+.popover .menu-shortcut { margin-left: auto; padding-left: 24px; font: inherit; color: var(--text-3); letter-spacing: 0.04em; }
+.popover button:hover:not(:disabled) .menu-shortcut { color: inherit; opacity: 0.75; }
