@@ -90,6 +90,8 @@ Issues and pull requests are welcome. Run `bun run typecheck` and `bun run test`
 
 ## Credits and trademarks
 
+The app icon and in-app icons are from [Lucide](https://lucide.dev) (the app icon uses [`git-branch-plus`](https://lucide.dev/icons/git-branch-plus)), licensed under the [ISC License](https://github.com/lucide-icons/lucide/blob/main/LICENSE). Copyright (c) 2026 Lucide Icons and Contributors.
+
 The [Git logo](https://git-scm.com/community/logos) by [Jason Long](https://bsky.app/profile/jasonlong.me) is licensed under the [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/). This README uses the unmodified black and white logomarks to refer to Git.
 
 Git and the Git logo are either registered trademarks or trademarks of Software Freedom Conservancy, Inc., corporate home of the Git Project, in the United States and/or other countries. BetterGit is not affiliated with or endorsed by the Git Project or Software Freedom Conservancy.
