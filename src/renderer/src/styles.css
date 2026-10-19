@@ -123,24 +123,7 @@
   --scrim: rgba(0, 0, 0, 0.5);
 }
 
-/* Accents from Settings. Each keeps its text colour readable on the theme's surfaces and white text readable on its fill. */
 :root[data-density='compact'] { --row-h: 24px; }
-:root[data-theme='light'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 14%, transparent); }
-:root[data-theme='dark'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 30%, transparent); }
-:root[data-theme='light'][data-accent='purple'] { --accent: #7536b3; --accent-fill: #8944d1; }
-:root[data-theme='dark'][data-accent='purple'] { --accent: #c69bff; --accent-fill: #8346c9; }
-:root[data-theme='light'][data-accent='pink'] { --accent: #b51f58; --accent-fill: #c92a64; }
-:root[data-theme='dark'][data-accent='pink'] { --accent: #ff85b0; --accent-fill: #c02a62; }
-:root[data-theme='light'][data-accent='red'] { --accent: #b8231c; --accent-fill: #c62c25; }
-:root[data-theme='dark'][data-accent='red'] { --accent: #ff8a80; --accent-fill: #c22f28; }
-:root[data-theme='light'][data-accent='orange'] { --accent: #9e4a00; --accent-fill: #b35300; }
-:root[data-theme='dark'][data-accent='orange'] { --accent: #ffad5c; --accent-fill: #ad5000; }
-:root[data-theme='light'][data-accent='green'] { --accent: #17702f; --accent-fill: #1d7d37; }
-:root[data-theme='dark'][data-accent='green'] { --accent: #66d983; --accent-fill: #1b7834; }
-:root[data-theme='light'][data-accent='teal'] { --accent: #096676; --accent-fill: #0b7385; }
-:root[data-theme='dark'][data-accent='teal'] { --accent: #5fd3e3; --accent-fill: #0a6f80; }
-:root[data-theme='light'][data-accent='graphite'] { --accent: #4a515c; --accent-fill: #5b626d; }
-:root[data-theme='dark'][data-accent='graphite'] { --accent: #c3c8d0; --accent-fill: #5b626d; }
 
 /* Registered so its computed value is a resolved length; HistoryView reads it for its virtual rows. */
 @property --row-h-eff { syntax: '<length>'; inherits: true; initial-value: 28px; }
@@ -150,8 +133,8 @@ html, body, #root { height: 100%; margin: 0; background: transparent; }
 body {
   font: calc(14px + var(--ui-delta))/1.45 var(--font-ui);
   color: var(--text);
-  /* Transparent so the window's native material shows through the glass panels. */
-  background: transparent;
+  /* Transparent so the window's native material shows through the glass panels. An extension theme paints --window. */
+  background: var(--window, transparent);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -454,6 +437,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .row-stat .del { color: var(--del); }
 .group li.active .row-stat .add, .group li.active .row-stat .del, .tree-row.selected .row-stat .add, .tree-row.selected .row-stat .del { color: var(--on-accent); }
 .file-icon { flex: none; width: 14px; height: 14px; }
+/* Icon themes with a separate light icon draw both; FileIcon.tsx. */
+:root[data-theme='light'] .icon-dark, :root[data-theme='dark'] .icon-light { display: none; }
 /* Badges are decorative (aria-hidden); the file name beside them carries the meaning. */
 
 /* A floating glass card pinned to the bottom of the list. */
@@ -898,6 +883,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .settings-section > h4 { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; }
 .setting-label { flex: 1 1 180px; display: grid; min-width: 0; }
 .settings-actions { display: flex; justify-content: flex-end; }
+.settings-note { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
+/* Publisher line, then at most two lines of description. */
+.extension-detail { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: pre-line; }
 /* Narrow windows keep the section icons and drop their names. */
 @media (max-width: 640px) {
   .settings-dialog > .dialog-body { grid-template-columns: 56px minmax(0, 1fr); }
@@ -905,10 +893,6 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   .settings-nav [role='tab'] { justify-content: center; padding: 0; }
 }
 
-.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-.swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15); }
-.swatch:hover:not(:disabled) { filter: brightness(1.1); }
-.swatch.on { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px var(--text-3); }
 
 .app-picker { display: grid; gap: 4px; justify-items: end; }
 .app-picker-trigger { display: flex; align-items: center; gap: 8px; min-width: 200px; max-width: 280px; height: 32px; padding: 0 10px 0 8px; text-align: left; }

@@ -5,7 +5,7 @@ import type { Marks, Mounted, Preview } from './cm-editor'
 import { Code } from './DiffView'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { charWidth, codeLine, columns, hscrollOf, useCodeMetrics } from './hscroll'
-import { useWordWrap } from './prefs'
+import { useLanguageOverrides, useWordWrap } from './prefs'
 import { originalText } from './original-text'
 import { RowChunk } from './row-chunk'
 import { suspendHold } from './scroll-anchor'
@@ -492,13 +492,15 @@ function dragged(event: ReactMouseEvent) {
 // Shiki colours for the static rows, in the same cache the editor reads, so it is coloured on its first frame.
 function usePreviewTokens(preview: Preview | null, language: string | null, layout: 'unified' | 'split') {
   const [tokens, setTokens] = useState<{ preview: Preview; old: Segment[][] | null; new: Segment[][] | null } | null>(null)
+  // A new identity on a syntax theme change, so the rows re-colour; the last colours stay until the new ones land.
+  const recoloured = useLanguageOverrides()
   // Rows coloured before they showed (or seen before) have their colours on their first frame.
   const cached = useMemo(() => {
     if (!preview || !language) return null
     const next = cachedTokens(preview.lines.join('\n'), language)
     const old = layout === 'split' ? cachedTokens(preview.old.join('\n'), language) : null
     return next && (layout !== 'split' || old) ? { preview, new: next, old: old ?? null } : null
-  }, [preview, language, layout])
+  }, [preview, language, layout, recoloured])
   useEffect(() => {
     if (!preview || !language || cached) return
     let stale = false

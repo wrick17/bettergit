@@ -28,13 +28,17 @@ export interface Appearance {
   codeFontSize: number
   // Empty means the system monospace font.
   codeFont: string
-  // A preset name from the renderer's accent list. Empty means the theme's own accent.
-  accent: string
   density: Density
+  // Theme refs from installed extensions (`<extension id>/<path>`). Empty means the built-in look.
+  lightTheme: string
+  darkTheme: string
+  iconTheme: string
 }
 
 // The app's look before appearance settings existed: bundled JetBrains Mono at 13px for code.
-export const DEFAULT_APPEARANCE: Appearance = { uiFontSize: 13, codeFontSize: 13, codeFont: 'JetBrains Mono', accent: '', density: 'comfortable' }
+export const DEFAULT_APPEARANCE: Appearance = {
+  uiFontSize: 13, codeFontSize: 13, codeFont: 'JetBrains Mono', density: 'comfortable', lightTheme: '', darkTheme: '', iconTheme: '',
+}
 
 export function isAppKind(value: unknown): value is AppKind {
   return value === 'editor' || value === 'terminal'

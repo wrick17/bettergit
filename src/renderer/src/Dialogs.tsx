@@ -2,9 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Keyb
 import { createPortal } from 'react-dom'
 import type { AppConfig, ConfigPatch, Settings, ThemeMode } from '../../main/config'
 import type { AppKind, Appearance, InstalledApp } from '../../shared/editors'
+import type { InstalledExtension, ThemeChoice } from '../../shared/themes'
 import { cachedAppIcon, cachedApps, fetchApps, loadAppIcon, storeApps } from './app-icons'
-import { ACCENTS, CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
+import { CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
+import { ExtensionSettings } from './ExtensionSettings'
 import { Icon, type IconName } from './Icons'
+import { forgetThemes, preloadThemes } from './themes'
 
 const api = window.bettergit
 
@@ -214,38 +217,6 @@ const DENSITIES: { value: Appearance['density']; label: string }[] = [
   { value: 'comfortable', label: 'Comfortable' },
 ]
 
-function Swatches({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return (
-    <div
-      className="swatches"
-      role="radiogroup"
-      aria-label="Accent colour"
-      onKeyDown={(event) => {
-        const index = arrowStep(event, ACCENTS.findIndex((accent) => accent.value === value), ACCENTS.length)
-        if (index === null) return
-        event.preventDefault()
-        onChange(ACCENTS[index].value)
-        ;(event.currentTarget.children[index] as HTMLElement).focus()
-      }}
-    >
-      {ACCENTS.map((accent) => (
-        <button
-          key={accent.label}
-          type="button"
-          role="radio"
-          aria-checked={accent.value === value}
-          aria-label={accent.label}
-          title={accent.label}
-          tabIndex={accent.value === value ? 0 : -1}
-          className={`swatch${accent.value === value ? ' on' : ''}`}
-          style={{ background: accent.swatch }}
-          onClick={() => onChange(accent.value)}
-        />
-      ))}
-    </div>
-  )
-}
-
 function AppIcon({ app, kind }: { app: InstalledApp | undefined; kind: AppKind }) {
   const [icon, setIcon] = useState(() => (app ? cachedAppIcon(app.path) ?? null : null))
   useEffect(() => {
@@ -420,12 +391,13 @@ function AppPicker({ kind, label, value, onChange }: {
   )
 }
 
-type SectionId = 'general' | 'appearance' | 'apps' | 'syntax'
+type SectionId = 'general' | 'appearance' | 'apps' | 'syntax' | 'extensions'
 const SECTIONS: { id: SectionId; label: string; icon: IconName }[] = [
   { id: 'general', label: 'General', icon: 'settings' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
   { id: 'apps', label: 'Editor & Terminal', icon: 'terminal' },
   { id: 'syntax', label: 'Syntax', icon: 'code' },
+  { id: 'extensions', label: 'Extensions', icon: 'extensions' },
 ]
 const SECTION_KEY = 'bettergit.settingsSection'
 
@@ -442,6 +414,31 @@ function Row({ label, help, htmlFor, children }: { label: string; help?: string;
 }
 
 const sizes = ({ min, max }: { min: number; max: number }) => Array.from({ length: max - min + 1 }, (_, index) => min + index)
+
+// A theme picker: the built-in look, then each extension's themes under its name. A saved theme that is not installed
+// (or not listed yet) keeps its own entry, so the picker never shows a choice that is not the saved one.
+function ThemeSelect({ id, value, builtIn, extensions, themes, onChange }: {
+  id: string
+  value: string
+  builtIn: string
+  extensions: InstalledExtension[] | null
+  themes: (extension: InstalledExtension) => ThemeChoice[]
+  onChange: (ref: string) => void
+}) {
+  const groups = (extensions ?? []).map((extension) => ({ extension, choices: themes(extension) })).filter((group) => group.choices.length)
+  const listed = !value || groups.some((group) => group.choices.some((choice) => choice.ref === value))
+  return (
+    <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{builtIn}</option>
+      {!listed && <option value={value}>{extensions ? 'Not installed' : 'Loading…'}</option>}
+      {groups.map(({ extension, choices }) => (
+        <optgroup key={extension.id} label={extension.name}>
+          {choices.map((choice) => <option key={choice.ref} value={choice.ref}>{choice.label}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  )
+}
 
 export function SettingsDialog({ config, onUpdate, onClose }: {
   config: AppConfig
@@ -488,6 +485,24 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
   const setAppearance = (patch: Partial<Appearance>) => writeAppearance({ ...appearanceRef.current, ...patch })
   const resetAppearance = () => writeAppearance({})
   const title = SECTIONS.find((entry) => entry.id === section)!.label
+
+  // Installed extensions, for the theme pickers and the Extensions section. Their themes load as soon as they are listed.
+  const [extensions, setExtensions] = useState<InstalledExtension[] | null>(null)
+  const listExtensions = () => api.listExtensions().then((list) => {
+    setExtensions(list)
+    preloadThemes(list)
+  }, () => setExtensions([]))
+  useEffect(() => { void listExtensions() }, [])
+  // An install or removal changes what the extension's refs point at. Removed themes fall back to the built-in look.
+  const extensionChanged = (id: string, removed: boolean) => {
+    forgetThemes(id)
+    void listExtensions()
+    const current = appearanceRef.current
+    const gone = (ref: string | undefined) => removed && !!ref?.startsWith(`${id}/`)
+    if (gone(current.lightTheme) || gone(current.darkTheme) || gone(current.iconTheme)) {
+      setAppearance(Object.fromEntries((['lightTheme', 'darkTheme', 'iconTheme'] as const).filter((key) => gone(current[key])).map((key) => [key, ''])))
+    } else applyAppearance(current)
+  }
 
   return (
     <Modal
@@ -560,8 +575,17 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
                 <Row label="Appearance">
                   <Segmented label="Appearance" options={THEMES} value={settings.theme} onChange={(theme) => set({ theme })} />
                 </Row>
-                <Row label="Accent colour" help="Selections, focus rings and primary buttons.">
-                  <Swatches value={appearance.accent} onChange={(accent) => setAppearance({ accent })} />
+                <Row label="Light theme" htmlFor="light-theme" help="Colours and syntax in light appearance.">
+                  <ThemeSelect id="light-theme" value={appearance.lightTheme} builtIn="BetterGit Light" extensions={extensions}
+                    themes={(extension) => extension.themes.filter((theme) => !theme.dark)} onChange={(lightTheme) => setAppearance({ lightTheme })} />
+                </Row>
+                <Row label="Dark theme" htmlFor="dark-theme" help="Colours and syntax in dark appearance.">
+                  <ThemeSelect id="dark-theme" value={appearance.darkTheme} builtIn="BetterGit Dark" extensions={extensions}
+                    themes={(extension) => extension.themes.filter((theme) => theme.dark)} onChange={(darkTheme) => setAppearance({ darkTheme })} />
+                </Row>
+                <Row label="File icons" htmlFor="icon-theme" help="Image icon themes. Icon-font themes fall back to the built-in icons.">
+                  <ThemeSelect id="icon-theme" value={appearance.iconTheme} builtIn="BetterGit (vscode-icons)" extensions={extensions}
+                    themes={(extension) => extension.iconThemes} onChange={(iconTheme) => setAppearance({ iconTheme })} />
                 </Row>
                 <Row label="Density" help="Row height in the sidebar and file lists.">
                   <Segmented label="Density" options={DENSITIES} value={appearance.density} onChange={(density) => setAppearance({ density })} />
@@ -612,6 +636,7 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
             </div>
           </section>
         )}
+        {section === 'extensions' && <ExtensionSettings extensions={extensions} onChanged={extensionChanged} />}
         {section === 'syntax' && (
           <section className="settings-section">
             <h4>Syntax highlighting</h4>

@@ -3,6 +3,7 @@ import { Decoration, drawSelection, EditorView, keymap, lineNumbers, ViewPlugin,
 import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands'
 import { Chunk, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
 import { cachedTokens, tokenize, type Segment } from './highlight'
+import { onRecolour } from './prefs'
 
 // One mounted diff editor. `replace` is an undoable edit; `sync` brings in a reload without touching the undo history.
 // `reveal` marks a find match: on the old side (split) or the current text, by 1-based line and offsets in that line.
@@ -237,6 +238,8 @@ function shikiColours(language: string | null): Extension {
     decorations: DecorationSet = Decoration.none
     timer: ReturnType<typeof setTimeout> | undefined
     gone = false
+    // A new syntax theme re-colours the text; the old colours stay until the new ones arrive.
+    offRecolour = onRecolour(() => this.schedule(0))
     constructor(readonly view: EditorView) {
       // Colours tokenised already (by the static rows shown before this editor) apply on its first frame.
       const cached = cachedTokens(view.state.doc.toString(), language)
@@ -263,6 +266,7 @@ function shikiColours(language: string | null): Extension {
     destroy() {
       this.gone = true
       clearTimeout(this.timer)
+      this.offRecolour()
     }
   }, { decorations: (plugin) => plugin.decorations })
 }

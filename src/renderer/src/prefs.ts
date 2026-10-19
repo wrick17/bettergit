@@ -78,6 +78,10 @@ const languageStore = createStore<Record<string, string>>({})
 
 export const setLanguageOverrides = languageStore.set
 
+// Views key their colours on this object's identity, so a new syntax theme (recolour) re-colours them as a language change does.
 export function useLanguageOverrides(): Record<string, string> {
   return useSyncExternalStore(languageStore.subscribe, languageStore.get)
 }
+
+export const recolour = () => languageStore.set({ ...languageStore.get() })
+export const onRecolour = languageStore.subscribe

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { applyAppearance } from './appearance'
+import { applyMode, useThemesReady } from './themes'
 import { createPortal } from 'react-dom'
-import type { AppConfig, ConfigPatch, ThemeMode } from '../../main/config'
+import type { AppConfig, ConfigPatch } from '../../main/config'
 import { EditorContext } from './editor-launch'
 import { OpenInAppButton, useSelectedApp } from './OpenInAppButton'
 import type { TreeNode, RepoNode } from '../../main/scan'
@@ -30,6 +31,7 @@ const PANEL_STYLE: CSSProperties = { display: 'flex', flexDirection: 'column', f
 export function App() {
   const [initial] = useState(loadSession)
   const [config, setConfig] = useState<AppConfig | null>(null)
+  const themesReady = useThemesReady()
   const [tree, setTree] = useState<TreeNode[]>([])
   const [selected, setSelected] = useState<string | null>(initial.selected)
   const [tab, setTab] = useState<'changes' | 'history'>(initial.tab)
@@ -148,20 +150,19 @@ export function App() {
     return off
   }, [refreshTree])
 
-  useEffect(() => {
-    // Keep the page in step with macOS light/dark when the setting is "system".
+  // Keep the page in step with macOS light/dark when the setting is "system". Until the config arrives, the mode restored
+  // at launch stays.
+  const themeMode = config?.settings.theme
+  useLayoutEffect(() => {
+    if (!themeMode) return
     const query = window.matchMedia('(prefers-color-scheme: dark)')
-    const apply = () => {
-      const mode: ThemeMode = config?.settings.theme ?? 'system'
-      const resolved = mode === 'system' ? (query.matches ? 'dark' : 'light') : mode
-      document.documentElement.dataset.theme = resolved
-    }
+    const apply = () => applyMode(themeMode)
     apply()
     query.addEventListener('change', apply)
     return () => query.removeEventListener('change', apply)
-  }, [config?.settings.theme])
+  }, [themeMode])
 
-  // Before paint, so the first frame with the config already has the chosen fonts, accent and density.
+  // Before paint, so the first frame with the config already has the chosen fonts, themes and density.
   useLayoutEffect(() => {
     if (config) applyAppearance(config.settings.appearance)
   }, [config?.settings.appearance])
@@ -220,7 +221,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
-  if (!config) return <div className="boot">Loading…</div>
+  if (!config || !themesReady) return <div className="boot">Loading…</div>
 
   return (
     <div

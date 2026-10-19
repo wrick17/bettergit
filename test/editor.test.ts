@@ -255,9 +255,9 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
     const merged = (await api.getConfig()).settings
     expect([merged.editorApp, merged.theme, merged.appearance, merged.customApps]).toEqual([custom.id, 'dark', { codeFontSize: 15 }, [custom]])
     // Appearance patches merge field by field: a one-field patch keeps the other saved fields.
-    await api.updateConfig({ settings: { appearance: { accent: 'blue', density: 'compact' } } })
+    await api.updateConfig({ settings: { appearance: { darkTheme: 'publisher.theme/dark.json', density: 'compact' } } })
     expect((await api.updateConfig({ settings: { appearance: { uiFontSize: 16 } } })).settings.appearance)
-      .toEqual({ codeFontSize: 15, accent: 'blue', density: 'compact', uiFontSize: 16 })
+      .toEqual({ codeFontSize: 15, darkTheme: 'publisher.theme/dark.json', density: 'compact', uiFontSize: 16 })
     // An update can drop custom apps but never add one: only the picker does.
     const injected = { ...custom, id: 'custom:editor:/Applications/Other.app', path: '/Applications/Other.app' }
     expect((await api.updateConfig({ settings: { customApps: [custom, injected] } })).settings.customApps).toEqual([custom])

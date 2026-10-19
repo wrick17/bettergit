@@ -98,6 +98,8 @@ function normalizeSettings(input: unknown): Settings {
   }
 }
 
+const themeRef = (value: unknown) => (typeof value === 'string' && value.length <= 500 && !/[\0\n]/.test(value) ? value : undefined)
+
 // Each field is kept only when valid, so a bad value falls back to its default alone.
 function normalizeAppearance(input: unknown): Partial<Appearance> {
   const source = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
@@ -108,9 +110,11 @@ function normalizeAppearance(input: unknown): Partial<Appearance> {
     codeFontSize: size(source.codeFontSize, 9, 24),
     // A CSS font-family list. Characters that could end the declaration are refused.
     codeFont: typeof source.codeFont === 'string' && source.codeFont.length <= 200 && !/[;{}<>\\]/.test(source.codeFont) ? source.codeFont : undefined,
-    // A preset name from the renderer's accent list. Empty is the theme's own accent.
-    accent: typeof source.accent === 'string' && /^[a-z]{0,20}$/.test(source.accent) ? source.accent : undefined,
     density: source.density === 'compact' || source.density === 'comfortable' ? source.density : undefined,
+    // Theme refs. Loading one checks it against the installed extensions, so this only bounds the string.
+    lightTheme: themeRef(source.lightTheme),
+    darkTheme: themeRef(source.darkTheme),
+    iconTheme: themeRef(source.iconTheme),
   }
   return Object.fromEntries(Object.entries(appearance).filter((entry) => entry[1] !== undefined))
 }
