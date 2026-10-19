@@ -47,7 +47,6 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
     const label = file.status === 'renamed' && file.oldPath && file.oldPath !== path ? `${file.oldPath} → ${path}` : path
     return (
       <button className={className} onClick={() => onSelect(path)} title={label} aria-label={`Show diff for ${label}, ${file.status}`}>
-        {!showDir && <span className="chevron-spacer" />}
         <FileIcon name={name} />
         <span className="path">
           <span className="path-name">{name}</span>

@@ -596,11 +596,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-info .commit-head { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overflow-wrap: anywhere; }
 .commit-info .commit-stat-block { flex: 1; min-height: 0; padding: 12px; grid-template-rows: auto minmax(0, 1fr) auto; }
 .commit-info .commit-stat-tree { padding-bottom: 0; }
-/* The commit tree copies the Changes tree: the same 8px inset from the panel edge, 6px row gaps, an empty column where
-   Changes has its 13px checkbox, and 8px between a file's icon and name. */
+/* The commit tree copies the Changes tree's 8px inset from the panel edge and 6px row gaps, puts a file's icon right
+   after its connector, and leaves 8px between the icon and name. */
 .commit-info .commit-stat-tree { margin-left: -4px; }
 .commit-stat-tree .commit-stat-row { gap: 6px; padding-right: 6px; }
-.commit-stat-tree .commit-stat-row > .chevron-spacer { width: 13px; }
 .commit-stat-tree .commit-stat-row > .file-icon { margin-right: 2px; }
 .commit-info .commit-stat-list { overflow: auto; }
 .commit-detail .compare-bar { flex-wrap: wrap; }
