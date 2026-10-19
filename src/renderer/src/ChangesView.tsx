@@ -1,9 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import { flushSync } from 'react-dom'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { DiffView } from './DiffView'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
-import { suspendHold } from './scroll-anchor'
+import { adoptView, mountNear, suspendHold } from './scroll-anchor'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { EmptyState } from './EmptyState'
@@ -142,28 +143,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   // those scroll events are not saved, and the position returns once the view's own result lays out.
   const paneTop = useRef<{ key: string; top: number } | null>(null)
   const hiddenFor = useRef<string | null>(null)
-  const scrollKeyRef = useRef(scrollKey)
-  scrollKeyRef.current = scrollKey
+  // A view still rendering in (onScreen, below) is not what the pane shows yet, so its scroll events are not its position.
   const onPaneScroll = (event: UIEvent<HTMLDivElement>) => {
-    if (!diffReady) return
+    if (!diffReady || !onScreen) return
     paneTop.current = { key: scrollKey, top: event.currentTarget.scrollTop }
     onDiffScroll(event)
   }
-  useEffect(() => {
-    if (!diffReady) {
-      hiddenFor.current = paneTop.current?.key === scrollKey ? scrollKey : null
-      return
-    }
-    const saved = paneTop.current
-    const element = paneRef.current
-    const restore = hiddenFor.current === scrollKey && saved?.key === scrollKey
-    hiddenFor.current = null
-    if (!restore || !saved || !element) return
-    // Rows lay out a frame after their data arrives, so the position is set after two frames, unless the view or pane changed.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (paneRef.current === element && scrollKeyRef.current === saved.key) element.scrollTop = saved.top
-    }))
-  }, [diffReady, scrollKey])
   const errorRef = useRef(onError)
   errorRef.current = onError
   const extraRef = useRef(extra)
@@ -204,6 +189,28 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, scrollKey, diffReady && onScreen,
     selection ? (pane) => revealFile(pane, selection.path, false, true, true) : undefined, { onScreen: true, skip: !!revealRef.current })
   const stats = useMemo(() => countStats(allShown), [allShown])
+  // The position returns before the frame that first shows the view's own result again, with the rows there mounted.
+  useLayoutEffect(() => {
+    if (!diffReady) {
+      hiddenFor.current = paneTop.current?.key === scrollKey ? scrollKey : null
+      return
+    }
+    if (!onScreen) return
+    const saved = paneTop.current
+    const element = paneRef.current
+    const restore = hiddenFor.current === scrollKey && saved?.key === scrollKey
+    hiddenFor.current = null
+    if (!restore || !saved || !element) return
+    adoptView(element)
+    element.scrollTop = saved.top
+    mountNear(element)
+  }, [diffReady, scrollKey, onScreen])
+  // The file list changes in the frame the pane shows the view it leads to. While that view is loaded but still rendering
+  // (a few frames), the list keeps its rows, counts and highlight, so the list and the diff never disagree.
+  const listShown = useRef({ status: shownStatus, selection, stats })
+  if (!detailOpen || !diffReady || onScreen) listShown.current = { status: shownStatus, selection, stats }
+  const listed = listShown.current
+  const listChanges = useMemo(() => (listed.status === shownStatus ? { staged, unstaged, conflicted } : sectionsOf(listed.status)), [listed.status, shownStatus, staged, unstaged, conflicted])
   const List = view === 'tree' ? Tree : Group
 
   // A widen belongs to this load and source file, even if the same path is selected again later.
@@ -567,10 +574,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             {clean && <p className="file-list-empty">No changed files</p>}
             <List
               title="Staged"
-              changes={staged}
+              changes={listChanges.staged}
               staged
-              selection={selection}
-              stats={stats}
+              selection={listed.selection}
+              stats={listed.stats}
               collapsed={collapsed}
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, true)}
@@ -578,13 +585,13 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
               onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
               busy={busy}
             />
-            {conflicted.length > 0 && (
+            {listChanges.conflicted.length > 0 && (
               <List
                 title="Conflicts"
-                changes={conflicted}
+                changes={listChanges.conflicted}
                 staged={false}
-                selection={selection}
-                stats={stats}
+                selection={listed.selection}
+                stats={listed.stats}
                 collapsed={collapsed}
                 onToggleFolder={toggleFolder}
                 onSelect={(change) => choose(change, false)}
@@ -594,10 +601,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
             )}
             <List
               title="Unstaged"
-              changes={unstaged}
+              changes={listChanges.unstaged}
               staged={false}
-              selection={selection}
-              stats={stats}
+              selection={listed.selection}
+              stats={listed.stats}
               collapsed={collapsed}
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, false)}
@@ -683,12 +690,13 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
                 </section>
               )
           })}
+          {/* Staging and editing follow the section on screen, so the files there keep their rows until the other section's show. */}
           {selection && !conflictSelected && (
             <DiffView
               files={selectedFiles}
               moves={selectedShown?.moves ?? NO_FILES.moves}
-              stage={{ staged: selection.staged, disabled: !!busy, onToggle: togglePath }}
-              edit={selection.staged ? undefined : edit}
+              stage={{ staged: listed.selection?.staged ?? selection.staged, disabled: !!busy, onToggle: togglePath }}
+              edit={(listed.selection?.staged ?? selection.staged) ? undefined : edit}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
@@ -730,6 +738,15 @@ function sameFingerprint(a: ConflictFingerprint, b: ConflictFingerprint): boolea
   return a.working === b.working && a.stages === b.stages
 }
 
+// The file list's sections of a status. Conflicted files have their own section.
+function sectionsOf(status: RepoStatus) {
+  return {
+    staged: status.changes.filter((change) => change.staged),
+    unstaged: status.changes.filter((change) => change.unstaged && !change.conflicted),
+    conflicted: status.changes.filter((change) => change.conflicted),
+  }
+}
+
 // The file open last time, if it is still in the changes. A file that is gone opens with no selection.
 function savedSelection(repo: string, status: RepoStatus): Selection | null {
   const place = loadSession().places[repo]
@@ -754,6 +771,7 @@ function revealFile(pane: HTMLElement | null, path: string, picked = false, glid
   const still = !picked || !glide || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   if (still && !held) suspendHold(pane)
   section.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' })
+  if (still) mountNear(pane)
   void settleOn(pane, find)
   if (!picked) return
   section.classList.remove('revealed')
@@ -785,7 +803,14 @@ async function settleOn(pane: HTMLElement, find: () => HTMLElement | undefined) 
     rested ||= performance.now()
     const section = find()
     if (!section) break
+    // Only a move is the pane's own, so the hold stays on for the frames the file is already in place.
+    const from = pane.scrollTop
+    section.scrollIntoView({ block: 'start' })
+    if (pane.scrollTop === from) continue
     suspendHold(pane)
+    // Outside React's commit, so the rows mount through flushSync to make this frame. Rows mounted above the file move it,
+    // and the hold is off, so it is put back once more.
+    flushSync(() => mountNear(pane))
     section.scrollIntoView({ block: 'start' })
   }
   events.forEach((name) => pane.removeEventListener?.(name, stop))

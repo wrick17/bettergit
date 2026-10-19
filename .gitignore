@@ -2,6 +2,7 @@ node_modules/
 out/
 fixtures/
 dist/
+.DS_Store
 
 # Signing material never belongs in the repo.
 *.p12

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject, type UIEvent } from 'react'
-import { adoptView } from './scroll-anchor'
+import { adoptView, mountNear } from './scroll-anchor'
 
 // The last state the user left the window in. Kept in localStorage, so a renderer reload returns to the same spot.
 const KEY = 'bettergit.session'
@@ -111,6 +111,7 @@ export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, 
     if (onScreen) {
       if (top === null) fallback?.(element)
       else element.scrollTop = top
+      mountNear(element)
       return
     }
     // Rows and diffs lay out a frame after their data arrives, so the position is set after two frames.

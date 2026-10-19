@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWordWrap } from './prefs'
-import { holdPlace } from './scroll-anchor'
+import { holdPlace, isNear, watchNear } from './scroll-anchor'
 
 // Rows mount in chunks, and only near the screen: a large diff costs about one screen of rows to render, toggle or
 // scroll. Chunks above and below keep their last measured height, so the scrollbar and scroll position hold still.
@@ -61,15 +61,17 @@ export function RowChunk({ rows, lines, range, pinned, render, estimate }: { row
   useLayoutEffect(() => {
     const element = ref.current
     if (!element || typeof IntersectionObserver === 'undefined') return
-    const box = element.getBoundingClientRect()
-    if (box.bottom > -1200 && box.top < window.innerHeight + 1200) setNear(true)
-    const release = holdPlace(element)
+    const check = () => { if (isNear(element.getBoundingClientRect())) setNear(true) }
+    check()
+    const release = holdPlace(element, false, element.firstChild ? undefined : height.current)
+    const unwatch = watchNear(element, check)
     const stop = observeChunk(element, (next) => {
       if (!next && element.firstChild) height.current = element.offsetHeight
       setNear(next)
     })
     return () => {
       stop()
+      unwatch()
       release()
     }
   }, [])

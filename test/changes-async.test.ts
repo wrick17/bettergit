@@ -269,8 +269,9 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
   const tick = () => { const run = [...frames.values()]; frames.clear(); run.forEach((callback) => callback()) }
   const revealed = []
-  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path), classList: { add() {}, remove() {} } }))
-  const pane = { scrollTop: 400, querySelectorAll: () => sections }
+  const box = () => ({ top: 0, bottom: 0 })
+  const sections = ['a.ts', 'b.ts'].map((path) => ({ dataset: { path }, scrollIntoView: () => revealed.push(path), classList: { add() {}, remove() {} }, getBoundingClientRect: box }))
+  const pane = { scrollTop: 400, querySelectorAll: () => sections, getBoundingClientRect: box }
   stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
   setContextLines(3); setIgnoreWhitespace(false)
   stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'a.ts', staged: false } } }))
@@ -434,21 +435,24 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     unmount()
   }
 } else if (process.env.CHECK_MODE === 'option-scroll') {
-  // The pane models the browser: its height follows the files on screen once a frame lays them out, a shorter pane clamps
-  // scrollTop, and a clamp fires the pane's scroll event. A scrolled view keeps its place through an option reload.
+  // The pane models the browser: its height follows the files on screen (a view shown is laid out before it paints), a
+  // shorter pane clamps scrollTop at the next frame, and a clamp fires the pane's scroll event. A scrolled view keeps its
+  // place through an option reload.
   const frames = new Map()
   let nextFrame = 1
   globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
   globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
   let top = 0
-  const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [] }
+  const pane = { clientHeight: 100, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0, bottom: 100 }) }
   Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
-  const scrolled = () => find(tree, (p) => p.className === 'diff-pane').onScroll({ currentTarget: pane })
-  const frame = () => {
+  Object.defineProperty(pane, 'scrollHeight', { get: () => {
     const shown = []
     const walk = (node) => { for (const child of Array.isArray(node) ? node : [node]) if (react.isValidElement(child)) { if (Array.isArray(child.props.files) && child.props.stage) shown.push(...child.props.files); walk(child.props.children) } }
     walk(tree)
-    pane.scrollHeight = shown.length ? 3000 : 40
+    return shown.length ? 3000 : 40
+  } })
+  const scrolled = () => find(tree, (p) => p.className === 'diff-pane').onScroll({ currentTarget: pane })
+  const frame = () => {
     const before = pane.scrollTop
     pane.scrollTop = before
     if (pane.scrollTop !== before) scrolled()
