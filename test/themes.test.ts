@@ -2,7 +2,10 @@ import { afterAll, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, promises as fsPromises, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { runInNewContext } from 'node:vm'
+import { DEFAULT_APPEARANCE } from '../src/shared/editors'
 import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
+import * as shared from '../src/shared/themes'
 import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
 
 const root = mkdtempSync(path.join(tmpdir(), 'bettergit-themes-'))
@@ -169,4 +172,49 @@ test('icon caps are checked from the map and file sizes before any image is read
   } finally {
     fsPromises.readFile = original
   }
+})
+
+test('the last theme pick applies once it loads, an earlier slower load never covers it, and nothing shows applied early', async () => {
+  // themes.ts compiled in memory, as branch-picker.test.tsx does, with icon theme loads that finish when the test says.
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/themes.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  expect(compiled.success).toBe(true)
+  const finish = new Map<string, () => void>()
+  const iconTheme = (ref: string) => new Promise((resolve) => finish.set(ref, () => resolve({ name: ref, icons: {}, fontIcons: 0, fileExtensions: {}, fileNames: {}, languageIds: {}, light: {} })))
+  const imports: Record<string, unknown> = { react: { useSyncExternalStore: (_: unknown, get: () => unknown) => get() }, '../../shared/themes': shared, './highlight': { setSyntaxThemes() {} } }
+  const module = { exports: {} as any }
+  runInNewContext(await compiled.outputs[0].text(), {
+    module, exports: module.exports, console, require: (id: string) => imports[id] ?? {},
+    window: { bettergit: { iconTheme, colorTheme: async () => null } },
+    document: { getElementById: () => null },
+    localStorage: { setItem() {}, removeItem() {} },
+  })
+  const themes = module.exports
+  const pick = (ref: string) => themes.applyThemes({ ...DEFAULT_APPEARANCE, iconTheme: ref })
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+  // What the picker shows and what FileIcon draws.
+  const shown = () => [themes.useAppliedThemes().iconTheme, themes.useIconTheme()?.name ?? '']
+
+  pick('a.x/slow.json')
+  pick('b.x/fast.json')
+  expect(shown()).toEqual(['', ''])
+  finish.get('b.x/fast.json')!()
+  await settle()
+  expect(shown()).toEqual(['b.x/fast.json', 'b.x/fast.json'])
+  finish.get('a.x/slow.json')!()
+  await settle()
+  expect(shown()).toEqual(['b.x/fast.json', 'b.x/fast.json'])
+
+  // A then B where A lands first: A never shows, and B applies when it lands.
+  pick('c.x/first.json')
+  pick('d.x/second.json')
+  finish.get('c.x/first.json')!()
+  await settle()
+  expect(shown()).toEqual(['b.x/fast.json', 'b.x/fast.json'])
+  finish.get('d.x/second.json')!()
+  await settle()
+  expect(shown()).toEqual(['d.x/second.json', 'd.x/second.json'])
+
+  // A loaded theme applies in the same task.
+  pick('c.x/first.json')
+  expect(shown()).toEqual(['c.x/first.json', 'c.x/first.json'])
 })

@@ -162,9 +162,12 @@ export function App() {
     return () => query.removeEventListener('change', apply)
   }, [themeMode])
 
-  // Before paint, so the first frame with the config already has the chosen fonts, themes and density.
+  // Before paint, so the first frame with the config already has the chosen fonts, themes and density. While Settings is
+  // open it applies its own changes, and the config echo of a quick change can arrive after a newer one, so it is skipped.
+  const settingsOpenRef = useRef(settingsOpen)
+  settingsOpenRef.current = settingsOpen
   useLayoutEffect(() => {
-    if (config) applyAppearance(config.settings.appearance)
+    if (config && !settingsOpenRef.current) applyAppearance(config.settings.appearance)
   }, [config?.settings.appearance])
 
   useEffect(() => {

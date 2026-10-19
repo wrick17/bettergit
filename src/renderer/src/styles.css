@@ -883,6 +883,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .settings-section > h4 { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; }
 .setting-label { flex: 1 1 180px; display: grid; min-width: 0; }
 .settings-actions { display: flex; justify-content: flex-end; }
+/* Theme pickers keep their status slot whether or not it shows anything, so a loading or error mark never moves the select. */
+.theme-picker { display: inline-flex; align-items: center; gap: 8px; }
+.theme-status { display: inline-grid; place-items: center; width: 16px; height: 16px; color: var(--text-3); }
+.theme-status svg { width: 16px; height: 16px; }
+.theme-status.broken { color: var(--del); }
 .settings-note { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
 /* Publisher line, then at most two lines of description. */
 .extension-detail { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: pre-line; }

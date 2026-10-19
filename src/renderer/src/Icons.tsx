@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent }
 import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, Columns2, Columns3,
-  CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCompare,
+  CircleAlert, CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
   MousePointerClick, Palette, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
 } from 'lucide-react'
@@ -61,6 +61,7 @@ const ICONS = {
   settings: Settings,
   palette: Palette,
   extensions: Blocks,
+  warning: CircleAlert,
   trash: Trash2,
   unfold: UnfoldVertical,
   wrap: WrapText,

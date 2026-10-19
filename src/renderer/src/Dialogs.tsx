@@ -7,7 +7,7 @@ import { cachedAppIcon, cachedApps, fetchApps, loadAppIcon, storeApps } from './
 import { CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
 import { ExtensionSettings } from './ExtensionSettings'
 import { Icon, type IconName } from './Icons'
-import { forgetThemes, preloadThemes } from './themes'
+import { forgetThemes, isThemeBroken, preloadThemes, useAppliedThemes, warmThemes } from './themes'
 
 const api = window.bettergit
 
@@ -416,12 +416,14 @@ function Row({ label, help, htmlFor, children }: { label: string; help?: string;
 const sizes = ({ min, max }: { min: number; max: number }) => Array.from({ length: max - min + 1 }, (_, index) => min + index)
 
 // A theme picker: the built-in look, then each extension's themes under its name. A saved theme that is not installed
-// (or not listed yet) keeps its own entry, so the picker never shows a choice that is not the saved one. Its themes load
-// on focus or press, before the menu opens (themes.ts).
-function ThemeSelect({ id, kind, value, builtIn, extensions, themes, onChange }: {
+// (or not listed yet) keeps its own entry, so the picker never shows a choice that is not the saved one. It shows the
+// theme on screen (`value`); while a pick (`wanted`) still loads, it keeps that and spins in a slot that is always there,
+// so nothing moves. Its themes load on focus or press, before the menu opens (themes.ts).
+function ThemeSelect({ id, kind, value, wanted, builtIn, extensions, themes, onChange }: {
   id: string
   kind: 'color' | 'icons'
   value: string
+  wanted: string
   builtIn: string
   extensions: InstalledExtension[] | null
   themes: (extension: InstalledExtension) => ThemeChoice[]
@@ -430,16 +432,23 @@ function ThemeSelect({ id, kind, value, builtIn, extensions, themes, onChange }:
   const groups = (extensions ?? []).map((extension) => ({ extension, choices: themes(extension) })).filter((group) => group.choices.length)
   const listed = !value || groups.some((group) => group.choices.some((choice) => choice.ref === value))
   const preload = () => preloadThemes(kind, groups.flatMap((group) => group.choices.map((choice) => choice.ref)))
+  const loading = wanted !== value
+  const status = loading ? 'Loading theme…' : value && isThemeBroken(kind, value) ? 'This theme could not be loaded.' : ''
   return (
-    <select id={id} value={value} onFocus={preload} onPointerDown={preload} onChange={(event) => onChange(event.target.value)}>
-      <option value="">{builtIn}</option>
-      {!listed && <option value={value}>{extensions ? 'Not installed' : 'Loading…'}</option>}
-      {groups.map(({ extension, choices }) => (
-        <optgroup key={extension.id} label={extension.name}>
-          {choices.map((choice) => <option key={choice.ref} value={choice.ref}>{choice.label}</option>)}
-        </optgroup>
-      ))}
-    </select>
+    <span className="theme-picker">
+      <span className={`theme-status${loading ? '' : ' broken'}`} role={status ? 'img' : undefined} aria-label={status || undefined} title={status || undefined}>
+        {status && <Icon name={loading ? 'loader' : 'warning'} className={loading ? 'action-spin' : undefined} />}
+      </span>
+      <select id={id} value={value} aria-busy={loading} onFocus={preload} onPointerDown={preload} onChange={(event) => onChange(event.target.value)}>
+        <option value="">{builtIn}</option>
+        {!listed && <option value={value}>{extensions ? 'Not installed' : 'Loading…'}</option>}
+        {groups.map(({ extension, choices }) => (
+          <optgroup key={extension.id} label={extension.name}>
+            {choices.map((choice) => <option key={choice.ref} value={choice.ref}>{choice.label}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </span>
   )
 }
 
@@ -493,6 +502,12 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
   const [extensions, setExtensions] = useState<InstalledExtension[] | null>(null)
   const listExtensions = () => api.listExtensions().then(setExtensions, () => setExtensions([]))
   useEffect(() => { void listExtensions() }, [])
+  // The installed themes load one at a time while idle, so most picks apply at once. Caps in main bound each load.
+  useEffect(() => extensions ? warmThemes(extensions.flatMap((extension) => [
+    ...extension.themes.map(({ ref }) => ({ kind: 'color' as const, ref })),
+    ...extension.iconThemes.map(({ ref }) => ({ kind: 'icons' as const, ref })),
+  ])) : undefined, [extensions])
+  const applied = useAppliedThemes()
   // An install or removal changes what the extension's refs point at. Removed themes fall back to the built-in look.
   const extensionChanged = (id: string, removed: boolean) => {
     forgetThemes(id)
@@ -576,15 +591,15 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
                   <Segmented label="Appearance" options={THEMES} value={settings.theme} onChange={(theme) => set({ theme })} />
                 </Row>
                 <Row label="Light theme" htmlFor="light-theme" help="Colours and syntax in light appearance.">
-                  <ThemeSelect id="light-theme" kind="color" value={appearance.lightTheme} builtIn="BetterGit Light" extensions={extensions}
+                  <ThemeSelect id="light-theme" kind="color" value={applied.lightTheme} wanted={appearance.lightTheme} builtIn="BetterGit Light" extensions={extensions}
                     themes={(extension) => extension.themes.filter((theme) => !theme.dark)} onChange={(lightTheme) => setAppearance({ lightTheme })} />
                 </Row>
                 <Row label="Dark theme" htmlFor="dark-theme" help="Colours and syntax in dark appearance.">
-                  <ThemeSelect id="dark-theme" kind="color" value={appearance.darkTheme} builtIn="BetterGit Dark" extensions={extensions}
+                  <ThemeSelect id="dark-theme" kind="color" value={applied.darkTheme} wanted={appearance.darkTheme} builtIn="BetterGit Dark" extensions={extensions}
                     themes={(extension) => extension.themes.filter((theme) => theme.dark)} onChange={(darkTheme) => setAppearance({ darkTheme })} />
                 </Row>
                 <Row label="File icons" htmlFor="icon-theme" help="Image icon themes. Icon-font themes fall back to the built-in icons.">
-                  <ThemeSelect id="icon-theme" kind="icons" value={appearance.iconTheme} builtIn="BetterGit (vscode-icons)" extensions={extensions}
+                  <ThemeSelect id="icon-theme" kind="icons" value={applied.iconTheme} wanted={appearance.iconTheme} builtIn="BetterGit (vscode-icons)" extensions={extensions}
                     themes={(extension) => extension.iconThemes} onChange={(iconTheme) => setAppearance({ iconTheme })} />
                 </Row>
                 <Row label="Density" help="Row height in the sidebar and file lists.">
