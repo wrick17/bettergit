@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- macOS icon grid: 824px rounded-square body inset 100px on a 1024px canvas -->
+  <!-- Glyph: Lucide git-branch-plus (ISC, Lucide Icons and Contributors), stroke widened for small sizes -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2f37"/>
+      <stop offset="1" stop-color="#111317"/>
+    </linearGradient>
+    <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="0" y1="3" x2="0" y2="21">
+      <stop offset="0" stop-color="#ffd25e"/>
+      <stop offset="1" stop-color="#f2ad1d"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <g transform="translate(512 512) scale(24) translate(-12 -12)" fill="none" stroke="url(#gold)" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3v12"/>
+    <path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+    <path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+    <path d="M15 6a9 9 0 0 0-9 9"/>
+    <path d="M18 15v6"/>
+    <path d="M21 18h-6"/>
+  </g>
+</svg>

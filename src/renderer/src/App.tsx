@@ -13,7 +13,7 @@ import { Sidebar } from './Sidebar'
 import type { MenuAction } from '../../main/menu'
 import { ChangesView } from './ChangesView'
 import { HistoryView } from './HistoryView'
-import { OverflowBar } from './OverflowBar'
+import { ActionsMenu } from './OverflowBar'
 import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
 import { CloneDialog, SettingsDialog } from './Dialogs'
 import { BranchPicker } from './BranchPicker'
@@ -332,13 +332,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
 }) {
   return (
     <div className="empty">
-      <svg className="empty-mark" viewBox="0 0 52 52" aria-hidden="true">
-        <path d="M14 18v16" />
-        <path d="M38 19c0 7-24 4-24 13" />
-        <circle cx="14" cy="13" r="4.5" />
-        <circle cx="14" cy="39" r="4.5" />
-        <circle cx="38" cy="14" r="4.5" />
-      </svg>
+      <Icon name="brand" className="empty-mark" />
       <h1>BetterGit</h1>
       <p>{hasSources ? 'Select a repository in the sidebar to see its changes and history.' : 'Add a folder of projects, or drop one into the sidebar.'}</p>
       <div className="empty-actions">
@@ -451,7 +445,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
             )}
           </div>
           <div className="toolbar-actions">
-            <OverflowBar items={repoItems({
+            <ActionsMenu items={repoItems({
               repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,
             })} />
             {/* Read-only launches, so they stay usable while a Git write runs. */}
