@@ -300,7 +300,7 @@ export async function searchOpenVsx(query: unknown): Promise<ExtensionResult[]> 
     : []))
 }
 
-export async function installFromOpenVsx(root: string, namespace: unknown, name: unknown): Promise<InstalledExtension> {
+async function downloadFromOpenVsx(namespace: unknown, name: unknown): Promise<Buffer> {
   if (!PART.test(text(namespace)) || !PART.test(text(name))) throw new Error('Unknown extension.')
   const meta = await (await fetchOk(`${OPEN_VSX}/${namespace}/${name}`)).json() as { files?: { download?: unknown } }
   const download = text(meta.files?.download)
@@ -320,7 +320,11 @@ export async function installFromOpenVsx(root: string, namespace: unknown, name:
     }
     chunks.push(read.value)
   }
-  return installVsix(root, Buffer.concat(chunks))
+  return Buffer.concat(chunks)
+}
+
+export async function installFromOpenVsx(root: string, namespace: unknown, name: unknown): Promise<InstalledExtension> {
+  return installVsix(root, await downloadFromOpenVsx(namespace, name))
 }
 
 export async function installVsixFile(root: string, file: string): Promise<InstalledExtension> {
@@ -454,18 +458,37 @@ function previewIcons(theme: IconTheme): IconTheme {
   return { ...theme, icons: Object.fromEntries(Object.entries(theme.icons).filter(([id]) => ids.has(id))) }
 }
 
-// Downloads, unpacks and checks an extension exactly as an install does, but into a temporary folder that is deleted
-// once its themes are in memory, so a preview never installs or keeps anything.
-export async function previewFromOpenVsx(namespace: unknown, name: unknown): Promise<ExtensionPreview> {
+// Most themes one preview loads, and the bytes they may add up to once loaded. Real packs stay far below (Catppuccin's
+// four colour themes come to 187 KB); the caps stop a small package that repeats contributions from building gigabytes.
+const MAX_PREVIEW_THEMES = 24
+const MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+
+// Unpacks and checks a .vsix exactly as an install does, but into a temporary folder that is deleted once its themes are
+// in memory, so a preview never installs or keeps anything. Themes load one at a time, each trimmed before the next, so
+// at most one full theme is held while the total is counted against the budget.
+export async function previewVsix(data: Buffer): Promise<ExtensionPreview> {
   const root = await fs.mkdtemp(path.join(tmpdir(), 'bettergit-preview-'))
   try {
-    const extension = await installFromOpenVsx(root, namespace, name)
-    const [colorThemes, iconThemes] = await Promise.all([
-      Promise.all(extension.themes.map((theme) => loadColorTheme(root, theme.ref).catch(() => null))),
-      Promise.all(extension.iconThemes.map((theme) => loadIconTheme(root, theme.ref).then((icons) => icons && previewIcons(icons), () => null))),
-    ])
+    const extension = await installVsix(root, data)
+    const count = extension.themes.length + extension.iconThemes.length
+    if (count > MAX_PREVIEW_THEMES) throw new Error(`${extension.name} has ${count} themes, more than the ${MAX_PREVIEW_THEMES} a preview can show.`)
+    let bytes = 0
+    const counted = async <T>(load: Promise<T | null>) => {
+      const theme = await load.catch(() => null)
+      bytes += JSON.stringify(theme).length
+      if (bytes > MAX_PREVIEW_BYTES) throw new Error(`${extension.name}'s themes add up to more than ${MAX_PREVIEW_BYTES / 1024 / 1024} MB, too large to preview.`)
+      return theme
+    }
+    const colorThemes: (ColorTheme | null)[] = []
+    for (const theme of extension.themes) colorThemes.push(await counted(loadColorTheme(root, theme.ref)))
+    const iconThemes: (IconTheme | null)[] = []
+    for (const theme of extension.iconThemes) iconThemes.push(await counted(loadIconTheme(root, theme.ref).then((icons) => icons && previewIcons(icons))))
     return { extension, colorThemes, iconThemes }
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }
+}
+
+export async function previewFromOpenVsx(namespace: unknown, name: unknown): Promise<ExtensionPreview> {
+  return previewVsix(await downloadFromOpenVsx(namespace, name))
 }
