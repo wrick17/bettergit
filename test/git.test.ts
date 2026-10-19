@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git } from '../src/main/git/exec'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
@@ -9,7 +9,7 @@ import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/d
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
-import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, resetToUpstream, cherryPick } from '../src/main/git/ops'
+import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -1311,4 +1311,112 @@ describe('writes that could overwrite untracked or ignored files', () => {
     await resetToUpstream(local)
     expect(read(local, 'CAFÉ.txt')).toBe('tracked\n')
   })
+
+  // HEAD has a folder `slot` where the change adds a file, so Git moves that file aside to slot~<label>, a label only the
+  // operation picks: a commit's abbreviated hash and subject, or Stashed changes.
+  for (const kind of ['cherry-pick', 'root cherry-pick', 'stash apply'] as const) {
+    test(`a ${kind} keeps an ignored file where Git moves a conflicting file aside`, async () => {
+      const { local } = await fixture()
+      writeFileSync(path.join(local, '.git', 'info', 'exclude'), 'slot~*\n')
+      writeFileSync(path.join(local, 'slot'), 'COMMITTED=1\n')
+      await git(local, ['add', 'slot'])
+      let target = 'stash@{0}'
+      if (kind === 'stash apply') await git(local, ['stash', 'push', '-qm', 'add slot'])
+      else {
+        await git(local, ['commit', '-qm', 'add slot'])
+        target = kind === 'cherry-pick' ? await sha(local)
+          : (await git(local, ['commit-tree', '-m', 'add slot', 'HEAD^{tree}'])).trim()
+        await git(local, ['reset', '-q', '--hard', 'HEAD^'])
+      }
+      const aside = kind === 'stash apply' ? 'slot~Stashed changes' : `slot~${(await git(local, ['rev-parse', '--short', target])).trim()} (add slot)`
+      mkdirSync(path.join(local, 'slot'))
+      writeFileSync(path.join(local, 'slot', 'a'), 'a\n')
+      await git(local, ['add', 'slot/a'])
+      await git(local, ['commit', '-qm', 'add folder'])
+      writeFileSync(path.join(local, aside), 'SECRET=local\n')
+      const head = await sha(local), staged = await index(local), stashes = await git(local, ['stash', 'list'])
+      const run = () => kind === 'stash apply' ? stashAction(local, 'apply', target) : cherryPick(local, target)
+      await expect(run()).rejects.toThrow(`files: ${aside}. Move`)
+      expect(read(local, aside)).toBe('SECRET=local\n')
+      expect(await sha(local)).toBe(head)
+      expect(await index(local)).toBe(staged)
+      expect(await git(local, ['stash', 'list'])).toBe(stashes)
+      expect(await git(local, ['status', '--porcelain'])).toBe('')
+      // With the name free, Git's own conflict goes ahead as usual.
+      unlinkSync(path.join(local, aside))
+      await expect(run()).rejects.toThrow()
+      expect(read(local, aside)).toBe('COMMITTED=1\n')
+    })
+  }
+
+  test('a rebase pull that rebase.rebaseMerges would redo merges for is refused before it writes', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'f.txt': 'base\n', 'D/a': 'a\n', 'D/b': 'b\n' }, 'common base')
+    await git(local, ['pull', '-q'])
+    // A side branch edits f.txt and adds D/new.secret while main edits f.txt and renames D to E. Their merge puts the
+    // secret at E/new.secret and a later commit removes it, so only redoing that merge writes it.
+    await git(local, ['switch', '-qc', 'side'])
+    writeFileSync(path.join(local, 'f.txt'), 'side\n')
+    await git(local, ['commit', '-qam', 'side edits f'])
+    writeFileSync(path.join(local, 'D', 'new.secret'), 'COMMITTED=1\n')
+    await git(local, ['add', '-f', 'D/new.secret'])
+    await git(local, ['commit', '-qm', 'side adds secret'])
+    await git(local, ['switch', '-q', 'main'])
+    writeFileSync(path.join(local, 'f.txt'), 'main\n')
+    await git(local, ['commit', '-qam', 'main edits f'])
+    await git(local, ['mv', 'D', 'E'])
+    await git(local, ['commit', '-qm', 'main renames D'])
+    await expect(git(local, ['merge', '-q', '--no-edit', 'side'])).rejects.toThrow()
+    writeFileSync(path.join(local, 'f.txt'), 'resolved\n')
+    await git(local, ['add', '-f', '.'])
+    await git(local, ['commit', '-qm', 'merge side'])
+    await git(local, ['rm', '-q', 'E/new.secret'])
+    await git(local, ['commit', '-qm', 'remove secret'])
+    await publish(other, { 'up.txt': 'up\n' }, 'upstream advances')
+    await git(local, ['config', 'rebase.rebaseMerges', 'true'])
+    writeFileSync(path.join(local, 'E', 'new.secret'), 'SECRET=local\n')
+    const head = await sha(local), staged = await index(local)
+    await expect(pull(local, 'rebase')).rejects.toThrow('rebase.rebaseMerges')
+    expect(read(local, 'E/new.secret')).toBe('SECRET=local\n')
+    expect(await sha(local)).toBe(head)
+    expect(await index(local)).toBe(staged)
+    expect(await git(local, ['status', '--porcelain'])).toBe('')
+    expect(existsSync(path.join(local, '.git', 'rebase-merge'))).toBe(false)
+    // A branch with no merges has none to redo, so the setting changes nothing there.
+    const linear = await fixture()
+    await git(linear.local, ['config', 'rebase.rebaseMerges', 'true'])
+    writeFileSync(path.join(linear.local, 'c.txt'), 'c\n')
+    await git(linear.local, ['add', 'c.txt'])
+    await git(linear.local, ['commit', '-qm', 'c'])
+    const upstream = await publish(linear.other, { 'b.txt': 'b\n' }, 'b')
+    await pull(linear.local, 'rebase')
+    expect(await sha(linear.local, 'HEAD^')).toBe(upstream)
+    expect(read(linear.local, 'c.txt')).toBe('c\n')
+  })
+
+  // A branch with no commits yet that tracks the populated remote, as after git init, git remote add and a fetch.
+  for (const mode of ['merge', 'rebase', 'named'] as const) {
+    test(`a ${mode} pull into a branch with no commits checks out the remote, but not over an ignored file it tracks`, async () => {
+      const { dir, other } = await fixture()
+      const fresh = path.join(dir, 'fresh')
+      await git(dir, ['init', '-q', '-b', 'main', fresh])
+      await git(fresh, ['remote', 'add', 'origin', path.join(dir, 'remote.git')])
+      await git(fresh, ['fetch', '-q', 'origin'])
+      await git(fresh, ['config', 'branch.main.remote', 'origin'])
+      await git(fresh, ['config', 'branch.main.merge', 'refs/heads/main'])
+      const remote = await publish(other, { '.env': 'COMMITTED=1\n' }, 'env')
+      writeFileSync(path.join(fresh, '.git', 'info', 'exclude'), '.env\n')
+      writeFileSync(path.join(fresh, '.env'), 'SECRET=local\n')
+      const run = () => mode === 'named' ? pullFrom(fresh, 'origin', 'main') : pull(fresh, mode)
+      await expect(run()).rejects.toThrow('files: .env. Move')
+      expect(read(fresh, '.env')).toBe('SECRET=local\n')
+      await expect(sha(fresh)).rejects.toThrow()
+      expect(await index(fresh)).toBe('')
+      unlinkSync(path.join(fresh, '.env'))
+      await run()
+      expect(await sha(fresh)).toBe(remote)
+      expect(read(fresh, '.env')).toBe('COMMITTED=1\n')
+      expect(await git(fresh, ['status', '--porcelain'])).toBe('')
+    })
+  }
 })
