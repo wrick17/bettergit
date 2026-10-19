@@ -19,12 +19,10 @@ const api = window.bettergit
 const PAGE = 300
 const COMMIT_CACHE = 24
 type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
-// Geometry and colors match better-source-control's graph, so the two read the same.
+// Geometry and colors match better-source-control's graph, so the two read the same. Like Sublime Merge, each row's graph
+// is as wide as the lanes in that row, and its text starts after them. A laid-out row never changes, so loading another
+// page or any other reply never moves a row on screen, and every commit's marker is drawn on its own lane.
 const LANE_WIDTH = 11
-// The graph column always fits every lane, so each commit's marker is drawn on its own lane. Past this many lanes the
-// spacing tightens, down to MIN_LANE_WIDTH, instead of the column growing at full width.
-const FULL_WIDTH_LANES = 12
-const MIN_LANE_WIDTH = 7
 // A commit row holds two lines, the subject over the author and refs, so it is this many single rows tall.
 const ROW_LINES = 1.65
 // Rows scale --row-h-eff (styles.css: density plus a larger UI font). appearance.ts writes its inputs on :root, so the height
@@ -252,18 +250,20 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
 
   // Paging appends to the list, so only the new page is laid out, from where the last layout left off. Any other new list
-  // (a repo, search, filter, refresh or checkout) is laid out from the start, with HEAD's line kept in the first lane.
+  // (a repo, search, filter or refresh) is laid out from the start, with HEAD's line kept in the first lane. HEAD comes
+  // from the list's own decorations in its first page, never from the status reply, so the first layout is already final
+  // and a page that brings HEAD in later lays out the same either way.
   const graph = useRef<Graph>(EMPTY_GRAPH)
-  const { rows, lanes } = useMemo(() => {
+  const rows = useMemo(() => {
     const last = graph.current
     const kept = last.commits.length
-    const appended = kept > 0 && last.head === head && commits.length >= kept && commits[0] === last.commits[0] && commits[kept - 1] === last.commits[kept - 1]
+    const appended = kept > 0 && commits.length >= kept && commits[0] === last.commits[0] && commits[kept - 1] === last.commits[kept - 1]
     const base = appended ? last : EMPTY_GRAPH
-    const state = appended ? { ...base.state } : startGraph(commits, head)
+    const state = appended ? { ...base.state } : startGraph(commits, commits.slice(0, PAGE).find(isHeadCommit)?.hash ?? null)
     const added = layoutGraph(commits.slice(base.commits.length), state)
-    graph.current = { commits, head, rows: base.rows.concat(added), state, lanes: added.reduce((most, row) => Math.max(most, row.laneCount), base.lanes) }
-    return graph.current
-  }, [commits, head])
+    graph.current = { commits, rows: base.rows.concat(added), state }
+    return graph.current.rows
+  }, [commits])
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row.commit.hash, index])), [rows])
   // History opens on the newest commit when nothing is selected. Only once per open: a commit that fails to load is not picked again.
   const opened = useRef(false)
@@ -272,9 +272,6 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
     opened.current = true
     if (!selected) setSelected(rows[0].commit.hash)
   }, [rows, selected])
-  // One fixed graph column for every row, so the commit text lines up down the list.
-  const pitch = Math.max(MIN_LANE_WIDTH, Math.min(LANE_WIDTH, Math.floor((LANE_WIDTH * FULL_WIDTH_LANES) / lanes)))
-  const graphWidth = pitch * (lanes + 1)
   const picked = commits.find((commit) => commit.hash === selected) ?? null
   // Detail for another commit is not shown, so moving the selection clears it until its own reply arrives.
   const current = detail && detail.hash === selected ? detail : null
@@ -454,9 +451,6 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
             rows={rows}
             indexOf={indexOf}
             selected={picked ? selected : null}
-            head={head}
-            graphWidth={graphWidth}
-            pitch={pitch}
             onSelect={setSelected}
             onMenu={openMenu}
             onKeyDown={onKeyDown}
@@ -553,35 +547,35 @@ interface Segment {
 // Lanes keep their slot, so most lines run straight through a row. A line that changes slot, and a line from the commit dot
 // to a parent in another lane, runs to the row's middle, across, and on, with rounded corners. Every y value scales with
 // the row height.
-function graphSegments(row: GraphRow<Commit>, rowHeight: number, pitch: number): Segment[] {
+function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
   const { commit, lane } = row
   const MID = rowHeight / 2
-  const x = (slot: number) => pitch * (slot + 1)
+  const x = (slot: number) => LANE_WIDTH * (slot + 1)
   const color = (index: number) => COLORS[index % COLORS.length]
   const outputOf = (hash: string) => row.output.findIndex((slot) => slot?.hash === hash)
   const segments: Segment[] = []
   row.input.forEach((slot, index) => {
     if (!slot) return
     if (slot.hash === commit.hash) {
-      segments.push({ d: index === lane ? `M${x(lane)} 0V${MID}` : elbow(x(index), 0, x(lane), MID, MID, pitch), color: color(slot.color) })
+      segments.push({ d: index === lane ? `M${x(lane)} 0V${MID}` : elbow(x(index), 0, x(lane), MID, MID), color: color(slot.color) })
       return
     }
     const to = row.output[index]?.hash === slot.hash ? index : outputOf(slot.hash)
-    if (to !== -1) segments.push({ d: to === index ? `M${x(index)} 0V${rowHeight}` : elbow(x(index), 0, x(to), rowHeight, MID, pitch), color: color(slot.color) })
+    if (to !== -1) segments.push({ d: to === index ? `M${x(index)} 0V${rowHeight}` : elbow(x(index), 0, x(to), rowHeight, MID), color: color(slot.color) })
   })
   for (const parent of commit.parents) {
     const to = outputOf(parent)
-    if (to !== -1) segments.push({ d: to === lane ? `M${x(lane)} ${MID}V${rowHeight}` : elbow(x(lane), MID, x(to), rowHeight, MID, pitch), color: color(row.output[to]!.color) })
+    if (to !== -1) segments.push({ d: to === lane ? `M${x(lane)} ${MID}V${rowHeight}` : elbow(x(lane), MID, x(to), rowHeight, MID), color: color(row.output[to]!.color) })
   }
   return segments
 }
 
 // A path from (x1, y1) to (x2, y2) that turns through the row's middle: down to it, across, and down again, rounding each
 // turn by up to one lane width. An end that sits on the middle line has no turn.
-function elbow(x1: number, y1: number, x2: number, y2: number, mid: number, pitch: number) {
+function elbow(x1: number, y1: number, x2: number, y2: number, mid: number) {
   const sign = Math.sign(x2 - x1)
   const turns = (y1 < mid ? 1 : 0) + (y2 > mid ? 1 : 0)
-  const radius = Math.min(pitch, mid, Math.abs(x2 - x1) / Math.max(turns, 1))
+  const radius = Math.min(LANE_WIDTH, mid, Math.abs(x2 - x1) / Math.max(turns, 1))
   const enter = y1 < mid ? `V${mid - radius}Q${x1} ${mid} ${x1 + sign * radius} ${mid}` : ''
   const leave = y2 > mid ? `Q${x2} ${mid} ${x2} ${mid + radius}V${y2}` : ''
   return `M${x1} ${y1}${enter}H${y2 > mid ? x2 - sign * radius : x2}${leave}`
@@ -621,19 +615,18 @@ function totalLines(files: DiffFile[]) {
   }
 }
 
-type Graph = { commits: Commit[]; head: string | null; rows: GraphRow<Commit>[]; state: GraphState; lanes: number }
-const EMPTY_GRAPH: Graph = { commits: [], head: null, rows: [], state: { lanes: [], nextColor: 0 }, lanes: 1 }
+type Graph = { commits: Commit[]; rows: GraphRow<Commit>[]; state: GraphState }
+const EMPTY_GRAPH: Graph = { commits: [], rows: [], state: { lanes: [], nextColor: 0 } }
+// The checked-out commit, as git log decorates it: "HEAD -> branch", or "HEAD" when detached.
+const isHeadCommit = (commit: Commit) => commit.refs.some((ref) => ref === 'HEAD' || ref.startsWith('HEAD -> '))
 
 // The commit listbox. Rows are a fixed height, so only the window near the pane's viewport mounts, with padding standing in
 // for the rows above and below it. Each row draws its own slice of the graph, so lanes run on unbroken across the window.
-function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, pitch, onSelect, onMenu, onKeyDown }: {
+function CommitList({ listRef, rows, indexOf, selected, onSelect, onMenu, onKeyDown }: {
   listRef: RefObject<HTMLUListElement | null>
   rows: GraphRow<Commit>[]
   indexOf: Map<string, number>
   selected: string | null
-  head: string | null
-  graphWidth: number
-  pitch: number
   onSelect: (hash: string) => void
   onMenu: (hash: string, x: number, y: number) => void
   onKeyDown: (event: KeyboardEvent<HTMLUListElement>) => void
@@ -698,11 +691,9 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, pitch,
         <CommitRow
           key={row.commit.hash}
           row={row}
-          graphWidth={graphWidth}
-          pitch={pitch}
           rowHeight={rowHeight}
           active={selected === row.commit.hash}
-          isHead={row.commit.hash === head}
+          isHead={isHeadCommit(row.commit)}
           onSelect={onSelect}
           onMenu={onMenu}
         />
@@ -711,10 +702,8 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, pitch,
   )
 }
 
-const CommitRow = memo(function CommitRow({ row, graphWidth, pitch, rowHeight, active, isHead, onSelect, onMenu }: {
+const CommitRow = memo(function CommitRow({ row, rowHeight, active, isHead, onSelect, onMenu }: {
   row: GraphRow<Commit>
-  graphWidth: number
-  pitch: number
   rowHeight: number
   active: boolean
   isHead: boolean
@@ -722,13 +711,13 @@ const CommitRow = memo(function CommitRow({ row, graphWidth, pitch, rowHeight, a
   onMenu: (hash: string, x: number, y: number) => void
 }) {
   const { commit } = row
-  const x = pitch * (row.lane + 1)
+  const x = LANE_WIDTH * (row.lane + 1)
   const nodeColor = COLORS[row.color % COLORS.length]
-  const refs = commit.refs.map((ref) => ref.replace('HEAD -> ', ''))
+  const refs = commit.refs.filter((ref) => ref !== 'HEAD').map((ref) => ref.replace('HEAD -> ', ''))
   return (
     <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} style={{ height: rowHeight }} onClick={() => onSelect(commit.hash)} onContextMenu={(event) => { event.preventDefault(); onMenu(commit.hash, event.clientX, event.clientY) }}>
-      <svg className="lanes" width={graphWidth} height={rowHeight} aria-hidden="true">
-        {graphSegments(row, rowHeight, pitch).map((segment, index) => (
+      <svg className="lanes" width={LANE_WIDTH * (row.laneCount + 1)} height={rowHeight} aria-hidden="true">
+        {graphSegments(row, rowHeight).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
         ))}
         <CommitMarker x={x} y={rowHeight / 2} color={nodeColor} merge={commit.parents.length > 1} tip={refs.length > 0} head={isHead} />
