@@ -45,6 +45,14 @@ function tablePrefix(texts: string[]): string {
   return `|${' |'.repeat(cells)}\n|${' --- |'.repeat(cells)}\n`
 }
 
+// micromark matches emphasis and strikethrough delimiters in time quadratic in the runs per paragraph (10k runs: ~1 s).
+// A run is one marker character repeated, so `*_` is two runs.
+// Past the limit those delimiters stay literal text so the parse stays linear; links, code and blocks still format.
+// shortcut: blocks split only at blank lines, so a long tight list counts as one block; split at list items if that misfires.
+const DELIMITER_RUN_LIMIT = 1_000
+const PLAIN_DELIMITERS = { disable: { null: ['attention', 'strikethrough'] } }
+const denseDelimiters = (source: string) => source.split(/\n[ \t]*\n/).some(block => (block.match(/\*+|_+|~+/g)?.length ?? 0) > DELIMITER_RUN_LIMIT)
+
 function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<number, Span[]>): MarkdownSide {
   const entries: MarkdownSource[] = []
   const kept = lines.filter(line => line.type !== excluded && line.type !== 'note')
@@ -57,7 +65,7 @@ function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<numb
     source += line.text
     entries.push({ line, index, start, end: source.length })
   })
-  const tree = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] })
+  const tree = fromMarkdown(source, { extensions: [gfm(), ...(denseDelimiters(source) ? [PLAIN_DELIMITERS] : [])], mdastExtensions: [gfmFromMarkdown()] })
   const definitions = new Map<string, Definition>()
   const footnotes = new Map<string, FootnoteDefinition>()
   const collect = (node: Nodes) => {

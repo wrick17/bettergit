@@ -586,5 +586,11 @@ test('long malformed syntax stays bounded without dropping source', () => {
   const result = markdownHunk([line(text)])
   expect(result.new.entries[0].line.text).toBe(text)
   expect((renderToStaticMarkup(<MarkdownContent nodes={result.new.nodes} side={result.new} />).match(/\[/g) ?? []).length).toBe(10_000)
+  // Strikethrough runs spread over the rows of one paragraph are bounded the same way.
+  const rows = Array.from({ length: 100 }, () => line('a~'.repeat(100)))
+  expect(renderToStaticMarkup(<MarkdownContent nodes={markdownHunk(rows).new.nodes} side={markdownHunk(rows).new} />)).not.toContain('<del')
+  // Alternating markers are separate runs to the parser, so they count separately.
+  for (const mixed of ['*_'.repeat(10_000) + 'x', '*~_'.repeat(7_000) + 'x']) expect(markdownHunk([line(mixed)]).new.entries[0].line.text).toBe(mixed)
+  // Unbounded, these take seconds even on a fast machine (quadratic delimiter matching); bounded, tens of milliseconds.
   expect(performance.now() - started).toBeLessThan(2000)
 })
