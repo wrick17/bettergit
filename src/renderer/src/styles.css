@@ -619,9 +619,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Sheets and dialogs. Each dialog is head, body, footer. */
 /* The underlay blurs the app root itself, titlebar included, and the scrim only tints. A backdrop-filter on the scrim left
    some panels sharp in the live window, because it reads back what the compositor drew; a filter renders the root as one surface.
-   Every dialog portals its scrim to the body, beside the root. */
-body:has(> .scrim) > #root { filter: blur(20px); }
+   Every dialog portals its scrim to the body, beside the root. A native confirmation adds one too (confirm.ts), which also
+   blurs a dialog it opens over. */
+body:has(> .scrim) > #root, body > .scrim:has(~ .scrim) > * { filter: blur(20px); }
 .scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); animation: fade 160ms var(--ease); }
+/* No fade: the sheet blocks the page, and the tint must be whole before it opens. */
+.confirm-scrim { animation: none; }
 /* Opaque, so the panel stays crisp over the blur: the theme's glass over the canvas colour. */
 .dialog {
   width: min(480px, 90vw); overflow: hidden; border-radius: var(--radius-lg);

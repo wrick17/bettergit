@@ -5,6 +5,7 @@ import type { AppKind, Appearance, InstalledApp } from '../../shared/editors'
 import type { InstalledExtension, ThemeChoice } from '../../shared/themes'
 import { cachedAppIcon, cachedApps, fetchApps, loadAppIcon, storeApps } from './app-icons'
 import { CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
+import { confirmOverBlur } from './confirm'
 import { ExtensionSettings } from './ExtensionSettings'
 import { Icon, type IconName } from './Icons'
 import { forgetThemes, isThemeBroken, preloadThemes, useAppliedThemes, warmThemes } from './themes'
@@ -94,7 +95,7 @@ export function CloneDialog({ defaultParent, onClose, onCloned }: {
 
   // Typed text survives a stray Escape or scrim click until the user confirms discarding it.
   const dirty = url !== '' || parent !== defaultParent
-  const requestClose = () => { if (!dirty || window.confirm('Discard this clone?')) onClose() }
+  const requestClose = async () => { if (!dirty || await confirmOverBlur('Discard this clone?')) onClose() }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
