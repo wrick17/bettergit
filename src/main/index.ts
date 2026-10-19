@@ -252,6 +252,8 @@ function registerIpc() {
     if (!status.head) throw new Error('Push needs a branch, not a detached HEAD.')
     await ops.push(repo, status.upstream !== null, status.head)
   })
+  ipcMain.handle('repo:tags', (_event, repoPath: string) => ops.readTags(assertKnownRepo(repoPath)))
+  ipcMain.handle('repo:worktrees', (_event, repoPath: string) => ops.readWorktrees(assertKnownRepo(repoPath)))
   ipcMain.handle('repo:stashes', async (_event, repoPath: string) => ops.readStashes(assertKnownRepo(repoPath)))
   handleWrite('repo:stash', (_event, repoPath: string, message: string) =>
     ops.stashPush(repoPath, message, true))
