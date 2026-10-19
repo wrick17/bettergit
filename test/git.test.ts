@@ -9,7 +9,7 @@ import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/d
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
-import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
+import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -376,6 +376,22 @@ describe('branch picker operations with real Git', () => {
     await git(dir, ['update-ref', 'refs/remotes/origin/topic', tip])
     return { dir, base, tip }
   }
+
+  test('a detached tag checkout refuses to overwrite an ignored local file the tag tracks', async () => {
+    const { dir } = await fixture()
+    await git(dir, ['switch', '-q', '-c', 'with-env'])
+    writeFileSync(path.join(dir, '.env'), 'TRACKED=1\n')
+    await git(dir, ['add', '-f', '.env'])
+    await git(dir, ['commit', '-qm', 'track env'])
+    await git(dir, ['tag', 'v1'])
+    await git(dir, ['switch', '-q', 'main'])
+    writeFileSync(path.join(dir, '.gitignore'), '.env\n')
+    writeFileSync(path.join(dir, '.env'), 'SECRET=local\n')
+    const head = await sha(dir)
+    await expect(checkoutDetached(dir, await sha(dir, 'v1'))).rejects.toThrow(/\.env/)
+    expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('SECRET=local\n')
+    expect(await sha(dir)).toBe(head)
+  })
 
   test('keeps full identities and upstreams, skips symbolic remote aliases and keeps literal /HEAD names', async () => {
     const { dir, tip } = await fixture()
