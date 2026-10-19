@@ -358,7 +358,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 
 /* Empty pane: one mark, one line of guidance, two obvious next steps. */
 .empty { display: grid; place-content: center; justify-items: center; gap: 8px; height: 100%; padding: 0 40px; text-align: center; color: var(--text-2); }
-.empty-mark { width: 56px; height: 56px; margin-bottom: 10px; fill: var(--glass-strong); stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; }
+.empty-mark { width: 56px; height: 56px; margin-bottom: 10px; color: var(--accent); }
 .empty h1 { margin: 0; color: var(--text); font-size: calc(24px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.02em; }
 .empty p { margin: 0 0 14px; max-width: 340px; font-size: calc(15px + var(--ui-delta)); line-height: 1.5; }
 .empty-actions { display: flex; gap: 8px; }

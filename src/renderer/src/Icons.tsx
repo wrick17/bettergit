@@ -2,13 +2,15 @@ import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent }
 import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, ChevronUp, Columns2, Columns3,
-  CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitCommitHorizontal, GitCompare,
+  CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
   MousePointerClick, Palette, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
 const ICONS = {
+  // The app's brand mark, matching the app icon.
+  brand: GitBranchPlus,
   refresh: RefreshCw,
   // Replaces an action's glyph while that action runs.
   loader: LoaderCircle,
