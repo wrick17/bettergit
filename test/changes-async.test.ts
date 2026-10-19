@@ -149,7 +149,20 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
     conflictLoad: (...args) => new Promise((resolve, reject) => loads.push({ args, resolve, reject })),
     conflictReset: (...args) => new Promise((resolve, reject) => resets.push({ args, resolve, reject })),
   })
-  window.confirm = (message) => { confirms.push(message); return answer }
+  // The confirmation's underlay is a scrim on the body, beside the app root. Frames run only when the test draws them.
+  const body = [], frames = [], under = []
+  Object.assign(document, {
+    body: { append: (el) => body.push(el) },
+    createElement: () => ({ className: '', remove() { body.splice(body.indexOf(this), 1) } }),
+  })
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback)
+  const drawFrame = async () => { for (const callback of frames.splice(0)) callback(); await flush() }
+  const answered = async () => { await flush(); await drawFrame(); await drawFrame() }
+  window.confirm = (message) => {
+    confirms.push(message); under.push(body.map((el) => el.className))
+    if (answer instanceof Error) throw answer
+    return answer
+  }
   const fingerprint = (label) => ({ working: label.repeat(64), stages: 'b'.repeat(64) })
   const conflictDoc = (label) => {
     const { parts } = parseConflicts('x\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> t\n')
@@ -174,9 +187,17 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
   load('c.ts', first); await flush()
   choose()
 
-  // Cancel asks once and calls nothing.
+  // The blurred underlay is up and drawn for two frames before the sheet opens, and a second request meanwhile asks nothing.
+  // Cancel asks once, calls nothing and takes the underlay down.
   answer = false
   view().onReset(); await flush()
+  assert.deepEqual(body.map((el) => el.className), ['scrim confirm-scrim'])
+  await drawFrame()
+  view().onReset(); await flush()
+  assert.equal(confirms.length, 0)
+  await drawFrame()
+  assert.deepEqual(under, [['scrim confirm-scrim']])
+  assert.deepEqual(body, [])
   assert.equal(resets.length, 0)
   assert.equal(confirms.length, 1)
   for (const words of ['c.ts', "Git's index", 'saved edits and unsaved choices', 'stays unmerged and unstaged', 'Other files are unchanged']) {
@@ -184,9 +205,17 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
   }
   assert.deepEqual(view().choices, ['current'])
 
+  // A confirmation that fails is a cancel, and its underlay still comes down.
+  answer = new Error('no sheet')
+  view().onReset(); await answered()
+  assert.equal(resets.length, 0)
+  assert.deepEqual(body, [])
+
   // The request is the confirmed fingerprint alone. A refusal keeps the model and its choices.
   answer = true
-  view().onReset(); await flush()
+  view().onReset(); await answered()
+  assert.deepEqual(under.at(-1), ['scrim confirm-scrim'])
+  assert.deepEqual(body, [])
   assert.deepEqual(resets[0].args, ['/repo', 'c.ts', { fingerprint: fingerprint('a') }])
   resets[0].reject(new Error('refused')); await flush()
   assert.deepEqual(errors, ['Error: refused'])
@@ -194,7 +223,7 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
   assert.deepEqual(view().choices, ['current'])
 
   // A reset that writes the same bytes still installs its model and clears the choices.
-  view().onReset(); await flush()
+  view().onReset(); await answered()
   const same = conflictDoc('a')
   resets[1].resolve(same); await flush()
   assert.equal(view().model, same)
@@ -202,7 +231,7 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
 
   // A reply replaces only the file it was asked for, even after another file is picked. Picking does not reload.
   choose()
-  view().onReset(); await flush()
+  view().onReset(); await answered()
   find(tree, (p) => p.title === 'Conflicts' && typeof p.onSelect === 'function').onSelect(conflicted('d.ts')); render()
   assert.equal(loads.length, 2)
   const other = conflictDoc('d')
@@ -217,7 +246,7 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
 
   // Nor does a reply for a repo the pane has left.
   choose()
-  view().onReset(); await flush()
+  view().onReset(); await answered()
   props = { ...props, repo: '/other' }; render()
   // Same path and fingerprint as the request, so only the repo tells them apart.
   const elsewhere = conflictDoc('c')

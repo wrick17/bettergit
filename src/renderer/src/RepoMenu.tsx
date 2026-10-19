@@ -1,6 +1,7 @@
 import type { RepoStatus } from '../../main/git/status'
 import { PullFromDialog, StashDialog, type StashMode } from './StashDialog'
 import type { BarItem } from './OverflowBar'
+import { confirmOverBlur } from './confirm'
 import { blockedReason, REPO_WORKING_LABELS } from './repo-busy'
 
 const api = window.bettergit
@@ -36,11 +37,11 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     if (status?.head) navigator.clipboard.writeText(status.head).catch(onError)
   }
 
-  const resetToUpstream = () => {
+  const resetToUpstream = async () => {
     if (!status?.upstream) return
     // Uncommitted edits are discarded with no backup. The backup ref only keeps the commits that the reset moves past.
     const message = `Discard uncommitted changes and reset ${status.head} to ${status.upstream}?\n\nThis cannot be undone. Commits you move past are kept in a backup ref.`
-    if (!window.confirm(message)) return
+    if (!(await confirmOverBlur(message))) return
     void run('reset', async () => onNote(`Backup kept at ${await api.resetToUpstream(repo)}`))
   }
 

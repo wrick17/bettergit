@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
 import type { Marks, Mounted, Preview } from './cm-editor'
+import { confirmOverBlur } from './confirm'
 import { Code } from './DiffView'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { charWidth, codeLine, columns, hscrollOf, useCodeMetrics } from './hscroll'
-import { useWordWrap } from './prefs'
+import { useLanguageOverrides, useWordWrap } from './prefs'
 import { originalText } from './original-text'
 import { RowChunk } from './row-chunk'
 import { suspendHold } from './scroll-anchor'
@@ -54,10 +55,10 @@ function useDraft(key: string) {
 
 // Drafts outlive their editors, so selecting, scrolling or switching views keeps them. Staging or discarding a file takes
 // it out of the working diff, where its draft can no longer show, so those ask first. False when the user keeps the edits.
-export function confirmDropEdits(repo: string, paths: string[]): boolean {
+export async function confirmDropEdits(repo: string, paths: string[]): Promise<boolean> {
   const lost = paths.flatMap((path) => (dirty(drafts.get(keyOf(repo, path))) ? [path] : []))
   if (!lost.length) return true
-  if (!window.confirm(`Discard your unsaved edits to ${lost.join(', ')}?`)) return false
+  if (!(await confirmOverBlur(`Discard your unsaved edits to ${lost.join(', ')}?`))) return false
   for (const path of lost) {
     const draft = drafts.get(keyOf(repo, path))!
     draft.revert ? draft.revert() : setDraft(keyOf(repo, path), null)
@@ -81,9 +82,9 @@ export function DraftActions({ edit, path }: { edit: EditBridge; path: string })
   const key = keyOf(edit.repo, path)
   const draft = useDraft(key)
   if (!draft || !dirty(draft)) return null
-  const discard = () => {
+  const discard = async () => {
     if (draft.revert) draft.revert()
-    else if (window.confirm(`Discard your edits to ${path}?`)) setDraft(key, null)
+    else if (await confirmOverBlur(`Discard your edits to ${path}?`)) setDraft(key, null)
   }
   return (
     <>
@@ -492,13 +493,15 @@ function dragged(event: ReactMouseEvent) {
 // Shiki colours for the static rows, in the same cache the editor reads, so it is coloured on its first frame.
 function usePreviewTokens(preview: Preview | null, language: string | null, layout: 'unified' | 'split') {
   const [tokens, setTokens] = useState<{ preview: Preview; old: Segment[][] | null; new: Segment[][] | null } | null>(null)
+  // A new identity on a syntax theme change, so the rows re-colour; the last colours stay until the new ones land.
+  const recoloured = useLanguageOverrides()
   // Rows coloured before they showed (or seen before) have their colours on their first frame.
   const cached = useMemo(() => {
     if (!preview || !language) return null
     const next = cachedTokens(preview.lines.join('\n'), language)
     const old = layout === 'split' ? cachedTokens(preview.old.join('\n'), language) : null
     return next && (layout !== 'split' || old) ? { preview, new: next, old: old ?? null } : null
-  }, [preview, language, layout])
+  }, [preview, language, layout, recoloured])
   useEffect(() => {
     if (!preview || !language || cached) return
     let stale = false

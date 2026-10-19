@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Commit } from '../../main/git/history'
+import { confirmOverBlur } from './confirm'
 import type { BarItem } from './OverflowBar'
 import { PromptDialog } from './PromptDialog'
 import { blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
@@ -61,8 +62,8 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   const compareBase = () => {
     if (head) api.mergeBase(repo, head, hash).then((base: string) => onCompare(`merge base ${base.slice(0, 7)}`, base)).catch(onError)
   }
-  const revert = () => {
-    if (window.confirm(`Revert "${subject}"? This adds a new commit that undoes it.`)) run('revert', () => api.revertCommit(repo, hash))
+  const revert = async () => {
+    if (await confirmOverBlur(`Revert "${subject}"? This adds a new commit that undoes it.`)) run('revert', () => api.revertCommit(repo, hash))
   }
   const cherryPick = () => run('cherry', () => api.cherryPick(repo, hash).then((backup: string) => ui.setNotice(`Cherry-picked. Backup saved as ${backup}.`)))
 
