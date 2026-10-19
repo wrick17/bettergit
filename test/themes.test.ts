@@ -1,12 +1,12 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, promises as fsPromises, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, promises as fsPromises, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { DEFAULT_APPEARANCE } from '../src/shared/editors'
-import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, previewVsix, resolveInside } from '../src/main/extensions'
+import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
 import * as shared from '../src/shared/themes'
-import { fileIconId, themeCss, themeVariables, tokenColor, type IconTheme } from '../src/shared/themes'
+import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
 
 const root = mkdtempSync(path.join(tmpdir(), 'bettergit-themes-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -34,76 +34,6 @@ test('workbench colours fill app variables best key first, and anything but a he
   expect(themeVariables({ focusBorder: '#ffd' }, false)['--on-accent']).toBe('#111114')
   const css = themeCss(null, { name: 'x', label: 'X', dark: true, colors: { 'editor.background': '#000' }, tokenColors: [] })
   expect(css).toBe(":root:root[data-theme='dark'] { --window: #000; --glass-fill: #000; --content: #000; --list: #000; --glass-strong: #000; }")
-})
-
-test('preview code takes the rule whose selector matches the most of the scope, the later rule on a tie', () => {
-  const rules = [
-    { scope: 'keyword', settings: { foreground: '#111111' } },
-    { scope: ['string', 'keyword.control'], settings: { foreground: '#222222' } },
-    { scope: 'keyword.control, comment', settings: { foreground: '#333333' } },
-    { scope: 'meta.block keyword.control.flow', settings: { foreground: '#444444' } },
-    { scope: 'keywordish', settings: { foreground: '#555555' } },
-    { settings: { foreground: '#666666' } },
-  ]
-  expect(tokenColor(rules, 'keyword.control.flow')).toBe('#333333')
-  expect(tokenColor(rules, 'keyword.operator')).toBe('#111111')
-  expect(tokenColor(rules, 'comment.line')).toBe('#333333')
-  expect(tokenColor(rules, 'keywordish.x')).toBe('#555555')
-  expect(tokenColor(rules, 'constant.numeric')).toBeUndefined()
-})
-
-// A .vsix of stored entries, as unzip reads them: local headers, then the central directory and its end record.
-function vsix(files: Record<string, string>): Buffer {
-  const locals: Buffer[] = []
-  const centrals: Buffer[] = []
-  let offset = 0
-  for (const [name, text] of Object.entries(files)) {
-    const nameBytes = Buffer.from(`extension/${name}`)
-    const body = Buffer.from(text)
-    const local = Buffer.alloc(30)
-    local.writeUInt32LE(0x04034b50, 0)
-    local.writeUInt32LE(body.length, 18)
-    local.writeUInt32LE(body.length, 22)
-    local.writeUInt16LE(nameBytes.length, 26)
-    const central = Buffer.alloc(46)
-    central.writeUInt32LE(0x02014b50, 0)
-    central.writeUInt32LE(body.length, 20)
-    central.writeUInt32LE(body.length, 24)
-    central.writeUInt16LE(nameBytes.length, 28)
-    central.writeUInt32LE(offset, 42)
-    locals.push(local, nameBytes, body)
-    centrals.push(central, nameBytes)
-    offset += 30 + nameBytes.length + body.length
-  }
-  const end = Buffer.alloc(22)
-  end.writeUInt32LE(0x06054b50, 0)
-  end.writeUInt16LE(Object.keys(files).length, 10)
-  end.writeUInt32LE(offset, 16)
-  return Buffer.concat([...locals, ...centrals, end])
-}
-
-test('a preview refuses a package that repeats theme contributions or outgrows the byte budget, and leaves no folder behind', async () => {
-  const leftovers = () => readdirSync(tmpdir()).filter((name) => name.startsWith('bettergit-preview-')).length
-  const before = leftovers()
-  // Every icon theme maps the preview's files to one large image, the reviewer's repeated-reference package.
-  const iconFile = JSON.stringify({ iconDefinitions: { big: { iconPath: './big.svg' } }, file: 'big', folder: 'big', fileExtensions: { ts: 'big' } })
-  const big = `<svg xmlns="http://www.w3.org/2000/svg">${'x'.repeat(400 * 1024)}</svg>`
-  const pack = (count: number) => vsix({
-    'package.json': JSON.stringify({ publisher: 'evil', name: 'pack', contributes: { iconThemes: Array.from({ length: count }, (_, index) => ({ id: `i${index}`, label: `I${index}`, path: `./icons-${index}.json` })) } }),
-    'big.svg': big,
-    ...Object.fromEntries(Array.from({ length: count }, (_, index) => [`icons-${index}.json`, iconFile])),
-  })
-  await expect(previewVsix(pack(48))).rejects.toThrow('48 themes, more than the 24')
-  // Twenty themes are allowed, but each carries the 400 KB image, so together they pass the 8 MB budget.
-  await expect(previewVsix(pack(20))).rejects.toThrow('too large to preview')
-  expect(leftovers()).toBe(before)
-
-  const small = await previewVsix(vsix({
-    'package.json': JSON.stringify({ publisher: 'ok', name: 'pack', contributes: { themes: [{ label: 'Night', uiTheme: 'vs-dark', path: './night.json' }] } }),
-    'night.json': JSON.stringify({ colors: { 'editor.background': '#101010' } }),
-  }))
-  expect(small.colorThemes[0]?.colors).toEqual({ 'editor.background': '#101010' })
-  expect(leftovers()).toBe(before)
 })
 
 test('JSONC keeps comment-like text in strings and drops comments and trailing commas', () => {

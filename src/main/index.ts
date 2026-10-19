@@ -17,7 +17,7 @@ import * as ops from './git/ops'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
-import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, previewFromOpenVsx, removeExtension, searchOpenVsx } from './extensions'
+import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -325,8 +325,6 @@ function registerIpc() {
   })
   ipcMain.handle('extensions:list', () => listExtensions(extensionsDir()))
   ipcMain.handle('extensions:search', (_event, query: unknown) => searchOpenVsx(query))
-  // A preview unpacks into a temp folder and never touches installed extensions or the theme cache, so it skips changingExtensions.
-  ipcMain.handle('extensions:preview', (_event, namespace: unknown, name: unknown) => previewFromOpenVsx(namespace, name))
   ipcMain.handle('extensions:install', (_event, namespace: unknown, name: unknown) =>
     changingExtensions(installFromOpenVsx(extensionsDir(), namespace, name)))
   // The file comes from the open panel here, never from the renderer, so the page cannot make main read a path it chose.
