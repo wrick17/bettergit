@@ -329,7 +329,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .branch-pill:focus-within { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
 .sync { display: inline-flex; gap: 8px; font-size: calc(12px + var(--ui-delta)); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .sync b { font-weight: 600; color: var(--text-2); }
-/* Sized to its icons at the right end of the toolbar. It shrinks when the window is narrow, and OverflowBar fills the width it is given. */
+/* The sync icons, the Actions menu button, and the app launchers at the right end of the toolbar. */
 .toolbar-actions {
   display: flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 4px; border-radius: var(--radius-pill);
   background: var(--glass-chip);
@@ -817,7 +817,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   border-radius: var(--radius-sm);
   animation: fade 120ms var(--ease) 350ms both;
 }
-/* Destructive icon actions, such as reset (OverflowBar danger). */
+/* Destructive icon actions (BarItem danger). */
 .icon-button.danger, .icon-button.danger:hover:not(:disabled) { color: var(--del); }
 /* Discard keeps the red tint on hover too, as the danger rule does. */
 .icon-button.discard, .icon-button.discard:hover:not(:disabled) { color: var(--del); }

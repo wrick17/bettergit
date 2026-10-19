@@ -336,6 +336,33 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
   busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
 })
 
+test('title-bar Actions menu keeps the sync icons and lists every repo action with groups, danger, and shortcuts', async () => {
+  const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
+    'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './repo-busy': repoBusy,
+  }, '', { window: { bettergit: {} } }) as typeof import('../src/renderer/src/RepoMenu')
+  const bar = await loadEntry('../src/renderer/src/OverflowBar.tsx', {
+    react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './Icons': await import('../src/renderer/src/Icons'),
+  }) as typeof import('../src/renderer/src/OverflowBar')
+  const noop = () => {}
+  const items = menu.repoItems({
+    repo: '/repo', status: { head: 'main', upstream: 'origin/main' } as never, busy: null, run: async () => true,
+    onTab: noop, onNote: noop, onError: noop, onDialog: noop,
+  })
+
+  const toolbar = renderToStaticMarkup(React.createElement(bar.ActionsMenu, { items }))
+  expect(toolbar).toContain('aria-haspopup="menu"')
+  expect(toolbar).toContain('aria-expanded="false"')
+  expect(toolbar).toContain('>Actions<')
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Pull and Merge', 'Push'])
+
+  const list = renderToStaticMarkup(React.createElement(bar.ActionMenu, { items, onPick: noop, label: 'Repository actions' }))
+  expect(list).toContain('role="menu" aria-label="Repository actions"')
+  expect(list.match(/role="menuitem"/g)).toHaveLength(items.length)
+  expect(list.match(/role="separator"/g)).toHaveLength(new Set(items.map((item) => item.group)).size - 1)
+  expect(list.match(/class="danger"/g)).toHaveLength(1)
+  expect([...list.matchAll(/<kbd class="menu-shortcut">([^<]+)<\/kbd>/g)].map((match) => match[1])).toEqual(['⇧⌘F', '⇧⌘L', '⇧⌘P', '⇧⌘H'])
+})
+
 test('App supplies the working-copy editor bridge and Open in buttons independent of Git busy state', async () => {
   const launches: Array<[string, string?]> = []
   const api = { openInEditor: async (repo: string, file?: string) => { launches.push([repo, file]) } }
@@ -351,7 +378,7 @@ test('App supplies the working-copy editor bridge and Open in buttons independen
     react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, 'react-dom': { createPortal: (node: React.ReactNode) => node },
     '../../shared/editors': editors, './editor-launch': editorLaunch,
     './RepoMenu': { ...menu, RepoDialogs: () => null },
-    './OverflowBar': { OverflowBar: (props: { items: typeof items }) => { items = props.items; return null } },
+    './OverflowBar': { ActionsMenu: (props: { items: typeof items }) => { items = props.items; return null } },
     './HistoryView': { HistoryView: History },
     './Icons': { Icon: History, IconButton: () => null, toggleLabel: (state: string, action: string) => `${state} — click to ${action}` },
     './repo-busy': { ...repoBusy, useRepoBusy: () => 'push' },

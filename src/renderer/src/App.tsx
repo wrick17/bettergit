@@ -12,7 +12,7 @@ import { Sidebar } from './Sidebar'
 import type { MenuAction } from '../../main/menu'
 import { ChangesView } from './ChangesView'
 import { HistoryView } from './HistoryView'
-import { OverflowBar } from './OverflowBar'
+import { ActionsMenu } from './OverflowBar'
 import { RepoDialogs, repoItems, type RepoDialog } from './RepoMenu'
 import { CloneDialog, SettingsDialog } from './Dialogs'
 import { BranchPicker } from './BranchPicker'
@@ -444,7 +444,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
             )}
           </div>
           <div className="toolbar-actions">
-            <OverflowBar items={repoItems({
+            <ActionsMenu items={repoItems({
               repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,
             })} />
             {/* Read-only launches, so they stay usable while a Git write runs. */}
