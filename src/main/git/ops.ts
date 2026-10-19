@@ -21,6 +21,13 @@ export interface BranchSelection {
   hash: string
 }
 
+// A tag's hash is the commit it peels to, so checking it out never depends on the tag moving later.
+export interface Tag {
+  name: string
+  fullRef: string
+  hash: string
+}
+
 export interface Stash {
   ref: string
   message: string
@@ -310,6 +317,15 @@ export async function createBranch(repo: string, name: string, base: BranchSelec
 
 export async function deleteBranch(repo: string, name: string, force = false): Promise<void> {
   await git(repo, ['branch', force ? '-D' : '-d', name])
+}
+
+// Newest version first, which is the order a tag picker is read in.
+export async function readTags(repo: string): Promise<Tag[]> {
+  const output = await git(repo, ['for-each-ref', '--sort=-v:refname', '--format=%(refname)%1f%(objectname)%1f%(*objectname)', 'refs/tags'])
+  return output.split('\n').filter(Boolean).map((line) => {
+    const [fullRef, hash, peeled] = line.split('\x1f')
+    return { name: fullRef.slice('refs/tags/'.length), fullRef, hash: peeled || hash }
+  })
 }
 
 export async function readStashes(repo: string): Promise<Stash[]> {

@@ -303,6 +303,11 @@ export function App() {
             onChanged={() => setRevision((value) => value + 1)}
             onError={reportError}
             onCleanChange={setRepoClean}
+            // A worktree picked in the branch picker opens like a sidebar repo, added as a source first if it is not one.
+            onOpenRepo={(path) => {
+              (repos.some((node) => node.path === path) ? Promise.resolve() : addPaths([path]))
+                .then(() => { setSelected(path); setTab('changes') }).catch(reportError)
+            }}
           />
         )}
       </main>
@@ -348,7 +353,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange, onOpenRepo }: {
   titlebar: HTMLElement | null
   repo: RepoNode
   // The Open in … apps chosen in Settings (InstalledApp ids). Unset means the default.
@@ -366,6 +371,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   onChanged: () => void
   onError: (error: unknown) => void
   onCleanChange: (clean: boolean) => void
+  onOpenRepo: (path: string) => void
 }) {
   // Resolved once here, so the toolbar and every file's open button name the same app with the same icon.
   const editor = useSelectedApp('editor', editorApp, onError)
@@ -470,7 +476,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         titlebar,
       )}
       {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
-        onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} />}
+        onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} onOpenRepo={onOpenRepo} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
         <nav

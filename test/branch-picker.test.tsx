@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { runInNewContext } from 'node:vm'
 import type { Branch } from '../src/main/git/ops'
 import * as busy from '../src/renderer/src/repo-busy'
+import * as refs from '../src/renderer/src/branch-tree'
 
 const hash = 'a'.repeat(40)
 const branches: Branch[] = [
@@ -22,7 +23,7 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
   let discard = false
   const module = { exports: {} as any }
   const imports: Record<string, unknown> = {
-    react: { ...React, useId: () => 'picker', useEffect() {},
+    react: { ...React, useId: () => 'picker', useEffect() {}, useLayoutEffect() {}, useMemo: (make: () => unknown) => make(),
       useState: (initial: any) => {
         const index = cursor++
         if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial
@@ -34,6 +35,8 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     'react/jsx-dev-runtime': jsxDev,
     'react-dom': { createPortal: (node: unknown) => node },
     './Dialogs': { useDialogFocus() {} },
+    './Icons': { Icon: () => null },
+    './branch-tree': refs,
     './repo-busy': { ...busy, useRepoBusy: () => busy.busyKey('/picker-test') },
   }
   runInNewContext(await compiled.outputs[0].text(), {
@@ -53,7 +56,10 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     }
   }
   render()
-  return { render, find, Choices: module.exports.BranchChoices as typeof import('../src/renderer/src/BranchPicker').BranchChoices,
+  const Choices = module.exports.BranchChoices as typeof import('../src/renderer/src/BranchPicker').BranchChoices
+  // Its own hook slots, so fold state persists between calls like a mounted list.
+  const choices = (props: Parameters<typeof Choices>[0]) => { cursor = 1000; return Choices(props) }
+  return { render, find, choices,
     click: (label: string) => { const button = find((p) => p.children === label && typeof p.onClick === 'function'); expect(button).toBeDefined(); button.onClick(); render() },
     key: (key: string) => { find((p) => p.role === 'dialog').onKeyDown({ key, preventDefault() {}, stopPropagation() {} }); render() },
     submit: () => { find((p) => p.role === 'dialog').onSubmit({ preventDefault() {} }); render() },
@@ -63,29 +69,54 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
 }
 const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve() }
 
-test('branch rows expose groups, current/upstream labels and exact identities after case-insensitive keyboard search', async () => {
+const tags = [{ name: 'v1.0.0', fullRef: 'refs/tags/v1.0.0', hash }, { name: 'release/2609', fullRef: 'refs/tags/release/2609', hash }]
+const stashes = [{ ref: 'stash@{0}', message: 'WIP on main: topic' }]
+const worktrees = [{ path: '/picker-test', branch: 'main', hash, locked: false }, { path: '/elsewhere', branch: null, hash, locked: false }]
+
+test('sections fold refs by prefix, count them, and filter every section by whole name', () => {
+  const sections = refs.buildSections({ branches: [...branches, { ...branches[0], name: 'feat/a', fullRef: 'refs/heads/feat/a', current: false },
+    { ...branches[0], name: 'feat/b', fullRef: 'refs/heads/feat/b', current: false }], tags, stashes, worktrees: null, repo: '/picker-test' })
+  const labels = (rows: refs.Row[]) => rows.map((row) => `${row.level}:${row.label}${row.type === 'section' ? `(${row.count ?? '…'})` : ''}${row.type !== 'item' && !row.expanded ? '+' : ''}`)
+  // Branches open, others folded; folders sit where their first branch does and start folded unless they hold HEAD.
+  expect(labels(refs.flattenRows(sections, '', new Set()))).toEqual(['1:Branches(3)', '2:main', '2:feat+', '1:Remotes(2)+', '1:Tags(2)+', '1:Stashes(1)+', '1:Worktrees(…)+'])
+  const opened = refs.flattenRows(sections, '', new Set(['f:local:feat/', 's:remote', 'f:remote:origin/', 's:tag']))
+  expect(labels(opened)).toEqual(['1:Branches(3)', '2:main', '2:feat', '3:a', '3:b', '1:Remotes(2)', '2:origin', '3:Topic+', '2:upstream+',
+    '1:Tags(2)', '2:v1.0.0', '2:release+', '1:Stashes(1)+', '1:Worktrees(…)+'])
+  expect(refs.parentIndex(opened, 4)).toBe(2)
+  // Filtering opens matching sections, lists whole names, and hides sections without a match.
+  expect(labels(refs.flattenRows(sections, 'TOPIC', new Set()))).toEqual(['1:Remotes(2)', '2:origin/Topic/Long-Name', '2:upstream/Topic/Long-Name', '1:Stashes(1)', '2:WIP on main: topic', '1:Worktrees(…)'])
+  expect(labels(refs.flattenRows(sections, 'topic', new Set(['s:remote'])))[0]).toBe('1:Remotes(2)+')
+})
+
+test('the tree list keeps keyboard folding and picks branches, tags, stashes and worktrees by exact identity', async () => {
   const h = await harness()
-  const picked: unknown[] = []
-  let active = 0
-  const view = (query = '') => h.Choices({ branches, query, active, onQuery() {}, onActive: (index) => { active = index }, onPick: (selection) => picked.push(selection), id: 'list', disabled: false })
+  const picked: refs.RefItem[] = []
+  let active = null as string | null
+  const view = (query = '') => h.choices({ branches, tags, stashes, worktrees, repo: '/picker-test', query, active, onQuery() {},
+    onActive: (key) => { active = key }, onPick: (item) => picked.push(item), id: 'list', disabled: false })
   const all = renderToStaticMarkup(view())
-  expect(all).toContain('role="group" aria-label="Local"')
-  expect(all).toContain('role="group" aria-label="Remote"')
-  expect(all).toContain('origin/main')
+  expect(all).toContain('role="tree"')
+  expect(all).toContain('aria-level="1" aria-selected="false" aria-expanded="true"')
   expect(all).toContain('>Current</span>')
-  const markup = renderToStaticMarkup(view('tOpIc'))
-  expect(markup).toContain('origin/Topic/Long-Name')
-  expect(markup).toContain('upstream/Topic/Long-Name')
-  expect(markup).not.toContain('>main<')
-  const key = (value: string, query = 'tOpIc') => h.find((p) => p.role === 'combobox', view(query)).onKeyDown({ key: value, preventDefault() {} })
-  key('ArrowDown'); expect(active).toBe(1)
-  key('Home'); expect(active).toBe(0)
-  key('End'); expect(active).toBe(1)
-  key('ArrowUp'); expect(active).toBe(0)
-  key('End'); key('Enter')
-  expect(picked).toEqual([{ fullRef: branches[2].fullRef, hash }])
-  expect(renderToStaticMarkup(view('missing'))).toContain('No matching branches')
-  key('Enter', 'missing'); expect(picked).toHaveLength(1)
+  expect(all).toContain('origin/main')
+  expect(all).not.toContain('Long-Name')
+  const key = (value: string, query = '') => h.find((p) => p.role === 'combobox', view(query)).onKeyDown({ key: value, preventDefault() {} })
+  // The first item starts active; Home reaches the Branches header, End the folded Worktrees header, which ArrowRight opens.
+  key('Home'); expect(active).toBe('s:local')
+  key('End'); expect(active).toBe('s:worktree')
+  key('ArrowRight'); key('End'); expect(active).toBe('i:wt:/elsewhere')
+  key('Enter'); key('ArrowUp'); key('Enter')
+  expect(picked).toEqual([{ kind: 'worktree', worktree: worktrees[1] }])
+  key('ArrowLeft'); expect(active).toBe('s:worktree')
+  key('ArrowLeft'); expect(renderToStaticMarkup(view())).not.toContain('/elsewhere')
+  active = null as string | null
+  key('ArrowDown', 'tOpIc'); expect(active).toBe('i:refs/remotes/upstream/Topic/Long-Name')
+  key('Enter', 'tOpIc')
+  key('Home', 'v1'); key('ArrowDown', 'v1'); key('Enter', 'v1')
+  active = null as string | null; key('Enter', 'wip')
+  expect(picked.slice(1)).toEqual([{ kind: 'branch', branch: branches[2] }, { kind: 'tag', tag: tags[0] }, { kind: 'stash', stash: stashes[0] }])
+  expect(renderToStaticMarkup(view('missing'))).toContain('No matching refs')
+  key('Enter', 'missing'); expect(picked).toHaveLength(4)
 })
 
 test('creation retains its name through base selection, refuses dismissal while running, and keeps errors/drafts after failure', async () => {
@@ -102,7 +133,7 @@ test('creation retains its name through base selection, refuses dismissal while 
   h.key('Escape')
   expect(h.find((p) => p.name === 'branch-name').value).toBe('draft/topic')
   h.find((p) => p.className === 'branch-base').onClick(); h.render()
-  h.find((p) => typeof p.onPick === 'function').onPick({ fullRef: branches[2].fullRef, hash }); h.render()
+  h.find((p) => typeof p.onPick === 'function').onPick({ kind: 'branch', branch: branches[2] }); h.render()
   h.submit(); h.submit(); h.key('Escape')
   tab(); expect(tabPrevented).toBe(true)
   expect(calls).toEqual([['/picker-test', 'draft/topic', { fullRef: branches[2].fullRef, hash }]])
@@ -138,6 +169,6 @@ test('unborn Current HEAD disables creation while a picked fetched base remains 
   h.find((p) => p.name === 'branch-name').onChange({ target: { value: 'first-topic' } }); h.render()
   expect(h.find((p) => p.type === 'submit').disabled).toBe(true)
   h.find((p) => p.className === 'branch-base').onClick(); h.render()
-  h.find((p) => typeof p.onPick === 'function').onPick({ fullRef: branches[1].fullRef, hash }); h.render()
+  h.find((p) => typeof p.onPick === 'function').onPick({ kind: 'branch', branch: branches[1] }); h.render()
   expect(h.find((p) => p.type === 'submit').disabled).toBe(false)
 })
