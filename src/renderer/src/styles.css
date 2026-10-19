@@ -594,7 +594,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-detail.has-commit { display: grid; overflow: hidden; }
 .commit-info { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; z-index: 1; }
 .commit-info .commit-head { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overflow-wrap: anywhere; }
-.commit-info .commit-stat-block { flex: 1; min-height: 0; padding: 12px; grid-template-rows: minmax(0, 1fr) auto; }
+.commit-info .commit-stat-block { flex: 1; min-height: 0; padding: 12px; grid-template-rows: auto minmax(0, 1fr) auto; }
+.commit-info .commit-stat-tree { padding-bottom: 0; }
 .commit-info .commit-stat-list { overflow: auto; }
 .commit-detail .compare-bar { flex-wrap: wrap; }
 .commit-detail .diff-pane { container-type: inline-size; }
@@ -621,15 +622,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-body { margin: 0; white-space: pre-wrap; font: calc(14px + var(--ui-delta))/1.55 var(--font-ui); color: var(--text-2); }
 
 /* Sheets and dialogs. Each dialog is head, body, footer. */
-/* The underlay blurs the app root itself, titlebar included, and the scrim only tints. A backdrop-filter on the scrim left
-   some panels sharp in the live window, because it reads back what the compositor drew; a filter renders the root as one surface.
-   Every dialog portals its scrim to the body, beside the root. A native confirmation adds one too (confirm.ts), which also
-   blurs a dialog it opens over. */
-body:has(> .scrim) > #root, body > .scrim:has(~ .scrim) > * { filter: blur(20px); }
+/* The scrim only tints; nothing under it blurs. Every dialog portals its scrim to the body, beside the root. A native
+   confirmation adds one too (confirm.ts), so a stacked scrim darkens the dialog it opens over. */
 .scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); animation: fade 160ms var(--ease); }
 /* No fade: the sheet blocks the page, and the tint must be whole before it opens. */
 .confirm-scrim { animation: none; }
-/* Opaque, so the panel stays crisp over the blur: the theme's glass over the canvas colour. */
+/* Opaque, so nothing behind shows through: the theme's glass over the canvas colour. */
 .dialog {
   width: min(480px, 90vw); overflow: hidden; border-radius: var(--radius-lg);
   background: linear-gradient(var(--glass-strong) 0 0) Canvas;
@@ -671,9 +669,8 @@ body:has(> .scrim) > #root, body > .scrim:has(~ .scrim) > * { filter: blur(20px)
 /* Popovers: the add menu and the right-click menu. */
 .popover {
   position: absolute; z-index: 40; display: grid; gap: 1px; min-width: 200px; padding: 6px;
-  border-radius: var(--radius-lg); background: var(--glass-strong);
+  border-radius: var(--radius-lg); background: linear-gradient(var(--glass-strong) 0 0) Canvas;
   box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 0.5px var(--glass-edge), var(--glass-shadow);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   animation: pop 140ms var(--ease); transform-origin: top right;
 }
 .add-popover { top: 34px; right: 0; }
@@ -796,6 +793,7 @@ body:has(> .scrim) > #root, body > .scrim:has(~ .scrim) > * { filter: blur(20px)
 
 /* Commit detail stat: one row per changed file (CommitStat.tsx). Rows match the Changes list: 28px, 13.5px names, 12px counts. */
 .commit-stat-block { display: grid; gap: 6px; }
+.commit-stat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .commit-stat-list { margin: 0; padding: 0; list-style: none; }
 .commit-stat-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: var(--row-h-eff); padding: 0 4px; background: transparent; box-shadow: none; text-align: left; }
 .commit-stat-row:hover { background: var(--hover); }

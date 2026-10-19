@@ -187,6 +187,15 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   const sources = [repo, sourceAlias]
   const customPath = path.join(root, 'Custom.app')
   const custom = { id: `custom:editor:${customPath}`, name: 'Custom', path: customPath, kind: 'editor' as const, custom: true }
+  await fs.mkdir(path.join(customPath, 'Contents'), { recursive: true })
+  await fs.writeFile(path.join(customPath, 'Contents', 'Info.plist'), '')
+  // Quick Look fails once, as it can under load, then returns the icon.
+  const thumbnails: string[] = []
+  const nativeImage = { createThumbnailFromPath: async (file: string) => {
+    thumbnails.push(file)
+    if (thumbnails.length === 1) throw new Error('Quick Look timed out')
+    return { isEmpty: () => false, toDataURL: () => 'data:image/png;base64,icon' }
+  } }
   const staged: string[] = []
   const commands: Array<{ file: string; args: string[] }> = []
   // Only the native process boundary is replaced. Real target validation and command construction still run.
@@ -204,7 +213,7 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   await loadEntry('../src/main/index.ts', {
     electron: {
       app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) },
-      BrowserWindow: { getAllWindows: () => [] }, Menu: { setApplicationMenu: () => {} }, nativeTheme: {},
+      BrowserWindow: { getAllWindows: () => [] }, Menu: { setApplicationMenu: () => {} }, nativeTheme: {}, nativeImage,
     },
     'node:path': path, 'node:fs': { statSync }, './config': configModule, './editor': editor, './apps': appsModule,
     '../shared/editors': editors,
@@ -262,6 +271,12 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
     const injected = { ...custom, id: 'custom:editor:/Applications/Other.app', path: '/Applications/Other.app' }
     expect((await api.updateConfig({ settings: { customApps: [custom, injected] } })).settings.customApps).toEqual([custom])
     expect((await api.getConfig()).sources).toEqual(sources)
+    // A failed thumbnail is not cached: the next request reaches Quick Look again and gets the icon, which is then kept.
+    expect(await api.appIcon(customPath)).toBeNull()
+    expect(await api.appIcon(customPath)).toBe('data:image/png;base64,icon')
+    expect(await api.appIcon(customPath)).toBe('data:image/png;base64,icon')
+    expect(await api.appIcon('/Applications/Unlisted.app')).toBeNull()
+    expect(thumbnails).toEqual([customPath, customPath])
   } finally {
     app.emit('will-quit')
   }
@@ -422,6 +437,26 @@ test('App supplies the working-copy editor bridge and Open in buttons independen
   expect(markup('terminal', null)).toContain('disabled')
   renderToStaticMarkup(React.createElement(app.RepoPane, { ...props, tab: 'changes' }))
   expect((bridge as unknown as editorLaunch.EditorBridge).source).toBe('working')
+})
+
+test('a missed app icon is retried on the next load, and a loaded icon is cached', async () => {
+  const replies: Array<string | null | Error> = [new Error('IPC failed'), null, 'data:image/png;base64,icon']
+  const asked: string[] = []
+  const appIcon = async (appPath: string) => {
+    asked.push(appPath)
+    const reply = replies.shift()!
+    if (reply instanceof Error) throw reply
+    return reply
+  }
+  const icons = await loadEntry('../src/renderer/src/app-icons.ts', {}, '', { window: { bettergit: { appIcon } } }) as typeof import('../src/renderer/src/app-icons')
+  const appPath = '/Applications/cmux.app'
+  expect(await icons.loadAppIcon(appPath)).toBeNull()
+  expect(icons.cachedAppIcon(appPath)).toBeUndefined()
+  expect(await icons.loadAppIcon(appPath)).toBeNull()
+  expect(await icons.loadAppIcon(appPath)).toBe('data:image/png;base64,icon')
+  expect(icons.cachedAppIcon(appPath)).toBe('data:image/png;base64,icon')
+  expect(await icons.loadAppIcon(appPath)).toBe('data:image/png;base64,icon')
+  expect(asked).toEqual([appPath, appPath, appPath])
 })
 
 describe('custom apps and terminal folders', () => {

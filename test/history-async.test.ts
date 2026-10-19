@@ -663,3 +663,58 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
 })
+
+// The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old
+// path, and the view choice remembered. Rendered from the real CommitStat with the renderer globals stubbed.
+const STAT_TREE = String.raw`
+const assert = require('node:assert/strict')
+const stored = new Map()
+Object.assign(globalThis, {
+  localStorage: { getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
+  window: { addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout },
+  document: { querySelector: () => null },
+})
+const react = require('react')
+react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { CommitStat } = await import('./src/renderer/src/CommitStat')
+const file = (oldPath, newPath, status) => ({ oldPath, newPath, status, binary: false, hunks: [] })
+const files = [
+  file('src/old/a.ts', 'src/lib/a.ts', 'renamed'),
+  file('docs/gone.md', null, 'deleted'),
+  file('README.md', 'README.md', 'modified'),
+  file(null, 'src/lib/b.ts', 'added'),
+  file('src/z.ts', 'src/z.ts', 'modified'),
+]
+const labels = () => [...renderToStaticMarkup(react.createElement(CommitStat, { files, onSelect() {} }))
+  .matchAll(/aria-label="([^"]*)"/g)].map((match) => match[1]).filter((label) => !/view|layout|Changed files/.test(label))
+
+assert.deepEqual(labels(), [
+  'Show diff for src/old/a.ts → src/lib/a.ts, renamed',
+  'Show diff for docs/gone.md, deleted',
+  'Show diff for README.md, modified',
+  'Show diff for src/lib/b.ts, added',
+  'Show diff for src/z.ts, modified',
+], 'list view keeps the patch order')
+stored.set('bettergit.commitFilesView', 'tree')
+assert.deepEqual(labels(), [
+  'docs, 1 file',
+  'Show diff for docs/gone.md, deleted',
+  'src, 3 files',
+  'src/lib, 2 files',
+  'Show diff for src/old/a.ts → src/lib/a.ts, renamed',
+  'Show diff for src/lib/b.ts, added',
+  'Show diff for src/z.ts, modified',
+  'Show diff for README.md, modified',
+], 'tree view nests folders before files')
+console.log('commit tree cases passed')
+`
+
+test('Commit details list files flat or as a folder tree', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', STAT_TREE], {
+    cwd: `${import.meta.dir}/..`,
+    stderr: 'pipe',
+  })
+  expect(child.exitCode, child.stderr.toString()).toBe(0)
+  expect(child.stdout.toString()).toContain('commit tree cases passed')
+})

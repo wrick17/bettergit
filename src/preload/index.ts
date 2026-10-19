@@ -3,7 +3,7 @@ import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { AppKind, InstalledApp } from '../shared/editors'
-import type { ColorTheme, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
+import type { ColorTheme, ExtensionPreview, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
@@ -69,6 +69,7 @@ const api = {
   installExtension: (namespace: string, name: string) => invoke('extensions:install', namespace, name) as Promise<InstalledExtension>,
   installExtensionFile: () => invoke('extensions:install-file') as Promise<InstalledExtension | null>,
   removeExtension: (id: string) => invoke('extensions:remove', id) as Promise<void>,
+  previewExtension: (namespace: string, name: string) => invoke('extensions:preview', namespace, name) as Promise<ExtensionPreview>,
   colorTheme: (ref: string) => invoke('themes:color', ref) as Promise<ColorTheme | null>,
   iconTheme: (ref: string) => invoke('themes:icons', ref) as Promise<IconTheme | null>,
   // Conflict resolution. The save sends back the fingerprint from load, never a fresh one, and no file text.

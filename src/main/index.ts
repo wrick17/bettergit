@@ -17,7 +17,7 @@ import * as ops from './git/ops'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
-import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
+import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, previewFromOpenVsx, removeExtension, searchOpenVsx } from './extensions'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -301,9 +301,12 @@ function registerIpc() {
     // A custom path is checked again on each request, so a bundle replaced since it was picked is never thumbnailed.
     if (listed.custom && !appIcons.has(appPath) && !await isAppBundle(appPath)) return null
     // getFileIcon gives every .app the same blank document icon on macOS. The Quick Look thumbnail is the real app icon.
+    // Only icons are kept. A failed or empty thumbnail is dropped, so the next request asks Quick Look again.
     if (!appIcons.has(appPath)) {
-      appIcons.set(appPath, nativeImage.createThumbnailFromPath(appPath, { width: 64, height: 64 })
-        .then((image) => (image.isEmpty() ? null : image.toDataURL()), () => null))
+      const icon = nativeImage.createThumbnailFromPath(appPath, { width: 64, height: 64 })
+        .then((image) => (image.isEmpty() ? null : image.toDataURL()), () => null)
+      appIcons.set(appPath, icon)
+      icon.then((url) => { if (!url) appIcons.delete(appPath) })
     }
     return appIcons.get(appPath)
   })
@@ -322,6 +325,8 @@ function registerIpc() {
   })
   ipcMain.handle('extensions:list', () => listExtensions(extensionsDir()))
   ipcMain.handle('extensions:search', (_event, query: unknown) => searchOpenVsx(query))
+  // A preview unpacks into a temp folder and never touches installed extensions or the theme cache, so it skips changingExtensions.
+  ipcMain.handle('extensions:preview', (_event, namespace: unknown, name: unknown) => previewFromOpenVsx(namespace, name))
   ipcMain.handle('extensions:install', (_event, namespace: unknown, name: unknown) =>
     changingExtensions(installFromOpenVsx(extensionsDir(), namespace, name)))
   // The file comes from the open panel here, never from the renderer, so the page cannot make main read a path it chose.
