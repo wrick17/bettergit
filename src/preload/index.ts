@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
-import type { Branch, BranchSelection } from '../main/git/ops'
+import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { AppKind, InstalledApp } from '../shared/editors'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
@@ -47,7 +47,9 @@ const api = {
     invoke('repo:compare', repo, from, to, ignoreWhitespace) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
   openExternal: (url: string) => invoke('system:open-url', url),
   push: (repo: string) => invoke('repo:push', repo),
-  stashes: (repo: string) => invoke('repo:stashes', repo),
+  stashes: (repo: string) => invoke('repo:stashes', repo) as Promise<Stash[]>,
+  tags: (repo: string) => invoke('repo:tags', repo) as Promise<Tag[]>,
+  worktrees: (repo: string) => invoke('repo:worktrees', repo) as Promise<Worktree[]>,
   stash: (repo: string, message: string) => invoke('repo:stash', repo, message),
   stashAction: (repo: string, action: string, ref: string) => invoke('repo:stash-action', repo, action, ref),
   backup: (repo: string, label: string) => invoke('repo:backup', repo, label),
