@@ -75,7 +75,7 @@
   --move-bg: rgba(175, 82, 222, 0.11);
   --tip: rgba(20, 20, 24, 0.9);
   --tip-text: #ffffff;
-  --scrim: rgba(18, 22, 34, 0.16);
+  --scrim: rgba(0, 0, 0, 0.28);
 }
 :root[data-theme='dark'] {
   --find-match: rgba(255, 214, 10, 0.3);
@@ -120,7 +120,7 @@
   --move-bg: rgba(191, 90, 242, 0.16);
   --tip: rgba(236, 236, 242, 0.96);
   --tip-text: #111114;
-  --scrim: rgba(0, 0, 0, 0.36);
+  --scrim: rgba(0, 0, 0, 0.5);
 }
 
 /* Accents from Settings. Each keeps its text colour readable on the theme's surfaces and white text readable on its fill. */
@@ -632,7 +632,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-body { margin: 0; white-space: pre-wrap; font: calc(14px + var(--ui-delta))/1.55 var(--font-ui); color: var(--text-2); }
 
 /* Sheets and dialogs. Each dialog is head, body, footer. */
-.scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); animation: fade 160ms var(--ease); }
+/* A plain dim, like a macOS sheet. A blur here would also become the dialog's backdrop root, so the dialog's own glass
+   would show the smeared page through it instead of frosting it. */
+.scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); animation: fade 160ms var(--ease); }
 .dialog {
   width: min(480px, 90vw); overflow: hidden; border-radius: var(--radius-lg);
   background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -880,7 +882,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .hscroll > div { height: 1px; }
 
 /* Settings: a sidebar of sections and a scrolling pane, like System Settings. */
-.settings-dialog { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; width: min(820px, calc(100vw - 48px)); height: min(580px, calc(100vh - 48px)); }
+.settings-dialog { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; width: min(960px, 90vw); height: min(720px, 85vh); }
 .settings-dialog > .dialog-body { grid-template-columns: 210px minmax(0, 1fr); gap: 0; padding: 0; max-height: none; overflow: hidden; }
 .settings-nav { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 20px 10px; overflow: auto; border-right: 1px solid var(--line); background: var(--sunken); }
 .settings-nav h2 { margin: 0 10px; font-size: calc(17px + var(--ui-delta)); }
