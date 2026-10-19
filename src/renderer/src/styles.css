@@ -2,7 +2,14 @@
    JetBrains Mono is bundled through @fontsource for code. */
 :root {
   --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, sans-serif;
-  --font-code: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  /* Settings > Appearance writes --ui-delta, --code-size and --code-font on :root (appearance.ts). The fallbacks are its defaults. */
+  --font-code: var(--code-font, 'JetBrains Mono'), ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  --ui-delta: 0px;
+  --code-size: 13px;
+  --code-line: calc(var(--code-size) + 9px);
+  /* --row-h is the density's height; list rows use --row-h-eff, which also grows with a larger UI font. */
+  --row-h: 28px;
+  --row-h-eff: calc(var(--row-h) + max(0px, var(--ui-delta)));
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   /* The titlebar band holds the traffic lights (x 16 to 68) and the repo toolbar. Every pane starts below it. */
   --titlebar-h: 48px;
@@ -116,10 +123,32 @@
   --scrim: rgba(0, 0, 0, 0.36);
 }
 
+/* Accents from Settings. Each keeps its text colour readable on the theme's surfaces and white text readable on its fill. */
+:root[data-density='compact'] { --row-h: 24px; }
+:root[data-theme='light'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 14%, transparent); }
+:root[data-theme='dark'][data-accent] { --accent-soft: color-mix(in srgb, var(--accent-fill) 30%, transparent); }
+:root[data-theme='light'][data-accent='purple'] { --accent: #7536b3; --accent-fill: #8944d1; }
+:root[data-theme='dark'][data-accent='purple'] { --accent: #c69bff; --accent-fill: #8346c9; }
+:root[data-theme='light'][data-accent='pink'] { --accent: #b51f58; --accent-fill: #c92a64; }
+:root[data-theme='dark'][data-accent='pink'] { --accent: #ff85b0; --accent-fill: #c02a62; }
+:root[data-theme='light'][data-accent='red'] { --accent: #b8231c; --accent-fill: #c62c25; }
+:root[data-theme='dark'][data-accent='red'] { --accent: #ff8a80; --accent-fill: #c22f28; }
+:root[data-theme='light'][data-accent='orange'] { --accent: #9e4a00; --accent-fill: #b35300; }
+:root[data-theme='dark'][data-accent='orange'] { --accent: #ffad5c; --accent-fill: #ad5000; }
+:root[data-theme='light'][data-accent='green'] { --accent: #17702f; --accent-fill: #1d7d37; }
+:root[data-theme='dark'][data-accent='green'] { --accent: #66d983; --accent-fill: #1b7834; }
+:root[data-theme='light'][data-accent='teal'] { --accent: #096676; --accent-fill: #0b7385; }
+:root[data-theme='dark'][data-accent='teal'] { --accent: #5fd3e3; --accent-fill: #0a6f80; }
+:root[data-theme='light'][data-accent='graphite'] { --accent: #4a515c; --accent-fill: #5b626d; }
+:root[data-theme='dark'][data-accent='graphite'] { --accent: #c3c8d0; --accent-fill: #5b626d; }
+
+/* Registered so its computed value is a resolved length; HistoryView reads it for its virtual rows. */
+@property --row-h-eff { syntax: '<length>'; inherits: true; initial-value: 28px; }
+
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 html, body, #root { height: 100%; margin: 0; background: transparent; }
 body {
-  font: 14px/1.45 var(--font-ui);
+  font: calc(14px + var(--ui-delta))/1.45 var(--font-ui);
   color: var(--text);
   /* Transparent so the window's native material shows through the glass panels. */
   background: transparent;
@@ -138,7 +167,7 @@ button {
   border: 0;
   border-radius: var(--radius-sm);
   padding: 5px 12px;
-  font-size: 13px;
+  font-size: calc(13px + var(--ui-delta));
   cursor: pointer;
   box-shadow: var(--shadow-raised);
   transition: background 120ms var(--ease), transform 120ms var(--ease), box-shadow 160ms var(--ease);
@@ -162,7 +191,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   * { transition: none !important; animation: none !important; }
 }
 
-.hint { color: var(--text-3); padding: 16px; font-size: 13px; }
+.hint { color: var(--text-3); padding: 16px; font-size: calc(13px + var(--ui-delta)); }
 .count { color: var(--text-3); font-weight: 500; font-variant-numeric: tabular-nums; }
 .boot { display: grid; place-items: center; height: 100%; color: var(--text-3); }
 
@@ -213,16 +242,16 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .splitter.gap::after { top: 14px; bottom: 14px; }
 
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 10px 10px; }
-.sidebar-title { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.sidebar-title { font-size: calc(13px + var(--ui-delta)); font-weight: 600; color: var(--text-2); }
 .sidebar-tools { display: flex; align-items: center; gap: 2px; }
 .add-anchor { position: relative; }
 .tree { flex: 1; overflow: auto; min-height: 0; padding-bottom: 12px; }
-.tree-empty { color: var(--text-3); font-size: 13px; line-height: 1.5; padding: 12px 8px; }
+.tree-empty { color: var(--text-3); font-size: calc(13px + var(--ui-delta)); line-height: 1.5; padding: 12px 8px; }
 .sidebar.dragging .tree { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--radius); }
 
 .tree-row {
   display: flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 6px 0 4px; margin-bottom: 1px;
+  height: var(--row-h-eff); padding: 0 6px 0 4px; margin-bottom: 1px;
   border-radius: var(--radius-sm); position: relative; cursor: default; user-select: none;
   --muted-on: var(--text-3);
 }
@@ -250,7 +279,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .tree-children > [role='treeitem'] > .tree-row::before {
   content: ''; position: absolute; left: 0; top: 50%; width: 9px; height: 1px; background: var(--line-strong);
 }
-.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13.5px + var(--ui-delta)); }
 .tree-row.folder .tree-label { font-weight: 600; color: var(--text); }
 .chevron, .chevron-spacer, .row-icon { display: inline-grid; place-items: center; flex: none; }
 .chevron { width: 10px; height: 10px; color: var(--text-3); transition: transform 160ms var(--ease); }
@@ -271,7 +300,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   max-width: min(560px, 80%); padding: 9px 16px; border-radius: var(--radius);
   background: var(--raised); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 var(--glass-edge), var(--glass-shadow);
-  color: var(--del); font-size: 13px; animation: rise 180ms var(--ease);
+  color: var(--del); font-size: calc(13px + var(--ui-delta)); animation: rise 180ms var(--ease);
 }
 
 .toolbar {
@@ -283,11 +312,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* In the titlebar band the toolbar fills the space right of the traffic-light reserve. */
 .titlebar > .toolbar { flex: 1; min-width: 0; height: 100%; padding: 0; }
 .repo-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.repo-name { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.repo-name { margin: 0; font-size: calc(16px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .branch-pill {
   position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
   height: 26px; padding: 0 9px; border-radius: var(--radius-pill); cursor: pointer;
-  background: var(--glass-chip); color: var(--text-2); font: 500 13px/1 var(--font-code);
+  background: var(--glass-chip); color: var(--text-2); font: 500 calc(13px + var(--ui-delta))/1 var(--font-code);
   box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 var(--glass-edge);
   transition: background 120ms var(--ease);
 }
@@ -298,7 +327,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* The native select sits invisibly over the pill, so the menu stays native and keyboard-accessible. */
 .branch-pill select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .branch-pill:focus-within { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
-.sync { display: inline-flex; gap: 8px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sync { display: inline-flex; gap: 8px; font-size: calc(12px + var(--ui-delta)); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .sync b { font-weight: 600; color: var(--text-2); }
 /* Sized to its icons at the right end of the toolbar. It shrinks when the window is narrow, and OverflowBar fills the width it is given. */
 .toolbar-actions {
@@ -312,7 +341,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .tabs { display: flex; align-items: stretch; gap: 4px; height: 40px; padding: 0 12px; flex: none; }
 .tabs button {
   position: relative; display: inline-flex; align-items: center; gap: 6px; margin: 4px 0; padding: 0 12px;
-  background: transparent; box-shadow: none; border-radius: var(--panel-radius); color: var(--text-3); font-weight: 500; font-size: 14px;
+  background: transparent; box-shadow: none; border-radius: var(--panel-radius); color: var(--text-3); font-weight: 500; font-size: calc(14px + var(--ui-delta));
 }
 .tabs button:hover:not(:disabled) { background: var(--hover); color: var(--text-2); }
 .tabs button[aria-selected='true'] { background: var(--glass-chip); color: var(--text); font-weight: 600; }
@@ -325,13 +354,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .changes > .file-list:not(.folded), .history > .history-list:not(.folded) {
   box-shadow: inset 0.5px 0 0 var(--glass-outline), inset -0.5px 0 0 var(--glass-outline), inset 0 -0.5px 0 var(--glass-outline), 0 1px 2px rgba(0, 0, 0, 0.06);
 }
-.tab-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-2); font-size: 12px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.tab-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-2); font-size: calc(12px + var(--ui-delta)); font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 
 /* Empty pane: one mark, one line of guidance, two obvious next steps. */
 .empty { display: grid; place-content: center; justify-items: center; gap: 8px; height: 100%; padding: 0 40px; text-align: center; color: var(--text-2); }
 .empty-mark { width: 56px; height: 56px; margin-bottom: 10px; fill: var(--glass-strong); stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; }
-.empty h1 { margin: 0; color: var(--text); font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
-.empty p { margin: 0 0 14px; max-width: 340px; font-size: 15px; line-height: 1.5; }
+.empty h1 { margin: 0; color: var(--text); font-size: calc(24px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.02em; }
+.empty p { margin: 0 0 14px; max-width: 340px; font-size: calc(15px + var(--ui-delta)); line-height: 1.5; }
 .empty-actions { display: flex; gap: 8px; }
 /* Pane placeholders (EmptyState): a soft accent badge, a short title, one muted line. */
 .empty-state { display: grid; justify-items: center; align-content: center; gap: 6px; min-height: 100%; padding: 32px 24px; text-align: center; }
@@ -340,13 +369,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: radial-gradient(circle at 30% 20%, var(--glass-edge), transparent 65%), var(--accent-soft); box-shadow: var(--shadow-raised);
 }
 .empty-badge svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
-.empty-title { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; }
-.empty-hint { margin: 0; max-width: 300px; color: var(--text-3); font-size: 13px; line-height: 1.5; }
+.empty-title { margin: 0; color: var(--text); font-size: calc(15px + var(--ui-delta)); font-weight: 600; }
+.empty-hint { margin: 0; max-width: 300px; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); line-height: 1.5; }
 .empty-state.compact { min-height: 0; gap: 4px; padding: 28px 16px; }
 .empty-state.compact .empty-badge { width: 40px; height: 40px; margin-bottom: 4px; border-radius: 13px; }
 .empty-state.compact .empty-badge svg { width: 19px; height: 19px; }
-.empty-state.compact .empty-title { font-size: 13px; }
-.empty-state.compact .empty-hint { font-size: 12px; }
+.empty-state.compact .empty-title { font-size: calc(13px + var(--ui-delta)); }
+.empty-state.compact .empty-hint { font-size: calc(12px + var(--ui-delta)); }
 
 /* Changes and history: a list column, a divider, and a reading surface. Column widths are set inline. */
 .changes, .history { position: relative; display: grid; flex: 1; min-height: 0; }
@@ -372,12 +401,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .group h3 {
   display: flex; align-items: center; gap: 6px; margin: 0; padding: 14px 16px 6px;
   position: sticky; top: 0; z-index: 1; background: var(--list);
-  font-size: 13px; font-weight: 600; color: var(--text-3);
+  font-size: calc(13px + var(--ui-delta)); font-weight: 600; color: var(--text-3);
 }
 .group ul { list-style: none; margin: 0; padding: 0 6px; }
 .group li {
   position: relative; display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 6px; border-radius: var(--radius-sm);
+  height: var(--row-h-eff); padding: 0 6px; border-radius: var(--radius-sm);
 }
 .group li:hover { background: var(--hover); }
 .group li.active {
@@ -406,21 +435,21 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .has-row-action:has(> .icon-button.busy) :is(.file-icon, .folder-icon) { opacity: 0; }
 .file { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; text-align: left; color: inherit; }
 .file:hover:not(:disabled) { background: transparent; }
-.path { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13.5px; }
+.path { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: calc(13.5px + var(--ui-delta)); }
 .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; white-space: nowrap; }
-.path-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted-on); }
+.path-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5px + var(--ui-delta)); color: var(--muted-on); }
 .kind {
   display: inline-grid; place-items: center; flex: none;
   width: 17px; height: 17px; border-radius: var(--radius-chip);
   background: var(--hover); color: var(--text-2);
-  font: 700 11px/1 var(--font-ui);
+  font: 700 calc(11px + var(--ui-delta))/1 var(--font-ui);
 }
 .kind-added, .kind-untracked { color: var(--add); background: var(--add-bg); }
 .kind-deleted, .kind-unmerged { color: var(--del); background: var(--del-bg); }
 .kind-modified, .kind-typechanged { color: var(--mod); background: var(--mod-bg); }
 .kind-renamed, .kind-copied { color: var(--ren); background: var(--ren-bg); }
 .group li.active .kind, .tree-row.selected .kind { background: rgba(0, 0, 0, 0.2); color: var(--on-accent); }
-.row-stat { display: inline-flex; gap: 6px; flex: none; font: 500 12px/1 var(--font-code); font-variant-numeric: tabular-nums; }
+.row-stat { display: inline-flex; gap: 6px; flex: none; font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); font-variant-numeric: tabular-nums; }
 .row-stat .add { color: var(--add); }
 .row-stat .del { color: var(--del); }
 .group li.active .row-stat .add, .group li.active .row-stat .del, .tree-row.selected .row-stat .add, .tree-row.selected .row-stat .del { color: var(--on-accent); }
@@ -434,7 +463,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   background: var(--glass-chip);
   box-shadow: var(--shadow-raised);
 }
-.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: 14px/1.45 var(--font-ui); border-radius: var(--radius-sm); }
+.commit-box textarea { resize: none; height: 96px; padding: 8px 12px; background: var(--sunken); font: calc(14px + var(--ui-delta))/1.45 var(--font-ui); border-radius: var(--radius-sm); }
 .commit-action {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   height: 34px; padding: 0 16px; border-radius: var(--radius-pill);
@@ -442,19 +471,19 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 .commit-action:hover:not(:disabled) { filter: brightness(1.07); }
 .commit-action:disabled { background: var(--glass-chip); color: var(--text-3); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
-.commit-action kbd { font: 500 12px/1 var(--font-code); }
+.commit-action kbd { font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); }
 
 /* Diff: one reading surface, a sticky header per file, quiet gutters, tints that carry the meaning. */
-.diff-section { display: flex; align-items: center; gap: 6px; margin: 0; padding: 14px 20px 8px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.diff-section { display: flex; align-items: center; gap: 6px; margin: 0; padding: 14px 20px 8px; font-size: calc(13px + var(--ui-delta)); font-weight: 600; color: var(--text-2); }
 .diff-pane > .hint { padding: 20px 20px; }
 /* One toolbar height for the sticky toolbar and the offset that keeps file headers below it. */
-.diff { position: relative; --diff-toolbar-height: 40px; padding: 0 0 32px; font: 13px/22px var(--font-code); }
+.diff { position: relative; --diff-toolbar-height: 40px; padding: 0 0 32px; font: var(--code-size)/var(--code-line) var(--font-code); }
 /* Above the lines, whose backgrounds would hide a connector, and below the sticky file headers (z 2). */
 .move-arrows { position: absolute; top: 0; left: 0; z-index: 1; overflow: visible; pointer-events: none; }
 /* Above the file headers (z 2), below popovers (z 40) and dialogs (z 50). Near-opaque like the headers (--content), so diff text barely shows through. */
 .diff-toolbar {
   position: sticky; top: 0; z-index: 3; background: var(--content); border-radius: var(--panel-radius) var(--panel-radius) 0 0;
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--diff-toolbar-height); padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); font: 13px/1 var(--font-ui);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--diff-toolbar-height); padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); font: calc(13px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-toolbar-controls { display: inline-flex; align-items: center; gap: 8px; }
 .moves { color: var(--text-3); font-variant-numeric: tabular-nums; }
@@ -462,17 +491,17 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Icon buttons in a toggle keep their own size. The text-button padding below would push the icon off the centre line. */
 .diff-layout-toggle .icon-button { width: 30px; height: 24px; padding: 0; border-radius: var(--radius-pill); }
 .diff-layout-toggle .icon-button.on { background: var(--glass-strong); color: var(--text); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
-.context-toggle button { background: transparent; box-shadow: none; padding: 3px 10px; border-radius: 999px; font-size: 13px; color: var(--text-2); }
+.context-toggle button { background: transparent; box-shadow: none; padding: 3px 10px; border-radius: 999px; font-size: calc(13px + var(--ui-delta)); color: var(--text-2); }
 .context-toggle button:hover:not(:disabled) { background: transparent; color: var(--text); }
 .context-toggle button.on { background: var(--glass-strong); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
 /* The file list header: a muted label and a compact list/tree segmented control on a sunken track. */
 .file-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding: 10px 10px 4px 16px; }
-.file-list-title { color: var(--text-3); font-size: 12px; font-weight: 600; }
+.file-list-title { color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; }
 .changes-view-toggle { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-sm); background: var(--sunken); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
 .changes-view-toggle .icon-button { width: 28px; height: 22px; border-radius: 5px; color: var(--text-3); }
 .changes-view-toggle .icon-button svg { width: 14px; height: 14px; }
 .changes-view-toggle .icon-button.on { background: var(--segment-on); color: var(--text); box-shadow: var(--shadow-raised); }
-.file-list-empty { margin: 0; padding: 6px 16px; color: var(--text-3); font-size: 13px; }
+.file-list-empty { margin: 0; padding: 6px 16px; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); }
 /* Files scrolled far off screen skip layout and paint; the last rendered height keeps the scrollbar stable. */
 /* Files off screen skip layout. Each file sets its own placeholder height (DiffView `estimate`), close to its real one, so
    a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
@@ -487,7 +516,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   position: sticky; top: var(--diff-toolbar-height); z-index: 2;
   display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px 0 20px;
   background: var(--content); border-bottom: 1px solid var(--line);
-  font: 14px/1 var(--font-ui);
+  font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-file > header .path-name { font-weight: 600; }
 /* Header controls: a chevron that collapses the file, and a checkbox wrapper. The icon swaps between right and down, so it does not rotate. */
@@ -498,18 +527,18 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Open in editor keeps its size when the path truncates, so the header's file counts stay visible. */
 .diff-file-open { flex: none; display: inline-grid; place-items: center; }
 /* Stands in for a collapsed file's hunks. */
-.collapsed-note { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 20px; color: var(--text-3); font: 13px/1 var(--font-ui); }
-.collapsed-note button { padding: 4px 10px; font-size: 13px; }
-.stat { margin-left: auto; display: inline-flex; gap: 8px; font: 500 12.5px/1 var(--font-code); font-variant-numeric: tabular-nums; }
+.collapsed-note { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 20px; color: var(--text-3); font: calc(13px + var(--ui-delta))/1 var(--font-ui); }
+.collapsed-note button { padding: 4px 10px; font-size: calc(13px + var(--ui-delta)); }
+.stat { margin-left: auto; display: inline-flex; gap: 8px; font: 500 calc(12.5px + var(--ui-delta))/1 var(--font-code); font-variant-numeric: tabular-nums; }
 .stat .add { color: var(--add); }
 .stat .del { color: var(--del); }
-.hunk-header { padding: 0 20px; line-height: 28px; color: var(--text-3); background: var(--sunken); font-size: 12px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.hunk-header { padding: 0 20px; line-height: 28px; color: var(--text-3); background: var(--sunken); font-size: calc(12px + var(--ui-delta)); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 /* Expand rows sit above and below a hunk. */
-.hunk-expand { display: flex; justify-content: center; align-items: center; gap: 4px; height: 20px; padding: 0 20px; font: 12px/1 var(--font-ui); }
+.hunk-expand { display: flex; justify-content: center; align-items: center; gap: 4px; height: 20px; padding: 0 20px; font: calc(12px + var(--ui-delta))/1 var(--font-ui); }
 .hunk-expand-btn { height: 20px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
 .hunk-expand-btn svg { width: 14px; height: 14px; }
 .hunk-expand-btn:hover:not(:disabled) { background: var(--press); color: var(--text); }
-.line { position: relative; display: flex; min-height: 22px; white-space: pre; }
+.line { position: relative; display: flex; min-height: var(--code-line); white-space: pre; }
 .line.add { background: var(--add-bg); box-shadow: inset 2px 0 0 var(--add); }
 .line.del { background: var(--del-bg); box-shadow: inset 2px 0 0 var(--del); }
 .line.note { color: var(--text-3); font-style: italic; }
@@ -527,13 +556,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .move-note {
   width: fit-content; min-width: 0; max-width: calc(100% - 16px); margin: 3px 8px 0; padding: 0 8px; border-radius: 999px;
   background: var(--move-bg); color: var(--move); box-shadow: inset 0 0 0 0.5px var(--move);
-  font: 500 12px/18px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: 500 calc(12px + var(--ui-delta))/18px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* Unified labels start right of the connector lane. */
 .lane-note { margin-left: 36px; max-width: calc(100% - 44px); }
 /* Split view: the channel between the two columns is where the move arrows travel. */
 .split-row { display: grid; grid-template-columns: 1fr 1fr; column-gap: 36px; align-items: stretch; }
-.split-cell { display: flex; min-width: 0; min-height: 22px; overflow: hidden; white-space: pre; }
+.split-cell { display: flex; min-width: 0; min-height: var(--code-line); overflow: hidden; white-space: pre; }
 /* Fixed attachment: every empty cell samples one viewport origin, so stripes line up across rows whatever their height. */
 .split-cell.empty { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hover) 6px 7px) fixed; }
 .split-cell.add { background: var(--add-bg); }
@@ -548,7 +577,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .search > input { flex: 1; width: 100%; min-width: 0; padding-left: 30px; height: 32px; border-radius: 999px; background: var(--sunken); }
 .commits { list-style: none; margin: 0; padding: 0 6px; outline: none; }
 .commit {
-  display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px 0 0;
+  display: flex; align-items: center; gap: 8px; padding: 0 10px 0 0;
   border-radius: var(--radius-sm); cursor: default; --muted-on: var(--text-3);
 }
 .commit:hover { background: var(--hover); }
@@ -558,13 +587,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* The listbox has no outline of its own, so its active row carries the focus ring. */
 .commits:focus-visible .commit.active { outline: 2px solid var(--accent); outline-offset: -2px; }
 :root:not([data-window='inactive']) .commits:focus-visible .commit.active { outline-color: var(--on-accent); }
-.commit .text { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font-size: 13.5px; }
+.commit .text { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font-size: calc(13.5px + var(--ui-delta)); }
 .commit .subject { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.commit-meta { flex: none; font-size: 12px; color: var(--muted-on); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.commit-meta.hash { font: 500 11px/1 var(--font-code); }
+.commit-meta { flex: none; font-size: calc(12px + var(--ui-delta)); color: var(--muted-on); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.commit-meta.hash { font: 500 calc(11px + var(--ui-delta))/1 var(--font-code); }
 .lanes { flex: none; }
 .ref {
-  flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: var(--radius-chip); font: 600 11px/17px var(--font-code);
+  flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: var(--radius-chip); font: 600 calc(11px + var(--ui-delta))/17px var(--font-code);
   background: var(--accent-soft); color: var(--accent);
 }
 .ref.head { background: var(--accent-fill); color: var(--on-accent); }
@@ -591,16 +620,16 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   .context-toggle button { padding-inline: 7px; }
 }
 .commit-head { display: grid; gap: 12px; padding: 20px; border-bottom: 1px solid var(--line); }
-.commit-subject { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.3; }
-.commit-meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-2); font-size: 13px; }
+.commit-subject { margin: 0; font-size: calc(19px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.02em; line-height: 1.3; }
+.commit-meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-2); font-size: calc(13px + var(--ui-delta)); }
 .avatar {
   display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
-  background: var(--accent-soft); color: var(--accent); font: 600 11px/1 var(--font-ui);
+  background: var(--accent-soft); color: var(--accent); font: 600 calc(11px + var(--ui-delta))/1 var(--font-ui);
   box-shadow: inset 0 0 0 0.5px var(--glass-outline);
 }
 .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-3); }
-.hash { font: 500 12px/1 var(--font-code); color: var(--text-3); }
-.commit-body { margin: 0; white-space: pre-wrap; font: 14px/1.55 var(--font-ui); color: var(--text-2); }
+.hash { font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
+.commit-body { margin: 0; white-space: pre-wrap; font: calc(14px + var(--ui-delta))/1.55 var(--font-ui); color: var(--text-2); }
 
 /* Sheets and dialogs. Each dialog is head, body, footer. */
 .scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--scrim); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); animation: fade 160ms var(--ease); }
@@ -611,16 +640,16 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   animation: dialog-in 200ms var(--ease);
 }
 .dialog-head { padding: 20px 20px 16px; }
-.dialog h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
-.dialog-sub { margin: 5px 0 0; color: var(--text-3); font-size: 13px; line-height: 1.5; }
+.dialog h2 { margin: 0; font-size: calc(17px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.015em; }
+.dialog-sub { margin: 5px 0 0; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); line-height: 1.5; }
 .dialog-body { display: grid; gap: 16px; padding: 0 20px 20px; max-height: 70vh; overflow: auto; }
 .dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
 .dialog-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 8px; }
-.field > span { color: var(--text-2); font-size: 13px; font-weight: 500; }
+.field > span { color: var(--text-2); font-size: calc(13px + var(--ui-delta)); font-weight: 500; }
 .input-row { display: flex; gap: 6px; }
 .input-row input { flex: 1; min-width: 0; }
-.dialog-error { margin: 0; color: var(--del); font-size: 13px; }
+.dialog-error { margin: 0; color: var(--del); font-size: calc(13px + var(--ui-delta)); }
 .primary { background: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
 .primary:hover:not(:disabled) { filter: brightness(1.07); }
 .primary:disabled { opacity: 0.45; }
@@ -628,19 +657,17 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .ghost:hover:not(:disabled) { background: var(--hover); }
 
 .settings-section { display: grid; gap: 8px; }
-.settings-section > h3 { margin: 0 4px; color: var(--text-3); font-size: 13px; font-weight: 600; }
+.settings-section > h3 { margin: 0 4px; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); font-weight: 600; }
 .settings-group { overflow: hidden; border-radius: var(--radius-card); background: var(--glass-chip); box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 var(--glass-edge); }
-.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; padding: 8px 16px; }
+.setting { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; min-height: 48px; padding: 8px 16px; }
 .setting + .setting { border-top: 1px solid var(--line); }
 .setting label { display: flex; align-items: center; gap: 8px; cursor: default; }
-.setting small { display: block; margin-top: 2px; color: var(--text-3); font-size: 12.5px; }
+.setting small { display: block; margin-top: 2px; color: var(--text-3); font-size: calc(12.5px + var(--ui-delta)); }
 .setting select { min-width: 130px; }
 .setting-stack { flex-direction: column; align-items: stretch; gap: 8px; }
-/* A row whose control is a segmented group (Text size) stacks the control under its label and description. */
-.setting:has(> .segmented) { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 8px; }
-.setting-stack textarea { height: 104px; resize: vertical; font: 13px/1.5 var(--font-code); }
+.setting-stack textarea { height: 104px; resize: vertical; font: calc(13px + var(--ui-delta))/1.5 var(--font-code); }
 .segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--glass-chip); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1); }
-.segmented button { background: transparent; box-shadow: none; padding: 4px 12px; border-radius: 999px; color: var(--text-2); font-size: 13px; }
+.segmented button { background: transparent; box-shadow: none; padding: 4px 12px; border-radius: 999px; color: var(--text-2); font-size: calc(13px + var(--ui-delta)); }
 .segmented button:hover:not(:disabled) { background: transparent; color: var(--text); }
 .segmented button.on { background: var(--glass-strong); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
 
@@ -699,25 +726,25 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 :root[data-window='inactive'] .tree-row.selected .row-icon { color: var(--text-3); }
 
 /* Repo menu */
-.repo-note { margin: 0 20px; color: var(--text-3); font-size: 12.5px; cursor: default; }
+.repo-note { margin: 0 20px; color: var(--text-3); font-size: calc(12.5px + var(--ui-delta)); cursor: default; }
 .stash-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .stash-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--glass-chip); }
-.stash-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.stash-list b { font: 500 12.5px var(--font-code); color: var(--text-2); margin-right: 6px; }
+.stash-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px + var(--ui-delta)); }
+.stash-list b { font: 500 calc(12.5px + var(--ui-delta)) var(--font-code); color: var(--text-2); margin-right: 6px; }
 
 /* Commit menu */
 .commit-head { position: relative; }
 .commit-head > .commit-subject { padding-right: 36px; }
-.commit-notice { margin: 0; color: var(--text-2); font-size: 13px; }
-.compare-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); color: var(--text-2); font-size: 13px; }
-.field textarea { min-height: 140px; resize: vertical; font: 13px/1.5 var(--font-code); }
+.commit-notice { margin: 0; color: var(--text-2); font-size: calc(13px + var(--ui-delta)); }
+.compare-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); color: var(--text-2); font-size: calc(13px + var(--ui-delta)); }
+.field textarea { min-height: 140px; resize: vertical; font: calc(13px + var(--ui-delta))/1.5 var(--font-code); }
 
 /* Repo branch label */
-.repo-branch { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/1 var(--font-code); color: var(--text-3); }
+.repo-branch { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 calc(11px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
 .tree-row.selected .repo-branch { color: var(--muted-on); }
 
 /* Tree folder stats */
-.folder-count { flex: none; margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-3); font-size: 12px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.folder-count { flex: none; margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--glass-chip); color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 
 /* Repo action icons */
 .toolbar-divider { flex: none; width: 1px; height: 16px; margin: 0 3px; background: var(--line); }
@@ -728,7 +755,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-title .commit-notice { flex-basis: 100%; }
 
 /* Repo dirty count */
-.repo-dirty { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 11px/1.4 var(--font-code); font-variant-numeric: tabular-nums; }
+.repo-dirty { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 calc(11px + var(--ui-delta))/1.4 var(--font-code); font-variant-numeric: tabular-nums; }
 .tree-row.selected .repo-dirty { background: rgba(0, 0, 0, 0.2); color: var(--on-accent); }
 
 /* Panel layout: the pane toggles sit at the right end of the tab row. A hidden pane is not rendered, so its
@@ -752,9 +779,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .fold-strip svg { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .fold-label {
   min-height: 0; max-height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; font-weight: 600; color: var(--text);
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: calc(13px + var(--ui-delta)); font-weight: 600; color: var(--text);
 }
-.fold-label code { font: 500 11px/1 var(--font-code); color: var(--text-3); }
+.fold-label code { font: 500 calc(11px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
 .folded:not(.held) > :not(.fold-strip) { visibility: hidden; }
 .folded.held > .fold-strip { display: none; }
 /* The sidebar's 8px side padding is cancelled, so the strip fills the 36px column the 44px track leaves beside its margin. */
@@ -773,19 +800,19 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Commit detail stat: one row per changed file (CommitStat.tsx). Rows match the Changes list: 28px, 13.5px names, 12px counts. */
 .commit-stat-block { display: grid; gap: 6px; }
 .commit-stat-list { margin: 0; padding: 0; list-style: none; }
-.commit-stat-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: 28px; padding: 0 4px; background: transparent; box-shadow: none; text-align: left; }
+.commit-stat-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: var(--row-h-eff); padding: 0 4px; background: transparent; box-shadow: none; text-align: left; }
 .commit-stat-row:hover { background: var(--hover); }
 .commit-stat-row .path { flex: 1 1 auto; }
 .commit-stat-row .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.commit-stat-note { flex: none; font: 500 12px/1 var(--font-code); color: var(--text-3); }
-.commit-stat-summary { margin: 0; font: 500 12px/1.4 var(--font-code); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.commit-stat-note { flex: none; font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
+.commit-stat-summary { margin: 0; font: 500 calc(12px + var(--ui-delta))/1.4 var(--font-code); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .commit-stat-summary .add { color: var(--add); }
 .commit-stat-summary .del { color: var(--del); }
 
 /* Tooltip chip for IconButton (Icons.tsx). It is fixed to the window, so toolbars and panes that clip cannot hide it. */
 .tooltip {
   position: fixed; z-index: 60; padding: 5px 9px; border-radius: 7px; background: var(--tip); color: var(--tip-text);
-  font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none;
+  font-size: calc(12px + var(--ui-delta)); font-weight: 500; white-space: nowrap; pointer-events: none;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
   border-radius: var(--radius-sm);
   animation: fade 120ms var(--ease) 350ms both;
@@ -798,7 +825,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 :root:not([data-window='inactive']) .tree-row.selected .icon-button.discard,
 :root:not([data-window='inactive']) .group li.active .icon-button.discard { color: var(--on-accent); }
 /* The warning above a dialog field (PromptDialog note). */
-.dialog-note { color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.dialog-note { color: var(--text-2); font-size: calc(13px + var(--ui-delta)); line-height: 1.5; }
 .dialog-note p { margin: 0 0 6px; }
 
 /* Roving sidebar rows keep their focus ring while the icon action is available to Tab. */
@@ -814,19 +841,19 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .author-trigger { width: 32px; height: 32px; border-radius: var(--radius-pill); }
 .author-count {
   position: absolute; top: 1px; right: 0; min-width: 15px; height: 15px; padding: 0 4px; border-radius: var(--radius-pill);
-  background: var(--accent-fill); color: var(--on-accent); font: 600 10px/15px var(--font-ui); text-align: center;
+  background: var(--accent-fill); color: var(--on-accent); font: 600 calc(10px + var(--ui-delta))/15px var(--font-ui); text-align: center;
 }
 .author-popover { top: 38px; right: 0; width: 260px; gap: 6px; }
 .author-popover input[type='search'] { width: 100%; height: 30px; }
 .author-options { display: grid; gap: 1px; max-height: min(320px, 50vh); overflow: auto; }
-.author-option { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 13px; cursor: default; }
+.author-option { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; border-radius: var(--radius-sm); font-size: calc(13px + var(--ui-delta)); cursor: default; }
 .author-option:hover { background: var(--hover); }
 .author-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.author-note { margin: 0; padding: 6px 10px; color: var(--text-3); font-size: 13px; }
+.author-note { margin: 0; padding: 6px 10px; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); }
 .author-chips { display: flex; flex-wrap: wrap; gap: 4px; flex-basis: 100%; }
 .author-chip {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 22px; padding: 0 6px 0 9px; border-radius: var(--radius-pill);
-  background: var(--accent-soft); color: var(--accent); box-shadow: none; font-size: 12px; font-weight: 500;
+  background: var(--accent-soft); color: var(--accent); box-shadow: none; font-size: calc(12px + var(--ui-delta)); font-weight: 500;
 }
 .author-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .author-chip svg { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
@@ -835,7 +862,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* In-app find: a compact bar at the top right of the window, above the panes and below dialogs. */
 .find-bar {
   position: fixed; top: 58px; right: 132px; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 10px;
-  border-radius: var(--radius-card); background: var(--raised); box-shadow: inset 0 0 0 0.5px var(--glass-outline), var(--glass-shadow); font: 13px/1 var(--font-ui);
+  border-radius: var(--radius-card); background: var(--raised); box-shadow: inset 0 0 0 0.5px var(--glass-outline), var(--glass-shadow); font: calc(13px + var(--ui-delta))/1 var(--font-ui);
 }
 .find-bar input { width: 220px; height: 26px; padding: 0 8px; }
 .find-count { min-width: 64px; color: var(--text-3); font-variant-numeric: tabular-nums; text-align: right; }
@@ -851,3 +878,46 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* The file's sideways scrollbar overlays the last 10px instead of taking room, and sticks to the pane's bottom edge. */
 .hscroll { position: sticky; bottom: 0; z-index: 3; height: 10px; margin-top: -10px; overflow-x: auto; overflow-y: hidden; }
 .hscroll > div { height: 1px; }
+
+/* Settings: a sidebar of sections and a scrolling pane, like System Settings. */
+.settings-dialog { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; width: min(820px, calc(100vw - 48px)); height: min(580px, calc(100vh - 48px)); }
+.settings-dialog > .dialog-body { grid-template-columns: 210px minmax(0, 1fr); gap: 0; padding: 0; max-height: none; overflow: hidden; }
+.settings-nav { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 20px 10px; overflow: auto; border-right: 1px solid var(--line); background: var(--sunken); }
+.settings-nav h2 { margin: 0 10px; font-size: calc(17px + var(--ui-delta)); }
+.settings-nav [role='tablist'] { display: grid; gap: 2px; }
+.settings-nav [role='tab'] { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 10px; background: transparent; box-shadow: none; text-align: left; color: var(--text); }
+.settings-nav [role='tab'] svg { flex: none; width: 16px; height: 16px; color: var(--text-3); }
+.settings-nav [role='tab']:hover:not(.on) { background: var(--hover); }
+.settings-nav [role='tab'].on { background: var(--accent-fill); color: var(--on-accent); }
+.settings-nav [role='tab'].on svg { color: var(--on-accent); }
+.settings-nav [role='tab'] span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-pane { display: flex; flex-direction: column; gap: 20px; min-width: 0; min-height: 0; padding: 20px 24px 24px; overflow: auto; }
+.settings-title { margin: 0; font-size: calc(17px + var(--ui-delta)); font-weight: 650; letter-spacing: -0.015em; }
+.settings-section > h4 { margin: 0 4px; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-weight: 600; }
+.setting-label { flex: 1 1 180px; display: grid; min-width: 0; }
+.settings-actions { display: flex; justify-content: flex-end; }
+/* Narrow windows keep the section icons and drop their names. */
+@media (max-width: 640px) {
+  .settings-dialog > .dialog-body { grid-template-columns: 56px minmax(0, 1fr); }
+  .settings-nav h2, .settings-nav [role='tab'] span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .settings-nav [role='tab'] { justify-content: center; padding: 0; }
+}
+
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15); }
+.swatch:hover:not(:disabled) { filter: brightness(1.1); }
+.swatch.on { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px var(--text-3); }
+
+.app-picker { display: grid; gap: 4px; justify-items: end; }
+.app-picker-trigger { display: flex; align-items: center; gap: 8px; min-width: 200px; max-width: 280px; height: 32px; padding: 0 10px 0 8px; text-align: left; }
+.app-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-chevron { flex: none; width: 12px; height: 12px; color: var(--text-3); }
+.app-icon { flex: none; display: inline-grid; place-items: center; width: 18px; height: 18px; color: var(--text-3); }
+.app-icon svg { width: 15px; height: 15px; }
+.app-custom { flex: none; padding: 0 6px; border-radius: var(--radius-pill); background: var(--sunken); color: var(--text-3); font-size: calc(11px + var(--ui-delta)); line-height: 1.5; }
+.app-picker-list { position: absolute; margin: 0; list-style: none; overflow: auto; outline: none; transform-origin: top left; }
+.app-picker-list > li[role='option'] { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; border-radius: var(--radius-sm); cursor: default; }
+.app-picker-list > li.chosen { font-weight: 600; }
+.app-picker-list > li.active { background: var(--accent-fill); color: var(--on-accent); }
+.app-picker-list > li.active .app-icon, .app-picker-list > li.active .app-custom { color: var(--on-accent); }
+.app-picker-list > li.active .app-custom { background: rgba(255, 255, 255, 0.2); }

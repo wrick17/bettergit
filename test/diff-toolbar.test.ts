@@ -26,7 +26,7 @@ const files = source ? [{ oldPath: 'gone.txt', newPath: null, status: 'deleted',
 // The staged section passes a stage control, as ChangesView does.
 const stage = process.env.STAGED ? { staged: true, onToggle: () => undefined } : undefined
 const view = createElement(DiffView, { files, moves: [], stage })
-const bridge = { editor: 'vscode', openFile: async () => undefined, onError: () => undefined, source }
+const bridge = { app: { name: 'VS Code', icon: null }, openFile: async () => undefined, onError: () => undefined, source }
 console.log(JSON.stringify(renderToStaticMarkup(source ? createElement(EditorContext.Provider, { value: bridge }, view) : view)))
 `
 

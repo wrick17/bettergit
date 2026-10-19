@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { Branch, BranchSelection } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
+import type { AppKind, InstalledApp } from '../shared/editors'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
@@ -54,6 +55,11 @@ const api = {
   clone: (url: string, parent: string) => invoke('clone', url, parent),
   reveal: (repo: string) => invoke('repo:reveal', repo),
   openInEditor: (repo: string, path?: string) => invoke('repo:open-in-editor', repo, path) as Promise<void>,
+  openInTerminal: (repoPath: string) => invoke('repo:open-in-terminal', repoPath) as Promise<void>,
+  // Editors and terminals for Settings. Icons are PNG data URLs, null when macOS has none.
+  listApps: (kind: AppKind) => invoke('apps:list', kind) as Promise<InstalledApp[]>,
+  appIcon: (appPath: string) => invoke('apps:icon', appPath) as Promise<string | null>,
+  pickApp: (kind: AppKind) => invoke('apps:pick', kind) as Promise<InstalledApp | null>,
   // Conflict resolution. The save sends back the fingerprint from load, never a fresh one, and no file text.
   conflictLoad: (repo: string, file: string) => invoke('repo:conflict-load', repo, file) as Promise<ConflictDocument>,
   conflictPreview: (repo: string, file: string, save: ConflictSave) =>

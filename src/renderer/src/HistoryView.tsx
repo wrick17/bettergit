@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject, type UIEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type RefObject, type UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { layoutGraph, type GraphRow, type GraphState } from '../../main/git/graph'
 import type { Commit } from '../../main/git/history'
@@ -21,11 +21,24 @@ const COMMIT_CACHE = 24
 type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
 // Geometry and colors match better-source-control's graph, so the two read the same.
 const LANE_WIDTH = 11
-const ROW_HEIGHT = 28
-const MID = ROW_HEIGHT / 2
-const TOP = Math.round(ROW_HEIGHT * 0.27)
-const LOW = ROW_HEIGHT - TOP
 const MAX_LANES = 10
+// Rows take --row-h-eff (styles.css: density plus a larger UI font). appearance.ts writes its inputs on :root, so the height
+// is read once per :root change and cached, never per row or per render.
+let rowHeightCache: number | undefined
+const measureRowHeight = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-h-eff')) || 28
+const readRowHeight = () => (rowHeightCache ??= measureRowHeight())
+function subscribeRowHeight(onChange: () => void) {
+  const observer = new MutationObserver(() => {
+    rowHeightCache = measureRowHeight()
+    onChange()
+  })
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-density'] })
+  return () => {
+    observer.disconnect()
+    // Unwatched, the cache could go stale. The next list measures afresh.
+    rowHeightCache = undefined
+  }
+}
 // The list mounts only the rows near its viewport. The window moves in steps of rows, so scrolling re-renders it every
 // few rows rather than every frame, and keeps this many rows mounted past each edge.
 const WINDOW_STEP = 10
@@ -533,8 +546,11 @@ interface Segment {
 
 // Ported from better-source-control's graphSvg: rounded lane shifts, straight pass-through lanes,
 // and merge curves that leave the commit dot toward each extra parent. Every y value scales with the row height.
-function graphSegments(row: GraphRow<Commit>): Segment[] {
+function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
   const { commit } = row
+  const MID = rowHeight / 2
+  const TOP = Math.round(rowHeight * 0.27)
+  const LOW = rowHeight - TOP
   const x = (lane: number) => LANE_WIDTH * (lane + 1)
   const color = (index: number) => COLORS[index % COLORS.length]
   const segments: Segment[] = []
@@ -550,8 +566,8 @@ function graphSegments(row: GraphRow<Commit>): Segment[] {
       const to = outputIndex++
       segments.push({
         d: index === to
-          ? `M${x(index)} 0V${ROW_HEIGHT}`
-          : `M${x(index)} 0V${TOP}Q${x(index)} ${MID} ${x(index) - 5} ${MID}H${x(to) + 5}Q${x(to)} ${MID} ${x(to)} ${LOW}V${ROW_HEIGHT}`,
+          ? `M${x(index)} 0V${rowHeight}`
+          : `M${x(index)} 0V${TOP}Q${x(index)} ${MID} ${x(index) - 5} ${MID}H${x(to) + 5}Q${x(to)} ${MID} ${x(to)} ${LOW}V${rowHeight}`,
         color: color(input.color),
       })
     }
@@ -566,14 +582,14 @@ function graphSegments(row: GraphRow<Commit>): Segment[] {
     }
     if (parentIndex !== -1) {
       segments.push({
-        d: `M${x(row.lane)} ${MID}H${x(parentIndex) - 11}Q${x(parentIndex)} ${MID} ${x(parentIndex)} ${ROW_HEIGHT}`,
+        d: `M${x(row.lane)} ${MID}H${x(parentIndex) - 11}Q${x(parentIndex)} ${MID} ${x(parentIndex)} ${rowHeight}`,
         color: color(row.output[parentIndex].color),
       })
     }
   }
   const input = row.input[row.lane]
   if (input?.hash === commit.hash) segments.push({ d: `M${x(row.lane)} 0V${MID}`, color: color(input.color) })
-  if (commit.parents.length) segments.push({ d: `M${x(row.lane)} ${MID}V${ROW_HEIGHT}`, color: color(row.color) })
+  if (commit.parents.length) segments.push({ d: `M${x(row.lane)} ${MID}V${rowHeight}`, color: color(row.color) })
   return segments
 }
 
@@ -618,16 +634,24 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
   onKeyDown: (event: KeyboardEvent<HTMLUListElement>) => void
 }) {
   const [span, setSpan] = useState({ first: 0, last: FIRST_WINDOW })
+  const rowHeight = useSyncExternalStore(subscribeRowHeight, readRowHeight)
+  const laidOut = useRef(rowHeight)
   // The window follows the scroll and size of the pane the list sits in. It is read before paint, so the first frame
   // already shows its rows. The pane is the list's parent: its own ref is not attached yet when this runs.
   useLayoutEffect(() => {
     const list = listRef.current
     const element = list?.parentElement
     if (!element || !list) return
+    // A new row height keeps the same commit at the top of the pane instead of the same pixel offset.
+    if (laidOut.current !== rowHeight) {
+      const listTop = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
+      if (element.scrollTop > listTop) element.scrollTop = listTop + ((element.scrollTop - listTop) / laidOut.current) * rowHeight
+      laidOut.current = rowHeight
+    }
     const update = () => {
       const top = Math.max(0, element.getBoundingClientRect().top - list.getBoundingClientRect().top)
-      const first = Math.max(0, Math.floor(top / ROW_HEIGHT / WINDOW_STEP) * WINDOW_STEP - OVERSCAN)
-      const last = Math.ceil((top + element.clientHeight) / ROW_HEIGHT / WINDOW_STEP) * WINDOW_STEP + OVERSCAN
+      const first = Math.max(0, Math.floor(top / rowHeight / WINDOW_STEP) * WINDOW_STEP - OVERSCAN)
+      const last = Math.ceil((top + element.clientHeight) / rowHeight / WINDOW_STEP) * WINDOW_STEP + OVERSCAN
       setSpan((span) => (span.first === first && span.last === last ? span : { first, last }))
     }
     update()
@@ -638,7 +662,7 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
       element.removeEventListener('scroll', update)
       resize?.disconnect()
     }
-  }, [listRef])
+  }, [listRef, rowHeight])
   // A new selection scrolls its row into view, mounted or not. The search field is sticky over the list's top, so a row
   // above the fold is brought to just below it.
   const index = selected ? indexOf.get(selected) : undefined
@@ -647,9 +671,9 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
     const element = list?.parentElement
     if (!element || !list || index === undefined) return
     const offset = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
-    const top = offset + index * ROW_HEIGHT
+    const top = offset + index * rowHeight
     if (top - offset < element.scrollTop) element.scrollTop = top - offset
-    else if (top + ROW_HEIGHT > element.scrollTop + element.clientHeight) element.scrollTop = top + ROW_HEIGHT - element.clientHeight
+    else if (top + rowHeight > element.scrollTop + element.clientHeight) element.scrollTop = top + rowHeight - element.clientHeight
   }, [selected])
   const first = Math.min(span.first, rows.length)
   const last = Math.min(span.last, rows.length)
@@ -663,13 +687,14 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
       // Only a mounted row can be the active descendant.
       aria-activedescendant={selected && index !== undefined && index >= first && index < last ? optionId(selected) : undefined}
       onKeyDown={onKeyDown}
-      style={{ paddingTop: first * ROW_HEIGHT, paddingBottom: (rows.length - last) * ROW_HEIGHT }}
+      style={{ paddingTop: first * rowHeight, paddingBottom: (rows.length - last) * rowHeight }}
     >
       {rows.slice(first, last).map((row) => (
         <CommitRow
           key={row.commit.hash}
           row={row}
           graphWidth={graphWidth}
+          rowHeight={rowHeight}
           active={selected === row.commit.hash}
           isHead={row.commit.hash === head}
           onSelect={onSelect}
@@ -680,9 +705,10 @@ function CommitList({ listRef, rows, indexOf, selected, head, graphWidth, onSele
   )
 }
 
-const CommitRow = memo(function CommitRow({ row, graphWidth, active, isHead, onSelect, onMenu }: {
+const CommitRow = memo(function CommitRow({ row, graphWidth, rowHeight, active, isHead, onSelect, onMenu }: {
   row: GraphRow<Commit>
   graphWidth: number
+  rowHeight: number
   active: boolean
   isHead: boolean
   onSelect: (hash: string) => void
@@ -694,14 +720,14 @@ const CommitRow = memo(function CommitRow({ row, graphWidth, active, isHead, onS
   const nodeColor = COLORS[row.color % COLORS.length]
   const refs = commit.refs.map((ref) => ref.replace('HEAD -> ', ''))
   return (
-    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} onClick={() => onSelect(commit.hash)} onContextMenu={(event) => { event.preventDefault(); onMenu(commit.hash, event.clientX, event.clientY) }}>
-      <svg className="lanes" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
-        {graphSegments(row).map((segment, index) => (
+    <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} style={{ height: rowHeight }} onClick={() => onSelect(commit.hash)} onContextMenu={(event) => { event.preventDefault(); onMenu(commit.hash, event.clientX, event.clientY) }}>
+      <svg className="lanes" width={graphWidth} height={rowHeight} aria-hidden="true">
+        {graphSegments(row, rowHeight).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
         ))}
         <circle
           cx={x}
-          cy={MID}
+          cy={rowHeight / 2}
           r={radius}
           fill={isHead ? 'var(--content)' : nodeColor}
           stroke={nodeColor}

@@ -2,9 +2,9 @@ import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent }
 import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Cherry, ChevronDown, ChevronRight, ChevronUp, Columns2, Columns3,
-  CloudDownload, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitCommitHorizontal, GitCompare,
+  CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
-  MousePointerClick, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
+  MousePointerClick, Palette, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
@@ -35,6 +35,9 @@ const ICONS = {
   popLatest: PackageMinus,
   diff: FileDiff,
   externalLink: ExternalLink,
+  // Generic Open in … glyphs, shown until the chosen app's own icon loads.
+  code: Code,
+  terminal: SquareTerminal,
   locate: LocateFixed,
   tag: Tag,
   cherry: Cherry,
@@ -54,6 +57,7 @@ const ICONS = {
   branch: GitBranch,
   search: Search,
   settings: Settings,
+  palette: Palette,
   trash: Trash2,
   unfold: UnfoldVertical,
   wrap: WrapText,
@@ -104,7 +108,7 @@ export function toggleLabel(state: string, action: string) {
 
 // The tooltip of a control: shown on hover or keyboard focus. It re-renders with the control, so a click that changes
 // the label changes the tooltip at once.
-function useTooltip(tip: string) {
+export function useTooltip(tip: string) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null)
   return {
     handlers: {
@@ -131,8 +135,10 @@ export function TextToggle({ text, label, active, onClick }: { text: string; lab
 // An icon-only button. The label is both the accessible name and the hover or keyboard-focus tooltip.
 // While `busy`, the glyph becomes a spinner and aria-busy is set. The label should then say what runs.
 // `blocked` gives the reason a control cannot run now. It stays focusable and hoverable, so the reason shows as a tooltip.
-export function IconButton({ icon, label, onClick, active, disabled, busy, blocked, className, tabIndex }: {
+export function IconButton({ icon, image, label, onClick, active, disabled, busy, blocked, className, tabIndex }: {
   icon: IconName
+  // An image URL (an app icon) shown instead of the glyph once it has loaded.
+  image?: string | null
   label: string
   onClick: () => void
   active?: boolean
@@ -157,7 +163,9 @@ export function IconButton({ icon, label, onClick, active, disabled, busy, block
       onClick={inert ? undefined : onClick}
       {...handlers}
     >
-      <Icon name={busy ? 'loader' : icon} className={busy ? 'action-spin' : undefined} />
+      {image && !busy
+        ? <img src={image} alt="" width={16} height={16} draggable={false} />
+        : <Icon name={busy ? 'loader' : icon} className={busy ? 'action-spin' : undefined} />}
       {tooltip}
     </button>
   )

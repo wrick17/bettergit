@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react'
+
 // Sideways scrolling of one file's code while long lines do not wrap. Each file section keeps one offset. It moves every
 // row's text (the `--sx` variable, a transform, so no row lays out again), the file's scrollbar, and any editor in the
 // file, so both columns of a split view always move together. A scroll that comes back with the value already set stops
@@ -50,20 +52,51 @@ export function hscrollOf(section: HTMLElement): HScroll {
   return controller
 }
 
-// The width in pixels of one digit of the code font, measured once from the page.
-let digit = 0
-export function charWidth(): number {
-  if (digit) return digit
+// The code font's metrics at the current appearance: one digit's width and the line height, measured once per change.
+let metrics: { digit: number; line: number } | null = null
+let version = 0
+const listeners = new Set<() => void>()
+let watching = false
+function measure() {
+  if (metrics) return metrics
+  watch()
   const probe = document.createElement('span')
-  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:13px/22px var(--font-code)'
+  probe.style.cssText = 'position:absolute;visibility:hidden;display:inline-block;white-space:pre;font:var(--code-size)/var(--code-line) var(--font-code)'
   probe.textContent = '0'.repeat(100)
   document.body.appendChild(probe)
-  const width = probe.getBoundingClientRect().width / 100
+  const box = probe.getBoundingClientRect()
   probe.remove()
+  const next = { digit: box.width / 100, line: box.height || 22 }
   // Kept only once the code font has loaded, so a fallback font's width is measured again later.
-  if (document.fonts?.status === 'loaded') digit = width
-  return width
+  if (document.fonts?.status === 'loaded') metrics = next
+  return next
 }
+// Settings > Appearance rewrites the code font and size on :root (appearance.ts), and a newly chosen font can finish
+// loading later. Either measures again and, if the metrics moved, tells every subscriber, so sizes derived from them follow.
+function watch() {
+  if (watching || typeof MutationObserver === 'undefined') return
+  watching = true
+  const changed = () => {
+    const before = metrics
+    metrics = null
+    const after = measure()
+    if (before && before.digit === after.digit && before.line === after.line) return
+    version++
+    for (const listener of listeners) listener()
+  }
+  new MutationObserver(changed).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-density'] })
+  document.fonts?.addEventListener('loadingdone', changed)
+}
+function subscribe(listener: () => void) {
+  watch()
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+export const charWidth = () => measure().digit
+export const codeLine = () => measure().line
+// Changes whenever the code font's metrics do. Put it in the dependencies of anything sized from them.
+export const useCodeMetrics = () => useSyncExternalStore(subscribe, () => version)
 
 // The widest line in columns, with tabs to the next stop. shortcut: every character counts as one column, so wide
 // characters (CJK, emoji) can be cut short at the far right; upgrade to measuring mounted rows if that shows up.

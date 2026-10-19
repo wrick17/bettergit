@@ -1,11 +1,10 @@
 import { Fragment, memo, startTransition, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { DiffFile, DiffHunk, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
-import { EDITORS } from '../../shared/editors'
 import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
 import { Icon, IconButton, TextToggle, toggleLabel } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, setWordWrap, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides, useWordWrap } from './prefs'
-import { charWidth, columns, hscrollOf } from './hscroll'
+import { charWidth, columns, hscrollOf, useCodeMetrics } from './hscroll'
 import { cachedFileTokens, highlightFile, languageFor, warmColours, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
@@ -359,7 +358,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
   useLayoutEffect(() => (sectionRef.current ? holdPlace(sectionRef.current, true) : undefined), [])
   // Set on the element rather than in the markup, which stays free of style attributes.
   const estimate = estimateHeight(file, open, !!onExpand)
-  useLayoutEffect(() => { sectionRef.current?.style.setProperty('--file-estimate', `${estimate}px`) }, [estimate])
+  useLayoutEffect(() => { sectionRef.current?.style.setProperty('--file-estimate', estimate) }, [estimate])
   // The widest line an editable file shows, which can be outside the diff's hunks once folds open.
   const [editorExtent, setEditorExtent] = useState(0)
   // A conflict row shows only its own text: colours made for other lines, such as before a choice changed the file, are dropped.
@@ -906,7 +905,7 @@ function FileHeader({ file, stat, open, onToggle, stage, actions }: {
 // or past deletion may have been recreated), so the main process checks it and reports a missing one.
 function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBridge }) {
   const path = pathOf(file)
-  const { label } = EDITORS[bridge.editor]
+  const label = bridge.app.name
   const { busy, open } = useEditorLaunch(() => bridge.openFile(path), bridge.onError)
   const commit = bridge.source === 'commit'
   const target = commit ? `working copy of ${path}` : path
@@ -915,6 +914,7 @@ function OpenInEditorButton({ file, bridge }: { file: DiffFile; bridge: EditorBr
     <span className="diff-file-open" onClick={(event) => event.stopPropagation()}>
       <IconButton
         icon="externalLink"
+        image={bridge.app.icon}
         label={busy ? `Opening ${target} in ${label}…` : `Open ${target} in ${label}`}
         busy={busy}
         onClick={open}
@@ -931,6 +931,7 @@ function HScrollBar({ file, extra }: { file: DiffFile; extra: number }) {
   const spacer = useRef<HTMLDivElement>(null)
   // Only measured while lines scroll sideways.
   const extent = useMemo(() => (wrap ? 0 : columns(file.hunks.flatMap((hunk) => hunk.lines.map((line) => line.text)), 8)), [file, wrap])
+  const metrics = useCodeMetrics()
   useLayoutEffect(() => {
     const bar = ref.current
     const section = bar?.parentElement
@@ -957,16 +958,18 @@ function HScrollBar({ file, extra }: { file: DiffFile; extra: number }) {
       observer.disconnect()
       bar.removeEventListener('scroll', onScroll)
     }
-  }, [wrap, extent, extra])
+  }, [wrap, extent, extra, metrics])
   if (wrap) return null
   return <div className="hscroll" ref={ref} aria-hidden="true"><div ref={spacer} /></div>
 }
 
-// A file's height before it is laid out: its header, and while open each hunk's header, 22px rows and expand rows.
-// Wrapped lines make the real one taller; the browser keeps the real height once the file has been on screen.
+// A file's height before it is laid out: its header, and while open each hunk's header, code-line rows and expand rows.
+// A CSS length, so the browser follows a code size change without a render. Wrapped lines make the real one taller;
+// the browser keeps the real height once the file has been on screen.
 function estimateHeight(file: DiffFile, open: boolean, expandable: boolean) {
-  if (!open || !file.hunks.length) return 80
-  return 41 + file.hunks.reduce((sum, hunk) => sum + 28 + hunk.lines.length * 22 + (expandable ? 40 : 0), 0)
+  if (!open || !file.hunks.length) return '80px'
+  const lines = file.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0)
+  return `calc(${41 + file.hunks.length * (28 + (expandable ? 40 : 0))}px + ${lines} * var(--code-line))`
 }
 
 // One letter per file status, matching the badges in the file list.

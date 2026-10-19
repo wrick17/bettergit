@@ -1,25 +1,26 @@
 /* Conflict resolution pane. Colours, radii, and the 100 ms motion come from the tokens in styles.css, so both themes follow the app. */
-.conflict { --conflict-bar-height: 44px; display: flex; flex-direction: column; gap: 12px; padding: 0 20px 32px; font: 13px/1.4 var(--font-ui); color: var(--text); }
+.conflict { --conflict-bar-height: 44px; display: flex; flex-direction: column; gap: 12px; padding: 0 20px 32px; font: calc(13px + var(--ui-delta))/1.4 var(--font-ui); color: var(--text); }
 /* Sticky above the diff, so the save control and count stay in reach while scrolling. The diff's own toolbar and file
    header stick below it. */
 .conflict-bar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 12px; height: var(--conflict-bar-height); margin: 0 -20px; padding: 0 20px; background: var(--content); box-shadow: inset 0 -0.5px 0 var(--line); }
 .conflict > .diff { margin: 0 -20px; }
 /* The bar holds the layout controls, so the diff has no toolbar and its file header sticks right under the bar. */
 .conflict .diff { --diff-toolbar-height: 0px; }
-.conflict-sides { color: var(--text-3); font: 500 12px/28px var(--font-ui); }
+.conflict-sides { color: var(--text-3); font: 500 calc(12px + var(--ui-delta))/28px var(--font-ui); }
 .conflict-sides > span { padding-left: 44px; }
-.conflict .diff-file { scroll-margin-top: var(--conflict-bar-height); }
+/* Laid out always: a stack has few files and its rows mount in chunks anyway, so a restored position lands on the same rows. */
+.conflict .diff-file { content-visibility: visible; scroll-margin-top: var(--conflict-bar-height); }
 .conflict .diff-file > header { top: var(--conflict-bar-height); }
-.conflict-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1 var(--font-code); }
+.conflict-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 calc(13px + var(--ui-delta))/1 var(--font-code); }
 .conflict-count { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conflict-save { flex: none; height: 30px; padding: 0 14px; border-radius: var(--radius-pill); background: var(--accent-fill); color: var(--on-accent); font-weight: 600; box-shadow: none; transition: background 100ms var(--ease), filter 100ms var(--ease); }
 .conflict-save:hover:not(:disabled) { filter: brightness(1.07); }
 .conflict-save:disabled { background: var(--glass-chip); color: var(--text-3); box-shadow: inset 0 0 0 0.5px var(--glass-outline); }
-.conflict-note { margin: 0; color: var(--text-3); font-size: 12px; }
+.conflict-note { margin: 0; color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
 .conflict-unsupported { margin: 0; padding: 10px 12px; border-radius: var(--radius-card); background: var(--del-bg); color: var(--del); }
 /* Inline actions above each conflict, like VS Code's. They are not source, so they start at the code column, past the
    28px lane, two 50px gutters and the 18px sign, and carry no line numbers. */
-.conflict-lens { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-height: 24px; padding: 2px 20px 2px 146px; font: 12px/20px var(--font-ui); color: var(--text-3); }
+.conflict-lens { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-height: 24px; padding: 2px 20px 2px 146px; font: calc(12px + var(--ui-delta))/20px var(--font-ui); color: var(--text-3); }
 .conflict-split-controls > .conflict-lens { min-width: 0; padding-left: 44px; }
 /* A hairline border and semibold label lift the actions above the muted marker rows. */
 .conflict-choice { height: 20px; padding: 0 7px; border-radius: var(--radius-chip); background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); font: inherit; font-weight: 600; transition: background 100ms var(--ease), color 100ms var(--ease), box-shadow 100ms var(--ease); }
@@ -34,5 +35,5 @@
 .conflict-row.combine { --side: var(--add); --side-bg: var(--add-bg); }
 .conflict-row.current, .conflict-row.incoming, .conflict-row.combine { background: var(--side-bg); box-shadow: inset 2px 0 0 var(--side); }
 .conflict-row.marker { background: var(--sunken); box-shadow: inset 2px 0 0 var(--side, var(--text-3)); color: var(--text-3); }
-/* Smaller marker text inside the row's fixed 22px line height, so gutters and row geometry do not move. */
-.conflict-row.marker code { font-size: 11.5px; }
+/* Smaller marker text inside the row line height (--code-line), so gutters and row geometry do not move. */
+.conflict-row.marker code { font-size: calc(var(--code-size) - 1.5px); }

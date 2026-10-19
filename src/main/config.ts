@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fs, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { DEFAULT_EDITOR, isEditorId, type EditorId } from '../shared/editors'
+import { DEFAULT_EDITOR, isEditorId, type Appearance, type EditorId, type InstalledApp } from '../shared/editors'
+import { isCustomApp } from './apps'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -16,7 +17,17 @@ export interface Settings {
   languages: Record<string, string>
   // The app that Open in … launches. Unknown values fall back to the default.
   editor: EditorId
+  // InstalledApp ids. An app that is unset or no longer installed falls back to VS Code or Terminal.
+  editorApp?: string
+  terminalApp?: string
+  // Added only through the app picker. A config update may drop entries but never add one.
+  customApps?: InstalledApp[]
+  // Only the fields the user changed. The renderer fills the rest from DEFAULT_APPEARANCE.
+  appearance?: Partial<Appearance>
 }
+
+// What config:update accepts. Settings fields are merged into the current settings, so a patch carries only its changes.
+export type ConfigPatch = Omit<Partial<AppConfig>, 'settings'> & { settings?: Partial<Settings> }
 
 export interface RepoGroup {
   id: string
@@ -57,6 +68,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     textZoom: 1,
     languages: {},
     editor: DEFAULT_EDITOR,
+    editorApp: DEFAULT_EDITOR,
+    terminalApp: 'terminal',
+    customApps: [],
+    appearance: {},
   },
   lastCloneDirectory: null,
 }
@@ -66,13 +81,38 @@ function normalizeSettings(input: unknown): Settings {
   const languages = typeof source.languages === 'object' && source.languages !== null
     ? Object.fromEntries(Object.entries(source.languages).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
     : {}
+  const editor = isEditorId(source.editor) ? source.editor : DEFAULT_EDITOR
   return {
     ...DEFAULT_CONFIG.settings,
     ...source,
     textZoom: typeof source.textZoom === 'number' ? Math.min(1.6, Math.max(0.8, source.textZoom)) : DEFAULT_CONFIG.settings.textZoom,
     languages,
-    editor: isEditorId(source.editor) ? source.editor : DEFAULT_EDITOR,
+    editor,
+    // Config files from before app selection carry only the editor, whose id is also its app id.
+    editorApp: typeof source.editorApp === 'string' ? source.editorApp : editor,
+    terminalApp: typeof source.terminalApp === 'string' ? source.terminalApp : DEFAULT_CONFIG.settings.terminalApp,
+    customApps: Array.isArray(source.customApps)
+      ? source.customApps.filter(isCustomApp).map(({ id, name, path, kind }) => ({ id, name, path, kind, custom: true }))
+      : [],
+    appearance: normalizeAppearance(source.appearance),
   }
+}
+
+// Each field is kept only when valid, so a bad value falls back to its default alone.
+function normalizeAppearance(input: unknown): Partial<Appearance> {
+  const source = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const size = (value: unknown, min: number, max: number) =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : undefined
+  const appearance: Partial<Appearance> = {
+    uiFontSize: size(source.uiFontSize, 10, 20),
+    codeFontSize: size(source.codeFontSize, 9, 24),
+    // A CSS font-family list. Characters that could end the declaration are refused.
+    codeFont: typeof source.codeFont === 'string' && source.codeFont.length <= 200 && !/[;{}<>\\]/.test(source.codeFont) ? source.codeFont : undefined,
+    // A preset name from the renderer's accent list. Empty is the theme's own accent.
+    accent: typeof source.accent === 'string' && /^[a-z]{0,20}$/.test(source.accent) ? source.accent : undefined,
+    density: source.density === 'compact' || source.density === 'comfortable' ? source.density : undefined,
+  }
+  return Object.fromEntries(Object.entries(appearance).filter((entry) => entry[1] !== undefined))
 }
 
 // The minimums match the window's minWidth and minHeight, so a stale size is never below them.

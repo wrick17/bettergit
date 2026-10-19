@@ -4,7 +4,7 @@ import type { DiffHunk } from '../../main/git/diff'
 import type { Marks, Mounted, Preview } from './cm-editor'
 import { Code } from './DiffView'
 import { cachedTokens, tokenize, type Segment } from './highlight'
-import { charWidth, columns, hscrollOf } from './hscroll'
+import { charWidth, codeLine, columns, hscrollOf, useCodeMetrics } from './hscroll'
 import { useWordWrap } from './prefs'
 import { originalText } from './original-text'
 import { RowChunk } from './row-chunk'
@@ -288,9 +288,11 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   loadedRef.current = loaded
   const preview = loaded?.preview ?? null
   const tokens = usePreviewTokens(preview, language, layout)
-  useEffect(() => {
+  const metrics = useCodeMetrics()
+  // Layout effect: a font change repaints with the new extent, not a frame of the old one.
+  useLayoutEffect(() => {
     if (preview && !wrap) onExtent(Math.max(columns(preview.lines, 4) * charWidth() + 28, columns(preview.old, 4) * charWidth() + 90))
-  }, [preview, onExtent, wrap])
+  }, [preview, onExtent, wrap, metrics])
 
   // Builds the editor in place, in the same frame as the click: CodeMirror and the text are already loaded.
   // Built once per layout and language; a reload updates it in place (below), so the caret survives a save.
@@ -543,7 +545,7 @@ function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<nu
 }
 
 const rowLines = (row: Row) => (row.kind === 'block' ? Math.max(row.countA, row.countB) : 1)
-const rowHeight = (row: Row) => (row.kind === 'fold' ? 28 : rowLines(row) * 22)
+const rowHeight = (row: Row, line: number) => (row.kind === 'fold' ? 28 : rowLines(row) * line)
 
 // The editor's look as plain rows: its gutter, change bar, tints, changed text, folds, font and wrapping, so the editor
 // can replace it without anything moving. Rows mount in chunks near the screen, like the read-only diff.
@@ -570,14 +572,17 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     }))
     return map
   }, [hunks, fileIndex])
+  // Chunk estimates follow the code line height, so they are computed again when it changes.
+  const metrics = useCodeMetrics()
   const parts = useMemo(() => {
     const out: Array<{ start: number; end: number; height: number; range: [number, number, number, number] }> = []
+    const lineHeight = codeLine()
     let start = 0
     let lines = 0
     let height = 0
     rows.forEach((row, index) => {
       lines += rowLines(row)
-      height += rowHeight(row)
+      height += rowHeight(row, lineHeight)
       if (lines >= BLOCK_LINES || index === rows.length - 1) {
         const first = rows[start]
         const last = row
@@ -590,7 +595,7 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
       }
     })
     return out
-  }, [rows])
+  }, [rows, metrics])
 
   useLayoutEffect(() => {
     const element = ref.current

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { applyAppearance } from './appearance'
 import { createPortal } from 'react-dom'
-import type { AppConfig, ThemeMode } from '../../main/config'
-import { EDITORS, type EditorId } from '../../shared/editors'
-import { EditorContext, useEditorLaunch } from './editor-launch'
+import type { AppConfig, ConfigPatch, ThemeMode } from '../../main/config'
+import { EditorContext } from './editor-launch'
+import { OpenInAppButton, useSelectedApp } from './OpenInAppButton'
 import type { TreeNode, RepoNode } from '../../main/scan'
 import type { RepoStatus } from '../../main/git/status'
 import type { Branch } from '../../main/git/ops'
@@ -160,6 +161,11 @@ export function App() {
     return () => query.removeEventListener('change', apply)
   }, [config?.settings.theme])
 
+  // Before paint, so the first frame with the config already has the chosen fonts, accent and density.
+  useLayoutEffect(() => {
+    if (config) applyAppearance(config.settings.appearance)
+  }, [config?.settings.appearance])
+
   useEffect(() => {
     // Selections dim when the window is not key, as they do in Finder. The CSS reads this attribute.
     const root = document.documentElement
@@ -187,7 +193,7 @@ export function App() {
     if (!repo) setRepoClean(false)
   }, [repo])
 
-  const update = async (patch: Partial<AppConfig>) => {
+  const update = async (patch: ConfigPatch) => {
     setConfig(await api.updateConfig(patch))
   }
 
@@ -283,7 +289,8 @@ export function App() {
             key={repo.path}
             titlebar={titlebar}
             repo={repo}
-            editor={config.settings.editor}
+            editorApp={config.settings.editorApp}
+            terminalApp={config.settings.terminalApp}
             tab={tab}
             onTab={setTab}
             sidebarOpen={sidebarOpen}
@@ -341,10 +348,12 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
+function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, onChanged, onError, onCleanChange }: {
   titlebar: HTMLElement | null
   repo: RepoNode
-  editor: EditorId
+  // The Open in … apps chosen in Settings (InstalledApp ids). Unset means the default.
+  editorApp?: string
+  terminalApp?: string
   tab: 'changes' | 'history'
   onTab: (tab: 'changes' | 'history') => void
   sidebarOpen: boolean
@@ -358,6 +367,9 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
   onError: (error: unknown) => void
   onCleanChange: (clean: boolean) => void
 }) {
+  // Resolved once here, so the toolbar and every file's open button name the same app with the same icon.
+  const editor = useSelectedApp('editor', editorApp, onError)
+  const terminal = useSelectedApp('terminal', terminalApp, onError)
   const [status, setStatus] = useState<RepoStatus | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
   // The write running in this repo, from any surface. It is held in the repo-busy store, not in this pane.
@@ -365,7 +377,6 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
   const [note, setNote] = useState<string | null>(null)
   const [dialog, setDialog] = useState<RepoDialog | null>(null)
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
-  const editorLaunch = useEditorLaunch(() => api.openInEditor(repo.path), onError)
 
   // The revision the status on screen was read for. Changes reloads on it, after the status, so its rows and diffs land together.
   const [statusRevision, setStatusRevision] = useState(revision)
@@ -413,7 +424,7 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
 
   return (
     <EditorContext.Provider value={{
-      editor,
+      app: editor,
       openFile: (path) => api.openInEditor(repo.path, path),
       onError,
       source: tab === 'history' ? 'commit' : 'working',
@@ -441,8 +452,11 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
           <div className="toolbar-actions">
             <OverflowBar items={repoItems({
               repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,
-              editor: { label: EDITORS[editor].label, busy: editorLaunch.busy, onOpen: editorLaunch.open },
             })} />
+            {/* Read-only launches, so they stay usable while a Git write runs. */}
+            <span className="toolbar-divider" aria-hidden="true" />
+            <OpenInAppButton kind="editor" app={editor} repoPath={repo.path} onError={onError} />
+            <OpenInAppButton kind="terminal" app={terminal} repoPath={repo.path} onError={onError} />
             <RepoDialogs
               repo={repo.path}
               branch={status?.head ?? ''}

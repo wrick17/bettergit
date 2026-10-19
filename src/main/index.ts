@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell } from 'electron'
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { loadConfig, normalizeConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
-import { openFileInEditor, openRepoInEditor, readWorkingFile, writeWorkingFile } from './editor'
+import { openFileInApp, openRepoInApp, readWorkingFile, writeWorkingFile } from './editor'
+import { customApp, installedApps, isAppBundle, mergeApps, resolveApp } from './apps'
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
@@ -15,6 +16,7 @@ import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
+import { isAppKind } from '../shared/editors'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -131,13 +133,22 @@ function handleWrite(channel: string, handler: (...args: any[]) => unknown) {
   })
 }
 
+const appIcons = new Map<string, Promise<string | null>>()
+
 function registerIpc() {
   ipcMain.handle('repo:locks', () => repoLockSnapshot())
   const offLocks = subscribeRepoLocks((snapshot) => sendToRenderer('repo:locks', snapshot))
   app.once('will-quit', offLocks)
   ipcMain.handle('config:get', () => config)
   ipcMain.handle('config:update', async (_event, patch: Partial<AppConfig>) => {
-    await persist(normalizeConfig({ ...config, ...patch, settings: { ...config.settings, ...(patch.settings ?? {}) } }))
+    // Custom apps come only from the picker, so an update can drop entries but never add or edit one.
+    const kept = patch.settings?.customApps
+    const customApps = Array.isArray(kept)
+      ? config.settings.customApps?.filter((entry) => kept.some((other) => other?.path === entry.path))
+      : config.settings.customApps
+    // Appearance merges too, so a one-field patch keeps the other saved fields. normalizeConfig validates each field.
+    const appearance = { ...config.settings.appearance, ...(patch.settings?.appearance ?? {}) }
+    await persist(normalizeConfig({ ...config, ...patch, settings: { ...config.settings, ...(patch.settings ?? {}), customApps, appearance } }))
     return config
   })
   ipcMain.handle('sources:tree', async () => {
@@ -252,12 +263,46 @@ function registerIpc() {
   ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownWriteRepo(repoPath), filePath))
   handleWrite('repo:file-write', (_event, repoPath: string, filePath: string, expected: string, text: string) =>
     writeWorkingFile(repoPath, filePath, expected, text))
-  // Launching an editor does not write Git state, so it stays available while the repo is busy.
-  ipcMain.handle('repo:open-in-editor', (_event, repoPath: string, filePath?: string) => {
+  // Launching an app does not write Git state, so it stays available while the repo is busy.
+  ipcMain.handle('repo:open-in-editor', async (_event, repoPath: string, filePath?: string) => {
     const repo = assertKnownWriteRepo(repoPath)
-    return filePath === undefined
-      ? openRepoInEditor(config.settings.editor, repo)
-      : openFileInEditor(config.settings.editor, repo, filePath)
+    const editor = await resolveApp('editor', config.settings.editorApp, config.settings.customApps ?? [])
+    return filePath === undefined ? openRepoInApp(editor, repo) : openFileInApp(editor, repo, filePath)
+  })
+  ipcMain.handle('repo:open-in-terminal', async (_event, repoPath: string) => {
+    const repo = assertKnownWriteRepo(repoPath)
+    return openRepoInApp(await resolveApp('terminal', config.settings.terminalApp, config.settings.customApps ?? []), repo)
+  })
+  // Listing rescans the app folders, so apps installed since the last list show up. It is a few directory reads.
+  ipcMain.handle('apps:list', async (_event, kind: unknown) => {
+    if (!isAppKind(kind)) throw new Error('Unknown app kind.')
+    return mergeApps(await installedApps(true), config.settings.customApps ?? [], kind)
+  })
+  // Icons are served only for listed apps, so the renderer cannot probe arbitrary paths.
+  ipcMain.handle('apps:icon', async (_event, appPath: unknown) => {
+    const listed = [...await installedApps(), ...(config.settings.customApps ?? [])].find((entry) => entry.path === appPath)
+    if (typeof appPath !== 'string' || !listed) return null
+    // A custom path is checked again on each request, so a bundle replaced since it was picked is never thumbnailed.
+    if (listed.custom && !appIcons.has(appPath) && !await isAppBundle(appPath)) return null
+    // getFileIcon gives every .app the same blank document icon on macOS. The Quick Look thumbnail is the real app icon.
+    if (!appIcons.has(appPath)) {
+      appIcons.set(appPath, nativeImage.createThumbnailFromPath(appPath, { width: 64, height: 64 })
+        .then((image) => (image.isEmpty() ? null : image.toDataURL()), () => null))
+    }
+    return appIcons.get(appPath)
+  })
+  ipcMain.handle('apps:pick', async (event, kind: unknown) => {
+    if (!isAppKind(kind)) throw new Error('Unknown app kind.')
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const picked = await dialog.showOpenDialog(window!, {
+      defaultPath: '/Applications', properties: ['openFile'], filters: [{ name: 'Applications', extensions: ['app'] }],
+    })
+    if (picked.canceled || !picked.filePaths[0]) return null
+    const chosen = await customApp(kind, picked.filePaths[0])
+    const listed = mergeApps(await installedApps(), config.settings.customApps ?? [], kind).find((entry) => entry.path === chosen.path)
+    if (listed) return listed
+    await persist({ ...config, settings: { ...config.settings, customApps: [...(config.settings.customApps ?? []), chosen] } })
+    return chosen
   })
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
   ipcMain.handle('clone', async (_event, url: string, parent: string) => {

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { EDITORS, isEditorId, type EditorId } from '../shared/editors'
+import { EDITORS, isEditorId, type EditorId, type InstalledApp } from '../shared/editors'
 
 const run = promisify(execFile)
 
@@ -15,6 +15,24 @@ export function openCommand(editor: EditorId, absPath: string): { file: string; 
   if (!isEditorId(editor)) throw new Error(`Unknown editor: ${String(editor)}`)
   if (!path.isAbsolute(absPath)) throw new Error(`Editor needs an absolute path: ${absPath}`)
   return { file: OPEN_TOOL, args: ['-b', EDITORS[editor].bundleId, absPath] }
+}
+
+// Terminals that ignore a folder passed through `open -a` take their documented working-directory flag instead.
+const DIRECTORY_FLAGS: Record<string, (dir: string) => string[]> = {
+  alacritty: (dir) => ['--working-directory', dir],
+  kitty: (dir) => ['--directory', dir],
+  wezterm: (dir) => ['start', '--cwd', dir],
+  rio: (dir) => ['--working-dir', dir],
+  // Tabby has no open-file handler. Its CLI `open [directory]` starts a shell there, and a running Tabby takes it over.
+  tabby: (dir) => ['open', dir],
+}
+
+// Apps in EDITORS keep their bundle ID launch. Others open by bundle path, so no CLI has to be on PATH.
+export function appCommand(app: InstalledApp, absPath: string): { file: string; args: string[] } {
+  if (!path.isAbsolute(absPath)) throw new Error(`Editor needs an absolute path: ${absPath}`)
+  if (!app.custom && isEditorId(app.id)) return openCommand(app.id, absPath)
+  const flags = app.custom ? undefined : DIRECTORY_FLAGS[app.id]
+  return { file: OPEN_TOOL, args: flags ? ['-na', app.path, '--args', ...flags(absPath)] : ['-a', app.path, absPath] }
 }
 
 // The repo-relative path must stay inside the repo, even through symlinks. Returns the real absolute path.
@@ -75,21 +93,20 @@ export async function resolveRepoTarget(repo: string): Promise<string> {
   return target
 }
 
-// The editor is the only input to the command, and it comes from validated config, never from the renderer.
-export async function openWithEditor(editor: EditorId, absPath: string): Promise<void> {
-  const { file, args } = openCommand(editor, absPath)
+// The app is the only input to the command, and it comes from validated config, never from the renderer.
+export async function openWithApp(app: InstalledApp, absPath: string): Promise<void> {
+  const { file, args } = appCommand(app, absPath)
   try {
     await run(file, args, { timeout: 15_000 })
   } catch {
-    const { label } = EDITORS[editor]
-    throw new Error(`${label} could not open ${path.basename(absPath)}. Check that ${label} is installed.`)
+    throw new Error(`${app.name} could not open ${path.basename(absPath)}. Check that ${app.name} is installed.`)
   }
 }
 
-export async function openFileInEditor(editor: EditorId, repo: string, relPath: string): Promise<void> {
-  await openWithEditor(editor, await resolveFileTarget(repo, relPath))
+export async function openFileInApp(app: InstalledApp, repo: string, relPath: string): Promise<void> {
+  await openWithApp(app, await resolveFileTarget(repo, relPath))
 }
 
-export async function openRepoInEditor(editor: EditorId, repo: string): Promise<void> {
-  await openWithEditor(editor, await resolveRepoTarget(repo))
+export async function openRepoInApp(app: InstalledApp, repo: string): Promise<void> {
+  await openWithApp(app, await resolveRepoTarget(repo))
 }

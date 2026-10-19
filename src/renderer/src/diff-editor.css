@@ -1,7 +1,7 @@
 /* The in-place editor of a working-tree diff (CodeMirror). It matches the read-only diff rows: same font, row height and tints. */
-.diff-editor .cm-editor { background: transparent; color: var(--text); font: 13px/22px var(--font-code); }
+.diff-editor .cm-editor { background: transparent; color: var(--text); font: var(--code-size)/var(--code-line) var(--font-code); }
 .diff-editor .cm-editor.cm-focused { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
-.diff-editor .cm-scroller { font: inherit; line-height: 22px; }
+.diff-editor .cm-scroller { font: inherit; line-height: var(--code-line); }
 .diff-editor .cm-content { padding: 0; caret-color: var(--text); }
 .diff-editor .cm-line { padding: 0 20px 0 8px; }
 .diff-editor .cm-gutters { background: transparent; border: 0; color: var(--text-3); }
@@ -35,7 +35,7 @@
    CodeMirror rule above, so swapping in the editor moves nothing: .ed-num is .cm-lineNumbers (its width fits the widest
    line number, at least 50px), .ed-bar is .cm-changeGutter, code is .cm-line with the editor's wrapping and tab size,
    and .ed-fold is .cm-collapsedLines. */
-.ed-preview { font: 13px/22px var(--font-code); color: var(--text); tab-size: 4; outline: none; }
+.ed-preview { font: var(--code-size)/var(--code-line) var(--font-code); color: var(--text); tab-size: 4; outline: none; }
 .ed-preview:focus-visible { box-shadow: inset 2px 0 0 var(--accent); }
 .ed-line, .ed-fold { display: flex; min-width: 0; }
 .ed-num { flex: none; box-sizing: border-box; min-width: 50px; width: calc(var(--digits-b) * 1ch + 12px); padding: 0 12px 0 0; text-align: right; white-space: nowrap; color: var(--text-3); font-variant-numeric: tabular-nums; user-select: none; }

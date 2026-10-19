@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
 import { promisify } from 'node:util'
 import { runInNewContext } from 'node:vm'
@@ -7,6 +7,7 @@ import * as jsxRuntime from 'react/jsx-runtime'
 import * as jsxDevRuntime from 'react/jsx-dev-runtime'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as configModule from '../src/main/config'
+import * as appsModule from '../src/main/apps'
 import * as editors from '../src/shared/editors'
 import * as editorLaunch from '../src/renderer/src/editor-launch'
 import * as repoBusy from '../src/renderer/src/repo-busy'
@@ -17,7 +18,7 @@ import { promises as fs, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeConfig } from '../src/main/config'
-import { openCommand, readWorkingFile, resolveFileTarget, resolveRepoTarget, writeWorkingFile } from '../src/main/editor'
+import { appCommand, openCommand, readWorkingFile, resolveFileTarget, resolveRepoTarget, writeWorkingFile } from '../src/main/editor'
 import type { EditorId } from '../src/shared/editors'
 import { git } from '../src/main/git/exec'
 import { workingDiff } from '../src/main/git/diff'
@@ -131,6 +132,30 @@ test('an unknown editor in config falls back to VS Code', () => {
   expect(normalizeConfig({}).settings.editor).toBe('vscode')
 })
 
+test('detects known apps once each, merges custom apps by path, and accepts only real .app bundles', async () => {
+  const { root } = await sandbox()
+  const first = path.join(root, 'Applications'), second = path.join(root, 'Utilities')
+  for (const bundle of [path.join(first, 'Visual Studio Code.app'), path.join(first, 'kitty.app'), path.join(first, 'Unknown.app'), path.join(second, 'kitty.app')]) {
+    await fs.mkdir(path.join(bundle, 'Contents'), { recursive: true })
+    await fs.writeFile(path.join(bundle, 'Contents', 'Info.plist'), '')
+  }
+  const found = await appsModule.detectApps([first, path.join(root, 'missing'), second])
+  expect(found.map((entry) => [entry.id, entry.path])).toEqual([['vscode', path.join(first, 'Visual Studio Code.app')], ['kitty', path.join(first, 'kitty.app')]])
+  await expect(appsModule.customApp('editor', path.join(root, 'missing.app'))).rejects.toThrow('.app')
+  await expect(appsModule.customApp('editor', 'Relative.app')).rejects.toThrow('.app')
+  const custom = await appsModule.customApp('editor', path.join(first, 'Unknown.app'))
+  expect(custom).toEqual({ id: `custom:editor:${path.join(first, 'Unknown.app')}`, name: 'Unknown', path: path.join(first, 'Unknown.app'), kind: 'editor', custom: true })
+  const duplicate = { ...custom, id: 'custom:editor:dup', path: found[0].path }
+  expect(appsModule.mergeApps(found, [custom, duplicate], 'editor').map((entry) => entry.name)).toEqual(['Unknown', 'VS Code'])
+  // Config keeps only custom apps whose id matches their kind and path, so a hand-edited entry cannot alias another app.
+  expect(normalizeConfig({ settings: { customApps: [custom, duplicate, { ...custom, path: '/bin/sh' }] } }).settings.customApps).toEqual([custom])
+  expect(normalizeConfig({ settings: { editor: 'vscode' } }).settings.editorApp).toBe('vscode')
+  // Terminals that ignore a folder from `open -a` get their working-directory flag. Others open by path, never through a shell.
+  expect(appCommand(found[1], root)).toEqual({ file: '/usr/bin/open', args: ['-na', found[1].path, '--args', '--directory', root] })
+  expect(appCommand(custom, root)).toEqual({ file: '/usr/bin/open', args: ['-a', custom.path, root] })
+  expect(appCommand(found[0], root)).toEqual(openCommand('vscode', root))
+})
+
 // Like the repo-lock bridge test, execute the real entry points in memory. No app or output files are built.
 async function loadEntry(file: string, imports: Record<string, unknown>, after = '', globals: Record<string, unknown> = {}): Promise<any> {
   const compiled = await Bun.build({
@@ -160,6 +185,8 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   await fs.symlink(repo, repoAlias, 'dir')
   await fs.symlink(repo, sourceAlias, 'dir')
   const sources = [repo, sourceAlias]
+  const customPath = path.join(root, 'Custom.app')
+  const custom = { id: `custom:editor:${customPath}`, name: 'Custom', path: customPath, kind: 'editor' as const, custom: true }
   const staged: string[] = []
   const commands: Array<{ file: string; args: string[] }> = []
   // Only the native process boundary is replaced. Real target validation and command construction still run.
@@ -179,14 +206,15 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
       app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) },
       BrowserWindow: { getAllWindows: () => [] }, Menu: { setApplicationMenu: () => {} }, nativeTheme: {},
     },
-    'node:path': path, 'node:fs': { statSync }, './config': configModule, './editor': editor,
+    'node:path': path, 'node:fs': { statSync }, './config': configModule, './editor': editor, './apps': appsModule,
+    '../shared/editors': editors,
     './repo-lock': repoLocks,
     './git/ops': { stagePaths: async (repo: string) => { staged.push(repo) } },
     './git/dirty': { DirtyCounter: class {} },
     './watch': { SourceWatcher: class { async watch() {} } },
     './background': { BackgroundFetcher: class { start() {} stop() {} } },
     './menu': { buildMenu: () => [] },
-  }, '\nconfig = testConfig; registerIpc()', { testConfig: normalizeConfig({ sources }) })
+  }, '\nconfig = testConfig; registerIpc()', { testConfig: normalizeConfig({ sources, settings: { customApps: [custom] } }) })
   let api!: BetterGitApi
   await loadEntry('../src/preload/index.ts', {
     electron: {
@@ -221,6 +249,18 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
     const updated = await api.updateConfig({ settings: { editor: 'unregistered' } })
     expect(updated.settings.editor).toBe('vscode')
     expect((await configModule.loadConfig(path.join(root, 'config.json'))).settings.editor).toBe('vscode')
+    // Settings patches carry only their changes. Choosing an app right after the picker saved a custom one keeps it, and
+    // quick changes to different fields both land.
+    await Promise.all([api.updateConfig({ settings: { editorApp: custom.id } }), api.updateConfig({ settings: { theme: 'dark' } }), api.updateConfig({ settings: { appearance: { codeFontSize: 15 } } })])
+    const merged = (await api.getConfig()).settings
+    expect([merged.editorApp, merged.theme, merged.appearance, merged.customApps]).toEqual([custom.id, 'dark', { codeFontSize: 15 }, [custom]])
+    // Appearance patches merge field by field: a one-field patch keeps the other saved fields.
+    await api.updateConfig({ settings: { appearance: { accent: 'blue', density: 'compact' } } })
+    expect((await api.updateConfig({ settings: { appearance: { uiFontSize: 16 } } })).settings.appearance)
+      .toEqual({ codeFontSize: 15, accent: 'blue', density: 'compact', uiFontSize: 16 })
+    // An update can drop custom apps but never add one: only the picker does.
+    const injected = { ...custom, id: 'custom:editor:/Applications/Other.app', path: '/Applications/Other.app' }
+    expect((await api.updateConfig({ settings: { customApps: [custom, injected] } })).settings.customApps).toEqual([custom])
     expect((await api.getConfig()).sources).toEqual(sources)
   } finally {
     app.emit('will-quit')
@@ -234,12 +274,11 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
   }, '', { window: { bettergit: {} } }) as typeof import('../src/renderer/src/RepoMenu')
   const repo = '/jp3-canonical', alias = '/jp3-alias'
   const identities = { [alias]: repo }
-  let seq = 0, opened = 0
+  let seq = 0
   const noop = () => {}
   const itemsFor = (selected: string) => menu.repoItems({
     repo: selected, status: null, busy: busy.busyKey(selected), run: async () => true,
     onTab: noop, onNote: noop, onError: noop, onDialog: noop,
-    editor: { label: 'VS Code', busy: false, onOpen: () => { opened++ } },
   })
   const fetchMarkup = (selected: string) => {
     const item = itemsFor(selected).find((item) => item.key === 'fetch')!
@@ -260,14 +299,8 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
       expect(item.busy).not.toBe(true)
       expect(item.blocked).toBe('Another action is running: Fetching…')
     }
-    const editor = items.find((item) => item.key === 'openEditor')!
-    expect(editor.busy).toBe(false)
-    expect(editor.blocked).toBeUndefined()
-    expect(editor.disabled).not.toBe(true)
-    editor.onClick()
     expect(items.find((item) => item.key === 'stashList')!.blocked).toBeUndefined()
   }
-  expect(opened).toBe(2)
   busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
   expect(itemsFor(alias).find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: undefined })
   expect(fetchMarkup(alias)).not.toContain('action-spin')
@@ -303,7 +336,7 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
   busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
 })
 
-test('App supplies the working-copy editor bridge and a repo launch independent of Git busy state', async () => {
+test('App supplies the working-copy editor bridge and Open in buttons independent of Git busy state', async () => {
   const launches: Array<[string, string?]> = []
   const api = { openInEditor: async (repo: string, file?: string) => { launches.push([repo, file]) } }
   const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
@@ -312,6 +345,7 @@ test('App supplies the working-copy editor bridge and a repo launch independent 
   // RepoMenu reads the bridge at module load, so give it the same isolated window as App.
   let bridge: editorLaunch.EditorBridge | null = null
   let items: import('../src/renderer/src/OverflowBar').BarItem[] = []
+  const openButtons: Array<Record<string, unknown>> = []
   const History = () => { bridge = React.useContext(editorLaunch.EditorContext); return null }
   const imports = {
     react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, 'react-dom': { createPortal: (node: React.ReactNode) => node },
@@ -321,27 +355,72 @@ test('App supplies the working-copy editor bridge and a repo launch independent 
     './HistoryView': { HistoryView: History },
     './Icons': { Icon: History, IconButton: () => null, toggleLabel: (state: string, action: string) => `${state} — click to ${action}` },
     './repo-busy': { ...repoBusy, useRepoBusy: () => 'push' },
+    './OpenInAppButton': {
+      OpenInAppButton: (props: Record<string, unknown>) => { openButtons.push(props); return null },
+      useSelectedApp: (kind: string, appId?: string) => ({ name: `${kind}:${appId}`, icon: null }),
+    },
   }
   const app = await loadEntry('../src/renderer/src/App.tsx', imports, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: api } })
   const props = {
-    titlebar: {}, repo: { kind: 'repo', name: 'repo', path: '/repo' }, editor: 'vscode', tab: 'history',
+    titlebar: {}, repo: { kind: 'repo', name: 'repo', path: '/repo' }, editorApp: 'cursor', tab: 'history',
     onTab: () => {}, sidebarOpen: true, onToggleSidebar: () => {}, listOpen: true, onToggleList: () => {},
     detailOpen: true, onToggleDetail: () => {}, revision: 0, onChanged: () => {}, onError: () => {}, onCleanChange: () => {},
   }
   renderToStaticMarkup(React.createElement(app.RepoPane, props))
   expect(bridge).not.toBeNull()
   const current = bridge as unknown as editorLaunch.EditorBridge
-  expect(current.editor).toBe('vscode')
+  // File open buttons name the app chosen in Settings, the same one the toolbar shows.
+  expect(current.app).toEqual({ name: 'editor:cursor', icon: null })
   expect(current.source).toBe('commit')
   expect(current.onError).toBe(props.onError)
   await current.openFile('src/app.ts')
-  const item = items.find((item) => item.key === 'openEditor')!
-  expect(item.label).toBe('Open in VS Code')
-  expect(item.blocked).toBeUndefined()
-  expect(item.busy).toBe(false)
-  item.onClick?.()
-  item.onClick?.()
-  expect(launches).toEqual([['/repo', 'src/app.ts'], ['/repo', undefined]])
+  expect(launches).toEqual([['/repo', 'src/app.ts']])
+  expect(items.some((item) => item.key === 'openEditor')).toBe(false)
+  expect(openButtons.map(({ kind, app, repoPath }) => ({ kind, app, repoPath }))).toEqual([
+    { kind: 'editor', app: current.app, repoPath: '/repo' },
+    { kind: 'terminal', app: { name: 'terminal:undefined', icon: null }, repoPath: '/repo' },
+  ])
+
+  // Before the app list and icon load, the button names the default app and shows the generic glyph at its final size.
+  const button = await loadEntry('../src/renderer/src/OpenInAppButton.tsx', {
+    react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './editor-launch': editorLaunch,
+    './Icons': { Icon: () => null, useTooltip: () => ({ handlers: {}, tooltip: null }) },
+    './app-icons': { cachedAppIcon: () => undefined, loadAppIcon: async () => null, cachedApps: () => undefined, subscribeApps: () => () => {}, fetchApps: async () => [] },
+  }, '', { window: { bettergit: {} } })
+  const Button = ({ kind, repoPath }: { kind: string; repoPath: string | null }) =>
+    React.createElement(button.OpenInAppButton, { kind, app: button.useSelectedApp(kind, undefined, () => {}), repoPath, onError: () => {} })
+  const markup = (kind: string, repoPath: string | null) => renderToStaticMarkup(React.createElement(Button, { kind, repoPath }))
+  expect(markup('editor', '/repo')).toContain('aria-label="Open in VS Code"')
+  expect(markup('terminal', '/repo')).toContain('aria-label="Open in Terminal"')
+  expect(markup('terminal', null)).toContain('disabled')
   renderToStaticMarkup(React.createElement(app.RepoPane, { ...props, tab: 'changes' }))
   expect((bridge as unknown as editorLaunch.EditorBridge).source).toBe('working')
+})
+
+describe('custom apps and terminal folders', () => {
+  test('a custom app is stored by its real path and rejected once its bundle is gone or replaced', async () => {
+    const { root } = await sandbox()
+    const real = path.join(root, 'Real.app'), link = path.join(root, 'Link.app'), bare = path.join(root, 'Bare.app')
+    await fs.mkdir(path.join(real, 'Contents'), { recursive: true })
+    await fs.writeFile(path.join(real, 'Contents', 'Info.plist'), '')
+    await fs.mkdir(bare)
+    await fs.symlink(real, link)
+    const custom = await appsModule.customApp('terminal', link)
+    expect(custom.path).toBe(real)
+    expect(custom.id).toBe(`custom:terminal:${real}`)
+    await expect(appsModule.customApp('terminal', bare)).rejects.toThrow('.app')
+    expect(await appsModule.isAppBundle(real)).toBe(true)
+    expect(await appsModule.isAppBundle(link)).toBe(false)
+    // Retargeting the approved path at another file fails the check made before each icon or launch.
+    await fs.rm(real, { recursive: true })
+    await fs.writeFile(path.join(root, 'other.txt'), '')
+    await fs.symlink(path.join(root, 'other.txt'), real)
+    expect(await appsModule.isAppBundle(real)).toBe(false)
+    expect((await appsModule.resolveApp('terminal', custom.id, [custom])).id).not.toBe(custom.id)
+  })
+
+  test('Tabby opens the folder through its open command', () => {
+    const tabby = { id: 'tabby', name: 'Tabby', path: '/Applications/Tabby.app', kind: 'terminal' as const }
+    expect(appCommand(tabby, '/repo')).toEqual({ file: '/usr/bin/open', args: ['-na', tabby.path, '--args', 'open', '/repo'] })
+  })
 })

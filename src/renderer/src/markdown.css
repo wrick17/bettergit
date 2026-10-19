@@ -3,17 +3,17 @@
 /* The sticky toolbar and file headers are translucent glass. Blurring what scrolls under them keeps large formatted text from reading through. */
 .diff .diff-toolbar, .diff .diff-file > header { backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); }
 .diff .md-fragment-note { padding: 3px 12px; color: var(--text-3); font: 11px/18px var(--font-ui); }
-.diff .md-diff-block { display: flex; min-width: 0; min-height: 22px; }
+.diff .md-diff-block { display: flex; min-width: 0; min-height: var(--code-line); }
 /* Each side keeps its own height, so the shorter side ends with its content instead of a tall empty tinted block. */
 .diff .md-block-pair > .md-diff-block { align-self: start; }
-.diff .md-source-rail { flex: none; display: flex; flex-direction: column; font: 12px/22px var(--font-code); }
-.diff .md-source-row { display: flex; flex: 1; min-height: 22px; }
+.diff .md-source-rail { flex: none; display: flex; flex-direction: column; font: calc(var(--code-size) - 1px)/var(--code-line) var(--font-code); }
+.diff .md-source-row { display: flex; flex: 1; min-height: var(--code-line); }
 .diff .md-source-row.add { background: var(--add-bg); box-shadow: inset 2px 0 var(--add); }
 .diff .md-source-row.del { background: var(--del-bg); box-shadow: inset 2px 0 var(--del); }
 .diff .md-source-row.add .sign { color: var(--add); }
 .diff .md-source-row.del .sign { color: var(--del); }
 .diff .md-source-row.moved { background: var(--move-bg); box-shadow: inset 2px 0 var(--move); }
-.diff .md-source-gap { flex: 1; min-height: 22px; }
+.diff .md-source-gap { flex: 1; min-height: var(--code-line); }
 .diff .md-split .md-source-rail .gutter { width: 44px; }
 .diff .md-content { flex: 1; min-width: 0; padding: 3px 12px 3px 0; font: 14px/22px var(--font-ui); overflow-wrap: anywhere; }
 .diff .md-before > .md-content { background: var(--del-bg); }
@@ -29,7 +29,7 @@
 .diff .md-content li > p { margin-bottom: 2px; }
 .diff .md-content li > input { width: 13px; height: 13px; padding: 0; margin-right: 6px; vertical-align: middle; }
 .diff .md-content blockquote { margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--text-3); color: var(--text-2); }
-.diff .md-content code { padding: 1px 3px; border-radius: 3px; background: var(--sunken); font: 13px/22px var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .md-content code { padding: 1px 3px; border-radius: 3px; background: var(--sunken); font: var(--code-size)/var(--code-line) var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff .md-content pre { margin: 0 0 8px; padding: 6px 8px; border-radius: 3px; background: var(--sunken); white-space: pre-wrap; }
 .diff .md-content pre > code { padding: 0; background: transparent; }
 .diff .md-content .md-html { white-space: pre-wrap; }

@@ -58,7 +58,7 @@ const running = new Map<string, Promise<Segment[][] | null>>()
 function tokenizer(): Worker | null {
   if (worker !== undefined) return worker
   try {
-    worker = new Worker(new URL('./highlight-worker.ts', import.meta.url))
+    worker = new Worker(new URL('./highlight-worker.ts', import.meta.url), { type: 'module' })
     // Bun (the tests) keeps a process alive while a worker runs; browsers have no unref.
     ;(worker as Worker & { unref?: () => void }).unref?.()
     worker.onmessage = ({ data }: MessageEvent<{ id: number; lines: Segment[][] | null }>) => {

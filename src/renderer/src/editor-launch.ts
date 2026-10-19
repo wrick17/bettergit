@@ -1,9 +1,14 @@
 import { createContext, useRef, useState } from 'react'
-import type { EditorId } from '../../shared/editors'
+
+// The Open in … app chosen in Settings, or its default. icon is a data URL, or null until it loads or when the app has none.
+export interface SelectedApp {
+  name: string
+  icon: string | null
+}
 
 // Supplied by the owner of the diff (App, once the preload bridge exists). Without it, no open buttons render.
 export interface EditorBridge {
-  editor: EditorId
+  app: SelectedApp
   // Opens a repo-relative path in the working copy. Rejects with a readable message.
   openFile: (relPath: string) => Promise<unknown>
   onError: (error: unknown) => void
