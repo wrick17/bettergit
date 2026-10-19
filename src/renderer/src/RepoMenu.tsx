@@ -22,6 +22,7 @@ interface RepoActions {
 }
 
 // Repository actions for the toolbar, grouped as in Better Source Control. Dialogs open through onDialog.
+// Shortcuts repeat the Repository menu's accelerators (main/menu.ts), which run the same actions.
 export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onDialog }: RepoActions): BarItem[] {
   // The running action shows its working label and spinner. Every other write in the repo is blocked and says why.
   const state = (key: string, label: string) => {
@@ -46,13 +47,13 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
   return [
     { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick: () => onTab('history') },
     { key: 'copy', icon: 'copy', label: 'Copy Branch Name', group: 'view', disabled: !status?.head, onClick: copyBranch },
-    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch'), group: 'sync', onClick: () => void run('fetch', () => api.fetch(repo)) },
-    { key: 'pullMerge', icon: 'pullMerge', ...state('pull-merge', 'Pull and Merge'), group: 'sync', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
+    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch'), group: 'sync', shortcut: '⇧⌘F', onClick: () => void run('fetch', () => api.fetch(repo)) },
+    { key: 'pullMerge', icon: 'pullMerge', ...state('pull-merge', 'Pull and Merge'), group: 'sync', shortcut: '⇧⌘L', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
     { key: 'pullRebase', icon: 'pullRebase', ...state('pull-rebase', 'Pull and Rebase'), group: 'sync', onClick: () => void run('pull-rebase', () => api.pull(repo, 'rebase')) },
     { key: 'pullFrom', icon: 'pullFrom', ...state('pull', 'Pull from…'), group: 'sync', onClick: () => onDialog('pull-from') },
-    { key: 'push', icon: 'push', ...state('push', 'Push'), group: 'sync', onClick: () => void run('push', () => api.push(repo)) },
+    { key: 'push', icon: 'push', ...state('push', 'Push'), group: 'sync', shortcut: '⇧⌘P', onClick: () => void run('push', () => api.push(repo)) },
     { key: 'reset', icon: 'reset', ...state('reset', resetLabel), group: 'reset', danger: true, disabled: !status?.upstream, onClick: resetToUpstream },
-    { key: 'stash', icon: 'stash', ...state('stash', 'Stash Changes'), group: 'stash', onClick: () => void run('stash', () => api.stash(repo, 'BetterGit stash')) },
+    { key: 'stash', icon: 'stash', ...state('stash', 'Stash Changes'), group: 'stash', shortcut: '⇧⌘H', onClick: () => void run('stash', () => api.stash(repo, 'BetterGit stash')) },
     // Less common stash actions sit in their own group, after the stash itself. View Stash only reads, so it stays usable while busy.
     { key: 'stashList', icon: 'stashList', label: 'View Stash…', group: 'stashMore', onClick: () => onDialog('view') },
     { key: 'applyStash', icon: 'applyStash', label: 'Apply Stash…', group: 'stashMore', blocked, onClick: () => onDialog('apply') },
