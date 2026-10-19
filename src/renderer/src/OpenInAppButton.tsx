@@ -57,6 +57,8 @@ export function OpenInAppButton({ kind, app, repoPath, onError }: {
 }) {
   const launch = useEditorLaunch(() => kind === 'editor' ? api.openInEditor(repoPath!) : api.openInTerminal(repoPath!), onError)
   const { name, icon } = app
+  // cmux's chevron has more padding inside its dark app tile than VS Code's visible white tile.
+  const iconSize = name === 'cmux' ? 24 : 16
   const label = launch.busy ? `Opening in ${name}…` : `Open in ${name}`
   const { handlers, tooltip } = useTooltip(label)
 
@@ -73,7 +75,7 @@ export function OpenInAppButton({ kind, app, repoPath, onError }: {
       {launch.busy
         ? <Icon name="loader" className="action-spin" />
         : icon
-          ? <img src={icon} alt="" width={16} height={16} draggable={false} />
+          ? <img src={icon} alt="" width={iconSize} height={iconSize} draggable={false} />
           : <Icon name={FALLBACK[kind].icon} />}
       {tooltip}
     </button>
