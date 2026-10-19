@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { DiffView } from './DiffView'
+import { confirmOverBlur } from './confirm'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
 import { adoptView, mountNear, suspendHold } from './scroll-anchor'
 import { FileIcon, FolderIcon } from './FileIcon'
@@ -364,8 +365,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   })
 
   // The checkboxes and the diff header share this. A click during another Git action is ignored, so stages do not race on the index.
-  const togglePath = (path: string, stage: boolean) => {
-    if (busy || (stage && !confirmDropEdits(repo, [path]))) return
+  const togglePath = async (path: string, stage: boolean) => {
+    if (busy || (stage && !(await confirmDropEdits(repo, [path])))) return
     void write(stage ? 'stage' : 'unstage', () => (stage ? api.stage(repo, [path]) : api.unstage(repo, [path])))
   }
 
@@ -397,13 +398,13 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
 
   // Reset rebuilds the file from Git's index after the user confirms. Its reply replaces only the model it was asked
   // for, and clears that model's choices even when the bytes come back the same.
-  const resetConflictFile = (path: string) => {
+  const resetConflictFile = async (path: string) => {
     const conflict = conflictOf(conflictFiles, path)
     if (busy || !conflict?.model.reset.available) return
     const { fingerprint } = conflict.model.reset
-    if (!window.confirm(`Reset resolution for "${path}"?\n\nThis replaces the whole working file with its conflicts recreated from Git's index, `
+    if (!(await confirmOverBlur(`Reset resolution for "${path}"?\n\nThis replaces the whole working file with its conflicts recreated from Git's index, `
       + 'and discards saved edits and unsaved choices for this file. The conflict markers are rebuilt in diff3 style, '
-      + 'so labels and layout can differ from the original. The file stays unmerged and unstaged. Other files are unchanged.')) return
+      + 'so labels and layout can differ from the original. The file stays unmerged and unstaged. Other files are unchanged.'))) return
     void write(`conflict-reset:${path}`, async () => {
       const model = await api.conflictReset(repo, path, { fingerprint })
       if (repoRef.current !== repo) return
@@ -434,8 +435,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
-  const togglePaths = (paths: string[], stage: boolean) => {
-    if (busy || !paths.length || (stage && !confirmDropEdits(repo, paths))) return
+  const togglePaths = async (paths: string[], stage: boolean) => {
+    if (busy || !paths.length || (stage && !(await confirmDropEdits(repo, paths)))) return
     void write(stage ? 'stage:all' : 'unstage:all', () => (stage ? api.stage(repo, paths) : api.unstage(repo, paths)))
   }
 
@@ -444,8 +445,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     setSelection({ path: change.path, staged: isStaged })
   }
 
-  const discard = (change: FileChange) => {
-    if (busy || !window.confirm(`Discard unstaged changes to ${change.path}? This cannot be undone.`) || !confirmDropEdits(repo, [change.path])) return
+  const discard = async (change: FileChange) => {
+    if (busy || !(await confirmOverBlur(`Discard unstaged changes to ${change.path}? This cannot be undone.`)) || !(await confirmDropEdits(repo, [change.path]))) return
     void write(`discard:${change.path}`, () => api.discard(repo, [change.path]))
   }
 

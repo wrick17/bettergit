@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Keyb
 import { createPortal } from 'react-dom'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../../main/git/ops'
 import { buildSections, flattenRows, parentIndex, type RefItem, type Row } from './branch-tree'
+import { confirmOverBlur } from './confirm'
 import { useDialogFocus } from './Dialogs'
 import { Icon } from './Icons'
 import { blockedReason, busyKey, runRepoWrite, useRepoBusy, workingLabel } from './repo-busy'
@@ -170,11 +171,12 @@ export function BranchPicker({ repo, branches, headHash, onRefresh, onChanged, o
 
   const changeMode = (next: typeof mode) => { setMode(next); setQuery(''); setActive(null) }
   const draftChanged = name !== '' || base.fullRef !== 'HEAD' || base.hash !== initialHead.current
-  const requestClose = () => {
+  const requestClose = async () => {
     if (inFlight.current) return
     if (mode === 'base') return changeMode('create')
-    if (draftChanged && !window.confirm('Discard this branch draft?')) return
-    onClose()
+    if (draftChanged && !(await confirmOverBlur('Discard this branch draft?'))) return
+    // A branch action may have started while the sheet was opening. The picker stays until that action settles.
+    if (!inFlight.current) onClose()
   }
   const run = async (key: string, action: () => Promise<unknown>) => {
     if (inFlight.current) return
@@ -203,13 +205,13 @@ export function BranchPicker({ repo, branches, headHash, onRefresh, onChanged, o
   const unavailable = base.fullRef === 'HEAD' && (!base.hash || !headHash)
   // Kept stable, so the choices' memoised sections survive re-renders.
   const baseHead = useMemo(() => headHash ? { fullRef: 'HEAD', hash: headHash } : null, [headHash])
-  const pick = (item: RefItem) => {
+  const pick = async (item: RefItem) => {
     const selection = item.kind === 'head' ? item.selection : item.kind === 'branch' ? { fullRef: item.branch.fullRef, hash: item.branch.hash } : null
     if (mode === 'base') {
       if (selection) { setBase(selection); changeMode('create') }
       return
     }
-    if (draftChanged && !window.confirm('Discard this branch draft and switch?')) return
+    if (draftChanged && !(await confirmOverBlur('Discard this branch draft and switch?'))) return
     // Tags check out detached, as Checkout Detached does from a commit, without a prompt.
     if (selection) void run('switch', () => api.switchBranch(repo, selection))
     else if (item.kind === 'tag') void run('detach', () => api.checkoutDetached(repo, item.tag.hash))

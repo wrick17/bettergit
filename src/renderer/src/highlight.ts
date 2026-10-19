@@ -1,5 +1,8 @@
 import { bundledLanguages } from 'shiki/langs'
 import type { DiffFile } from '../../main/git/diff'
+import type { ColorTheme } from '../../shared/themes'
+import { recolour } from './prefs'
+import type { SyntaxThemes } from './tokenize-core'
 
 // One colour per theme. The diff's CSS picks the right one for the current appearance.
 export interface Segment {
@@ -37,9 +40,21 @@ const CACHE_LINES = 200_000
 const cache = new Map<string, Segment[][]>()
 let cachedLines = 0
 
+// The light and dark themes code is coloured with. Their key is part of every cache key, so colours from one pair never
+// show under another, and colours from an earlier pair stay cached for switching back.
+let themes: SyntaxThemes & { key: string } = { key: '' }
+
+export function setSyntaxThemes(light: ColorTheme | null, dark: ColorTheme | null) {
+  const key = light || dark ? `${light?.name ?? ''}|${dark?.name ?? ''}` : ''
+  if (key === themes.key) return
+  themes = { key, light: light ?? undefined, dark: dark ?? undefined }
+  if (key) worker?.postMessage({ key, themes: { light: themes.light, dark: themes.dark } })
+  recolour()
+}
+
 // The colours of code already tokenised, without waiting, so a view built from cached code is coloured on its first frame.
 export function cachedTokens(code: string, language: string | null): Segment[][] | undefined {
-  return language ? cache.get(`${language}\n${code}`) : undefined
+  return language ? cache.get(`${themes.key}\n${language}\n${code}`) : undefined
 }
 
 // Returns one list of coloured segments per input line. Falls back to plain text whenever colouring fails.
@@ -61,6 +76,7 @@ function tokenizer(): Worker | null {
     worker = new Worker(new URL('./highlight-worker.ts', import.meta.url), { type: 'module' })
     // Bun (the tests) keeps a process alive while a worker runs; browsers have no unref.
     ;(worker as Worker & { unref?: () => void }).unref?.()
+    if (themes.key) worker.postMessage({ key: themes.key, themes: { light: themes.light, dark: themes.dark } })
     worker.onmessage = ({ data }: MessageEvent<{ id: number; lines: Segment[][] | null }>) => {
       jobs.get(data.id)?.(data.lines)
       jobs.delete(data.id)
@@ -77,13 +93,13 @@ function tokenizer(): Worker | null {
   return worker
 }
 
-function run(code: string, language: string, stale?: () => boolean): Promise<Segment[][] | null> {
+function run(code: string, language: string, pair: typeof themes, stale?: () => boolean): Promise<Segment[][] | null> {
   const thread = tokenizer()
-  if (!thread) return import('./tokenize-core').then(({ tokenizeCode }) => tokenizeCode(code, language, stale))
+  if (!thread) return import('./tokenize-core').then(({ tokenizeCode }) => tokenizeCode(code, language, stale, pair))
   const id = ++nextJob
   return new Promise<Segment[][] | null | undefined>((resolve) => {
     jobs.set(id, resolve)
-    thread.postMessage({ id, code, language })
+    thread.postMessage({ id, code, language, theme: pair.key })
     // A request nobody waits for any more is dropped from the worker's queue.
     const poll = setInterval(() => {
       if (!jobs.has(id)) return clearInterval(poll)
@@ -92,18 +108,18 @@ function run(code: string, language: string, stale?: () => boolean): Promise<Seg
         thread.postMessage({ cancel: id })
       }
     }, 50)
-  }).then((lines) => (lines === undefined ? run(code, language, stale) : lines))
+  }).then((lines) => (lines === undefined ? run(code, language, pair, stale) : lines))
 }
 
 // Null when the code is not coloured, or when `stale` turns true before it finishes (such as text typed since).
 export async function tokenize(code: string, language: string | null, stale?: () => boolean): Promise<Segment[][] | null> {
   if (!language || code.length > MAX_HIGHLIGHT_CHARS) return null
-  const key = `${language}\n${code}`
+  const key = `${themes.key}\n${language}\n${code}`
   const cached = cache.get(key)
   if (cached) return cached
   let pending = running.get(key)
   if (!pending) {
-    pending = run(code, language, stale).finally(() => running.delete(key))
+    pending = run(code, language, themes, stale).finally(() => running.delete(key))
     running.set(key, pending)
   }
   const out = await pending

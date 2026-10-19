@@ -3,6 +3,7 @@ import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { AppKind, InstalledApp } from '../shared/editors'
+import type { ColorTheme, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
@@ -62,6 +63,14 @@ const api = {
   listApps: (kind: AppKind) => invoke('apps:list', kind) as Promise<InstalledApp[]>,
   appIcon: (appPath: string) => invoke('apps:icon', appPath) as Promise<string | null>,
   pickApp: (kind: AppKind) => invoke('apps:pick', kind) as Promise<InstalledApp | null>,
+  // VS Code extensions, for their colour and file icon themes. Main validates every id and ref; the .vsix file is picked in main.
+  listExtensions: () => invoke('extensions:list') as Promise<InstalledExtension[]>,
+  searchExtensions: (query: string) => invoke('extensions:search', query) as Promise<ExtensionResult[]>,
+  installExtension: (namespace: string, name: string) => invoke('extensions:install', namespace, name) as Promise<InstalledExtension>,
+  installExtensionFile: () => invoke('extensions:install-file') as Promise<InstalledExtension | null>,
+  removeExtension: (id: string) => invoke('extensions:remove', id) as Promise<void>,
+  colorTheme: (ref: string) => invoke('themes:color', ref) as Promise<ColorTheme | null>,
+  iconTheme: (ref: string) => invoke('themes:icons', ref) as Promise<IconTheme | null>,
   // Conflict resolution. The save sends back the fingerprint from load, never a fresh one, and no file text.
   conflictLoad: (repo: string, file: string) => invoke('repo:conflict-load', repo, file) as Promise<ConflictDocument>,
   conflictPreview: (repo: string, file: string, save: ConflictSave) =>
