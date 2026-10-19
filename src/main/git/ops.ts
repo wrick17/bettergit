@@ -631,6 +631,18 @@ async function rebaseWrites(repo: string, onto: string, upstream: string): Promi
       .catch((error) => error instanceof GitError && error.code === 1 && !error.stderr ? 'false' : 'true')
     if (value.trim() !== 'false') throw new Error('Could not check which files this rebase would write, so nothing changed: rebase.rebaseMerges would redo its merge commits. Pull with merge, or turn rebase.rebaseMerges off.')
   }
+  if (commits.length) {
+    // rebase.backend=apply replays commits as patches, without the rename handling of the merge modeled here, so a file
+    // can land where this does not look. Git refuses any value but apply or merge.
+    const backend = await git(repo, ['config', '--get', 'rebase.backend'])
+      .catch((error) => error instanceof GitError && error.code === 1 && !error.stderr ? 'merge' : '')
+    if (backend.trim() !== 'merge') {
+      // A linear branch already based on onto is up to date, so Git does not replay it.
+      if (upstream === onto && commits.every((parents) => parents.length === 2)
+        && await gitOk(repo, ['merge-base', '--is-ancestor', onto, 'HEAD'])) return { paths: [], moved: [] }
+      throw new Error('Could not check which files this rebase would write, so nothing changed: rebase.backend replays commits as patches. Pull with merge, or set rebase.backend to merge.')
+    }
+  }
   const paths = await treePaths(repo, onto)
   const moved: string[] = []
   let ours = onto

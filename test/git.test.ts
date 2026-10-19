@@ -1285,6 +1285,35 @@ describe('writes that could overwrite untracked or ignored files', () => {
     expect(await git(local, ['status', '--porcelain'])).toBe('')
   })
 
+  // The apply backend replays the commit that adds D/new.secret as a patch, at D/new.secret, not where a merge puts it.
+  test('a rebase pull under rebase.backend=apply is refused before it replays a commit as a patch', async () => {
+    const { local, other } = await fixture()
+    await git(local, ['config', 'rebase.backend', 'apply'])
+    const folder = await publish(other, { 'D/a': 'a\n', 'D/b': 'b\n' }, 'folder')
+    await pull(local, 'rebase')
+    expect(await sha(local)).toBe(folder)
+    writeFileSync(path.join(local, 'D', 'new.secret'), 'COMMITTED=1\n')
+    await git(local, ['add', '-f', 'D/new.secret'])
+    await git(local, ['commit', '-qm', 'add secret'])
+    await git(local, ['rm', '-q', 'D/new.secret'])
+    await git(local, ['commit', '-qm', 'remove secret'])
+    const ahead = await sha(local)
+    await pull(local, 'rebase')
+    expect(await sha(local)).toBe(ahead)
+    await git(other, ['mv', 'D', 'E'])
+    await publish(other, {}, 'rename')
+    writeFileSync(path.join(local, 'D', 'new.secret'), 'SECRET=local\n')
+    const head = await sha(local), staged = await index(local), status = await git(local, ['status', '--porcelain=v2', '--ignored'])
+    await expect(pull(local, 'rebase')).rejects.toThrow('rebase.backend')
+    expect(read(local, 'D/new.secret')).toBe('SECRET=local\n')
+    expect(await sha(local)).toBe(head)
+    expect(await index(local)).toBe(staged)
+    expect(await git(local, ['status', '--porcelain=v2', '--ignored'])).toBe(status)
+    expect(existsSync(path.join(local, '.git', 'rebase-apply'))).toBe(false)
+    expect(existsSync(path.join(local, '.git', 'rebase-merge'))).toBe(false)
+    expect((await git(local, ['config', '--get', 'rebase.backend'])).trim()).toBe('apply')
+  })
+
   // macOS disks match names across case and Unicode form, and Git does too under core.ignorecase and precomposeUnicode.
   test('a tracked file under another case and Unicode form is not untracked, but an untracked one in either form is', async () => {
     const { local, other } = await fixture()
