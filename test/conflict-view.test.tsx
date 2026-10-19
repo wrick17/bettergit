@@ -555,9 +555,9 @@ describe('ConflictView', () => {
     expect(shape(unresolved)).toEqual(['text', 'controls 1', 'marker-open', 'current', 'marker-split', 'incoming', 'marker-close', 'text', 'controls 2', 'marker-open', 'current', 'marker-base', 'base', 'marker-split', 'incoming', 'marker-close', 'text', 'controls 3', 'marker-open', 'current', 'marker-split', 'marker-close'])
     for (const row of unresolved.filter((item: Item) => item.kind)) expect(row.tok).toBe(!row.kind.startsWith('marker-'))
     expect(unresolved.filter((item: Item) => item.kind).map((row: Item) => row.gutters)).toEqual(linesOf(unresolvedText).map((_, index) => [`${index + 1}`, `${index + 1}`]))
-    // Conflict 1 is replaced in place. Its new line is plain until its colours land; nothing stale shows.
+    // Conflict 1 is replaced in place. Its new line was coloured before with the same text, so it keeps those colours at once.
     expect(rowText(switched)).toEqual(linesOf(oneText))
-    expect(switched.find((item: Item) => item.kind === 'incoming').tok).toBe(false)
+    expect(switched.find((item: Item) => item.kind === 'incoming').tok).toBe(true)
     expect(rowText(switchedColoured)).toEqual(linesOf(oneText))
     expect(switchedColoured.find((item: Item) => item.kind === 'incoming')).toMatchObject({ text: 'export const fox = "red fox sleeps";', gutters: ['5', '2'], tok: true })
     expect(switchedColoured.find((item: Item) => item.controls?.includes('conflict 1'))?.resolved).toEqual(['Accept incoming'])
@@ -621,10 +621,10 @@ test('split choices preview inline and survive mode flips, another choice, empty
   expect(rawAfterChoices).toBe(clientRun().unresolvedText)
   const prefix = ['// three conflicts', 'export const fox = "red fox sleeps";', "const shared = '=======';", 'export const cat = "loud";', '// tail']
   for (const side of [0, 1]) expect(sideText(splitChosenImmediate, side).slice(0, 5)).toEqual(prefix)
-  // The selected line is raw immediately, then receives only colours that fit that same source text.
+  // The selected line shows at once with the colours it had for that same source text.
   const chosen = pairsOf(splitChosenImmediate).flat().filter((cell) => cell.text === 'export const fox = "red fox sleeps";')
   expect(chosen).toHaveLength(2)
-  expect(chosen.every((cell) => !cell.tok)).toBe(true)
+  expect(chosen.every((cell) => cell.tok)).toBe(true)
   expect(pairsOf(splitChosenColoured).flat().filter((cell) => cell.text === chosen[0].text).every((cell) => cell.tok)).toBe(true)
   expect(controlsOf(flippedBack).map((item) => item.resolved)).toEqual([['Accept incoming'], ['Accept current'], []])
   expect(rowText(splitToUnified)).toEqual(linesOf(clientRun().splitChosenText))

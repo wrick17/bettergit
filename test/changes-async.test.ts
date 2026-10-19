@@ -56,7 +56,18 @@ function render() {
     dirty = false; cursor = 0; effects = []
     tree = ChangesView(props)
     for (const effect of effects) effect()
+    // Each DiffView shows the files it was given, as it does once its deferred render lands.
+    if (diffViewsShow) for (const view of findAll(tree, (p) => typeof p.onShown === 'function')) view.onShown(view.files)
   } while (dirty)
+}
+let diffViewsShow = true
+function findAll(node, match, out = []) {
+  for (const child of [node].flat(Infinity)) {
+    if (!react.isValidElement(child)) continue
+    if (match(child.props)) out.push(child.props)
+    findAll(child.props.children, match, out)
+  }
+  return out
 }
 async function flush(renderUpdates = true) {
   for (let i = 0; i < 12; i++) {
@@ -65,7 +76,8 @@ async function flush(renderUpdates = true) {
   }
 }
 function find(node, match) {
-  for (const child of Array.isArray(node) ? node : [node]) {
+  // Lists rendered with map are nested arrays among the children.
+  for (const child of [node].flat(Infinity)) {
     if (!react.isValidElement(child)) continue
     if (match(child.props)) return child.props
     const found = find(child.props.children, match)
@@ -144,7 +156,10 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
     return { supported: true, fingerprint: fingerprint(label), parts, combine: conflictBlocks(parts).map(() => ({ state: 'overlap' })), reset: { available: true, fingerprint: fingerprint(label) } }
   }
   const conflicted = (path) => ({ path, staged: false, unstaged: false, conflicted: true, kind: 'modified' })
+  // Every conflicted file is on screen, each with its own resolver. The first is c.ts, the file restored below.
   const view = () => find(tree, (p) => typeof p.onReset === 'function')
+  const fileView = (path) => find(tree, (p) => typeof p.onReset === 'function' && p.path === path)
+  const load = (path, doc) => loads.filter((entry) => entry.args[1] === path).at(-1).resolve(doc)
   const choose = () => { view().onChoose(0, 'current'); render(); assert.deepEqual(view().choices, ['current']) }
   stored.clear(); errors = []; slots = []; mounted = true
   stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'c.ts', staged: false } } }))
@@ -153,8 +168,10 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
     listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
   }
   render()
+  // Both files load at once, the picked one first.
+  assert.deepEqual(loads.map((entry) => entry.args), [['/repo', 'c.ts'], ['/repo', 'd.ts']])
   const first = conflictDoc('a')
-  loads.at(-1).resolve(first); await flush()
+  load('c.ts', first); await flush()
   choose()
 
   // Cancel asks once and calls nothing.
@@ -183,25 +200,44 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
   assert.equal(view().model, same)
   assert.deepEqual(view().choices, [])
 
-  // A reply for a file the pane has left does not replace the file now on screen.
+  // A reply replaces only the file it was asked for, even after another file is picked. Picking does not reload.
   choose()
   view().onReset(); await flush()
   find(tree, (p) => p.title === 'Conflicts' && typeof p.onSelect === 'function').onSelect(conflicted('d.ts')); render()
+  assert.equal(loads.length, 2)
   const other = conflictDoc('d')
-  loads.at(-1).resolve(other); await flush()
-  resets[2].resolve(conflictDoc('c')); await flush()
-  assert.equal(view().path, 'd.ts')
-  assert.equal(view().model, other)
+  load('d.ts', other); await flush()
+  fileView('d.ts').onChoose(0, 'incoming'); render()
+  const reset = conflictDoc('c')
+  resets[2].resolve(reset); await flush()
+  assert.equal(fileView('c.ts').model, reset)
+  assert.deepEqual(fileView('c.ts').choices, [])
+  assert.equal(fileView('d.ts').model, other)
+  assert.deepEqual(fileView('d.ts').choices, ['incoming'])
 
   // Nor does a reply for a repo the pane has left.
   choose()
   view().onReset(); await flush()
   props = { ...props, repo: '/other' }; render()
   // Same path and fingerprint as the request, so only the repo tells them apart.
-  const elsewhere = conflictDoc('d')
-  loads.at(-1).resolve(elsewhere); await flush()
+  const elsewhere = conflictDoc('c')
+  load('c.ts', elsewhere); await flush()
   resets[3].resolve(conflictDoc('f')); await flush()
-  assert.equal(view().model, elsewhere)
+  assert.equal(fileView('c.ts').model, elsewhere)
+  unmount()
+
+  // Paths are keys: files named like Object's own members load and resolve like any other.
+  loads.length = 0; slots = []; mounted = true
+  stored.set('bettergit.session', JSON.stringify({ places: { '/repo': { file: 'constructor', staged: false } } }))
+  props = { ...props, repo: '/repo', revision: 1, status: { changes: [conflicted('constructor'), conflicted('__proto__')] } }
+  render()
+  assert.equal(fileView('constructor'), undefined, 'an unloaded file named constructor showed a resolver')
+  assert.equal(fileView('__proto__'), undefined, 'an unloaded file named __proto__ showed a resolver')
+  for (const path of ['constructor', '__proto__']) load(path, conflictDoc(path === 'constructor' ? 'c' : 'p'))
+  await flush()
+  for (const path of ['constructor', '__proto__']) assert.equal(fileView(path).model.supported, true)
+  fileView('__proto__').onChoose(0, 'current'); render()
+  assert.deepEqual(fileView('__proto__').choices, ['current'])
   unmount()
 }
 
@@ -245,11 +281,13 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   render()
   find(tree, (p) => p.className === 'diff-pane').ref.current = pane
   render()
-  // A restored file with no saved position is shown once its diff loads, two frames later.
+  // A restored file with no saved position is shown once its diff loads and is on screen, before that frame paints.
+  diffViewsShow = false
   await load('initial')
-  tick()
-  assert.deepEqual(revealed, [])
-  tick()
+  tick(); tick()
+  assert.deepEqual(revealed, [], 'revealed before the diff showed its files')
+  diffViewsShow = true
+  render()
   assert.deepEqual(revealed, ['a.ts'])
   assert.equal(pane.scrollTop, 400)
   // Picking another file in the same section scrolls the diff already on screen to it. Nothing reloads.
@@ -264,7 +302,6 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   session.views = { '/repo|changes-diff': { key: 'all', value: 0 } }
   stored.set('bettergit.session', JSON.stringify(session))
   find(tree, (p) => p.className?.startsWith('file-list')).onClick({ target: { closest: () => null } }); render()
-  tick(); tick()
   assert.equal(pane.scrollTop, 0)
   unmount()
 } else if (process.env.CHECK_MODE === 'whitespace-failure') {

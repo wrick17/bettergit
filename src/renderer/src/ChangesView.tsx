@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { DiffView } from './DiffView'
@@ -13,8 +13,8 @@ import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savePlace, useScrollMemory } from './session'
-import { swapFile } from './widen'
-import { ConflictView } from './ConflictView'
+import { orderFiles, shareFiles, swapFile } from './widen'
+import { ConflictView, type ConflictViewProps } from './ConflictView'
 import type { Choice, ConflictDocument, ConflictFingerprint, ConflictSave } from '../../shared/conflict'
 
 const api = window.bettergit
@@ -41,12 +41,20 @@ interface Selection {
   staged: boolean
 }
 
-// The conflict on screen. Its choices belong to the model they were made on, so a new model starts them over.
+// One conflicted file. Its choices belong to the model they were made on, so a new model starts them over.
 interface ConflictState {
-  path: string
   model: ConflictDocument
   choices: Choice[]
 }
+
+// The loaded conflicts of one repo, by path.
+interface Conflicts {
+  repo: string
+  files: Record<string, ConflictState>
+}
+
+// Conflicted files load a few at a time, each a handful of git reads in the main process.
+const CONFLICT_LOADS = 4
 
 interface SectionProps {
   title: string
@@ -79,11 +87,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const paneRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   // The file picked last. The pane scrolls to it once its diff loads. A file restored at launch is revealed only when it has no saved scroll position.
-  const revealRef = useRef<string | null>(null)
+  const revealRef = useRef<{ path: string; from: string } | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
-  const [conflict, setConflict] = useState<ConflictState | null>(null)
+  const [conflicts, setConflicts] = useState<Conflicts>(() => ({ repo, files: {} }))
   // Both sections load on every refresh. The file rows need their +/- counts, and the empty-selection pane shows them all.
-  const [all, setAll] = useState<{ staged: Working; unstaged: Working } | null>(null)
+  // Each result keeps the status it was loaded for, so the file list and the diffs change in the same frame.
+  const [all, setAll] = useState<{ staged: Working; unstaged: Working; status: RepoStatus } | null>(null)
   // Context level of each widened file, keyed by levelKey. Kept across refreshes and read by the loaders.
   const [extra, setExtra] = useState<Record<string, number>>(() => loadSession().places[repo]?.widened ?? {})
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
@@ -91,22 +100,26 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
-  // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
-  // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
-  const clean = status.changes.length === 0
-  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
-  const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
   // The view and options each loaded result belongs to. Only a result loaded for the view on screen is ready for its scroll position.
   const allKey = JSON.stringify([repo, context, ignoreWhitespace])
+  const allFor = useRef<string | null>(null)
+  // The status on screen: the one the shown diffs were loaded for. A refresh changes rows and diffs together once its diffs land.
+  const shownStatus = all && allFor.current === allKey ? all.status : status
+  // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
+  // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
+  const clean = shownStatus.changes.length === 0
+  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
+  const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
   // The selected view shows the selection's whole section, so its load and scroll memory depend on the section, not the
   // file. Picking another file in the same section only scrolls to it.
   const section = selection ? selection.staged : null
   const diffKey = section === null ? null : JSON.stringify([repo, section, context, ignoreWhitespace])
-  const allFor = useRef<string | null>(null)
   const diffFor = useRef<string | null>(null)
   // The working diffs loaded for this status, revision, context and widening, by section and whitespace option. A refresh
   // or a widen starts a new set. Toggling whitespace back, or picking a file, reads a loaded diff at once instead of reloading.
   const loadsRef = useRef<Loads | null>(null)
+  // The last result of each section and option, which a reload shares its unchanged files with.
+  const lastWorking = useRef(new Map<string, Working>())
   const loadsFor = [repo, status, revision, context, extra]
   if (!loadsRef.current || loadsRef.current.of.some((value, index) => value !== loadsFor[index])) {
     loadsRef.current = { of: loadsFor, pending: new Map(), done: new Map() }
@@ -117,12 +130,14 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const cachedAll = loaded(true) && loaded(false)
   const allShown = all && allFor.current === allKey ? all : cachedAll ? { staged: loaded(true)!, unstaged: loaded(false)! } : null
   const diffShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? null
-  const stagedShown = allShown?.staged
-  const unstagedShown = allShown?.unstaged
-  const scrollKey = section === null ? 'all' : `${section}`
-  const diffReady = selection ? !!diffShown && diffShown !== LOAD_FAILED : !!stagedShown && stagedShown !== LOAD_FAILED
-  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, scrollKey, diffReady,
-    selection ? (pane) => revealFile(pane, selection.path) : undefined)
+  const conflicted = useMemo(() => shownStatus.changes.filter((change) => change.conflicted), [shownStatus])
+  // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
+  const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
+  const conflictFiles = conflicts.repo === repo ? conflicts.files : NO_CONFLICTS
+  const conflictsReady = conflicted.every((change) => conflictOf(conflictFiles, change.path))
+  const scrollKey = section === null ? 'all' : conflictSelected ? 'conflicts' : `${section}`
+  const diffReady = conflictSelected ? conflictsReady
+    : selection ? !!diffShown && diffShown !== LOAD_FAILED : !!allShown?.staged && allShown.staged !== LOAD_FAILED
   // The pane's last position for the view on screen. While a reload or a failure hides that view's hunks the pane clamps:
   // those scroll events are not saved, and the position returns once the view's own result lays out.
   const paneTop = useRef<{ key: string; top: number } | null>(null)
@@ -157,11 +172,37 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   const repoRef = useRef(repo)
   repoRef.current = repo
 
-  const staged = useMemo(() => status.changes.filter((change) => change.staged), [status])
-  const unstaged = useMemo(() => status.changes.filter((change) => change.unstaged && !change.conflicted), [status])
-  const conflicted = useMemo(() => status.changes.filter((change) => change.conflicted), [status])
-  // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
-  const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
+  const staged = useMemo(() => shownStatus.changes.filter((change) => change.staged), [shownStatus])
+  const unstaged = useMemo(() => shownStatus.changes.filter((change) => change.unstaged && !change.conflicted), [shownStatus])
+  // Each section's paths in the order its file list shows them, so the diffs list their files the same way.
+  const order = useMemo(() => {
+    const paths = (changes: FileChange[]) => (view === 'tree' ? treeOrder(buildTree(changes)) : changes).map((change) => change.path)
+    return { staged: paths(staged), unstaged: paths(unstaged), conflicts: paths(conflicted) }
+  }, [staged, unstaged, conflicted, view])
+  const stagedShown = useMemo(() => allShown?.staged && orderFiles(allShown.staged, order.staged), [allShown?.staged, order])
+  const unstagedShown = useMemo(() => allShown?.unstaged && orderFiles(allShown.unstaged, order.unstaged), [allShown?.unstaged, order])
+  const selectedShown = useMemo(() => diffShown && orderFiles(diffShown, selection?.staged ? order.staged : order.unstaged), [diffShown, selection?.staged, order])
+  // What each diff on the pane gets, and whether it mounts. The pane is placed once every one shows what it was given, so
+  // a switch of view (the selected file moving to the other section, say) lands in one frame, not in steps.
+  const stagedFiles = stagedShown?.files ?? NO_FILES.files
+  const unstagedFiles = unstagedShown?.files ?? NO_FILES.files
+  const selectedFiles = selectedShown?.files ?? NO_FILES.files
+  const allView = !selection && shownStatus.changes.length > 0
+  const showStaged = allView && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && staged.length > 0))
+  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && unstaged.length > 0))
+  const onScreenRef = useRef(new Map<string, DiffFile[]>())
+  const [, setShownTick] = useState(0)
+  const shownHandlers = useMemo(() => Object.fromEntries(['staged', 'unstaged', 'selection'].map((id) => [id, (files: DiffFile[]) => {
+    if (onScreenRef.current.get(id) === files) return
+    onScreenRef.current.set(id, files)
+    setShownTick((tick) => tick + 1)
+  }])), [])
+  const onScreen = conflictSelected || (selection
+    ? onScreenRef.current.get('selection') === selectedFiles
+    : (!showStaged || onScreenRef.current.get('staged') === stagedFiles) && (!showUnstaged || onScreenRef.current.get('unstaged') === unstagedFiles))
+  // A picked file places the pane itself, below.
+  const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, scrollKey, diffReady && onScreen,
+    selection ? (pane) => revealFile(pane, selection.path, false, true, true) : undefined, { onScreen: true, skip: !!revealRef.current })
   const stats = useMemo(() => countStats(allShown), [allShown])
   const List = view === 'tree' ? Tree : Group
 
@@ -186,23 +227,25 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }, [repo, collapsed, extra])
 
   // A selection survives a status change only while its file is still in the section it names. Otherwise it moves to the other section or clears.
-  useEffect(() => {
+  // It follows the status on screen, before paint, so the moved selection's diff is already loaded when it shows.
+  useLayoutEffect(() => {
     setSelection((current) => {
       if (!current) return current
-      const inSection = (isStaged: boolean) => status.changes.some((change) => change.path === current.path
+      const inSection = (isStaged: boolean) => shownStatus.changes.some((change) => change.path === current.path
         && (isStaged ? change.staged : change.unstaged || change.conflicted))
       if (inSection(current.staged)) return current
       return inSection(!current.staged) ? { path: current.path, staged: !current.staged } : null
     })
-  }, [status])
+  }, [shownStatus])
 
   useEffect(() => {
     let stale = false
     const key = allKey
     const loads = loadsRef.current!
+    const loadedFor = status
     Promise.all([loadWorking(loads, true, ignoreWhitespace), loadWorking(loads, false, ignoreWhitespace)]).then(([nextStaged, nextUnstaged]) => {
       if (!stale) {
-        const next = { staged: nextStaged, unstaged: nextUnstaged }
+        const next = { staged: nextStaged, unstaged: nextUnstaged, status: loadedFor }
         if (currentRequest.current) currentRequest.current.all = next
         allFor.current = key
         setAll(next)
@@ -219,7 +262,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       if (allFor.current === key) return
       allFor.current = key
       // A first load that fails installs the failure too, so it stays on screen after the error banner clears.
-      const hidden = { staged: LOAD_FAILED, unstaged: LOAD_FAILED }
+      const hidden = { staged: LOAD_FAILED, unstaged: LOAD_FAILED, status: loadedFor }
       if (currentRequest.current) currentRequest.current.all = hidden
       setAll(hidden)
     })
@@ -234,8 +277,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     }
     let stale = false
     const key = diffKey
-    loadWorking(loadsRef.current!, section, ignoreWhitespace)
-      .then((next) => {
+    const loads = loadsRef.current!
+    // Lands with the other section's load, which the all loader shares, so a refresh that moves the selected file to the
+    // other section switches the view in the same frame the file leaves this one.
+    Promise.all([loadWorking(loads, section, ignoreWhitespace), loadWorking(loads, !section, ignoreWhitespace).catch(() => undefined)])
+      .then(([next]) => {
         if (!stale) {
           if (currentRequest.current) currentRequest.current.diff = next
           diffFor.current = key
@@ -252,28 +298,57 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
     return () => { stale = true }
   }, [repo, status, section, conflictSelected, revision, context, ignoreWhitespace])
 
-  // The resolver loads the file and its stage IDs together. A reload that finds the same fingerprint keeps the choices.
+  // Every conflicted file loads with each refresh, like the working diffs, so picking one only scrolls to it. The picked
+  // file goes first, then the list's order. Each load reads the file and its stage IDs together, and a reload that finds
+  // the same fingerprint keeps the choices. A file on screen keeps its model until its reload lands.
+  const selectionRef = useRef(selection)
+  selectionRef.current = selection
+  const orderRef = useRef(order.conflicts)
+  orderRef.current = order.conflicts
+  const conflictKey = conflicted.map((change) => change.path).join('\0')
   useEffect(() => {
-    if (!selection || !conflictSelected) return
+    if (!conflictKey) return
     let stale = false
-    const path = selection.path
-    api.conflictLoad(repo, path)
-      .then((model: ConflictDocument) => {
-        if (!stale) setConflict((prev) => ({ path, model, choices: prev?.path === path && sameModel(prev.model, model) ? prev.choices : [] }))
-      })
-      .catch((failure: unknown) => { if (!stale) errorRef.current(failure) })
+    const picked = selectionRef.current?.path
+    const queue = [...orderRef.current].sort((a, b) => Number(b === picked) - Number(a === picked))
+    const loadNext = async (): Promise<void> => {
+      const path = queue.shift()
+      if (path === undefined || stale) return
+      try {
+        const model: ConflictDocument = await api.conflictLoad(repo, path)
+        if (!stale) {
+          setConflicts((prev) => {
+            const files = prev.repo === repo ? prev.files : {}
+            const kept = conflictOf(files, path)
+            // The same file and merge state keeps its model and choices, so a refresh leaves the resolver as it is.
+            if (kept && prev.repo === repo && (sameModel(kept.model, model) || JSON.stringify(kept.model) === JSON.stringify(model))) return prev
+            return { repo, files: { ...files, [path]: { model, choices: [] } } }
+          })
+        }
+      } catch (failure: unknown) {
+        if (!stale) errorRef.current(failure)
+      }
+      return loadNext()
+    }
+    for (let worker = 0; worker < CONFLICT_LOADS; worker++) void loadNext()
     return () => { stale = true }
-  }, [repo, selection, conflictSelected, revision])
+  }, [repo, revision, conflictKey])
 
   // Picking a file keeps the continuous diff and scrolls the file's header into view, at once when its section is on
-  // screen, or once that section's diff loads.
-  useEffect(() => {
-    const path = revealRef.current
-    if (!path || !diff || diffFor.current !== diffKey) return
+  // screen, or once that section's diff loads and shows.
+  useLayoutEffect(() => {
+    const pick = revealRef.current
+    if (!pick || !onScreen || (conflictSelected ? !conflictsReady : !diffShown || diffShown === LOAD_FAILED)) return
     revealRef.current = null
-    // Files skipped by content-visibility use their estimated height until a frame has laid them out, so scroll after two frames.
-    requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, path, true)))
-  }, [diff, selection])
+    // A pick in the section on screen glides there. Files skipped by content-visibility use their estimated height until
+    // a frame has laid them out, so the glide starts after two frames.
+    if (pick.from === scrollKey) {
+      requestAnimationFrame(() => requestAnimationFrame(() => revealFile(paneRef.current, pick.path, true)))
+      return
+    }
+    // A pick in another section swaps the whole pane, so it lands on the file in the frame the new section first shows.
+    revealFile(paneRef.current, pick.path, true, false, true)
+  }, [diffShown, selection, conflictSelected, conflictsReady, onScreen])
 
   // Git writes take the repo's single slot. The reload runs only after a successful write, so a failed reload cannot fail it.
   const write = (key: string, action: () => Promise<unknown>) => runRepoWrite(repo, key, action, {
@@ -299,36 +374,56 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   // Each choice copies the list, since the list belongs to the model on screen and that model is replaced on reload.
-  const chooseConflict = (index: number, choice: Choice) => setConflict((prev) => {
-    if (!prev) return prev
-    const choices = [...prev.choices]
+  const chooseConflict = (path: string, index: number, choice: Choice) => setConflicts((prev) => {
+    const file = prev.repo === repo ? conflictOf(prev.files, path) : undefined
+    if (!file) return prev
+    const choices = [...file.choices]
     choices[index] = choice
-    return { ...prev, choices }
+    return { repo, files: { ...prev.files, [path]: { ...file, choices } } }
   })
 
-  // Save sends the fingerprint the file had at load, with the choices. The write takes the repo's single write slot.
-  const saveConflictFile = (save: ConflictSave) => {
-    if (!conflict) return
-    const path = conflict.path
-    void write('resolve', () => api.conflictSave(repo, path, save))
+  // Save sends the fingerprint the file had at load, with the choices. The write takes the repo's single write slot and
+  // names its file, so only that file's bar shows it saving.
+  const saveConflictFile = (path: string, save: ConflictSave) => {
+    void write(`resolve:${path}`, () => api.conflictSave(repo, path, save))
   }
 
   // Reset rebuilds the file from Git's index after the user confirms. Its reply replaces only the model it was asked
   // for, and clears that model's choices even when the bytes come back the same.
-  const resetConflictFile = () => {
+  const resetConflictFile = (path: string) => {
+    const conflict = conflictOf(conflictFiles, path)
     if (busy || !conflict?.model.reset.available) return
-    const { path } = conflict
     const { fingerprint } = conflict.model.reset
     if (!window.confirm(`Reset resolution for "${path}"?\n\nThis replaces the whole working file with its conflicts recreated from Git's index, `
       + 'and discards saved edits and unsaved choices for this file. The conflict markers are rebuilt in diff3 style, '
       + 'so labels and layout can differ from the original. The file stays unmerged and unstaged. Other files are unchanged.')) return
-    void write('conflict-reset', async () => {
+    void write(`conflict-reset:${path}`, async () => {
       const model = await api.conflictReset(repo, path, { fingerprint })
       if (repoRef.current !== repo) return
-      setConflict((prev) => (prev?.path === path && prev.model.reset.available && sameFingerprint(prev.model.reset.fingerprint, fingerprint)
-        ? { path, model, choices: [] }
-        : prev))
+      setConflicts((prev) => {
+        const file = prev.repo === repo ? conflictOf(prev.files, path) : undefined
+        return file?.model.reset.available && sameFingerprint(file.model.reset.fingerprint, fingerprint)
+          ? { repo, files: { ...prev.files, [path]: { model, choices: [] } } }
+          : prev
+      })
     })
+  }
+
+  // Each file's handlers keep their identity across renders and call the latest ones, so a choice re-renders only its file.
+  const conflictActions = useRef({ chooseConflict, saveConflictFile, resetConflictFile })
+  conflictActions.current = { chooseConflict, saveConflictFile, resetConflictFile }
+  const handlersRef = useRef(new Map<string, ConflictHandlers>())
+  const handlersFor = (path: string) => {
+    let handlers = handlersRef.current.get(path)
+    if (!handlers) {
+      handlers = {
+        onChoose: (index, choice) => conflictActions.current.chooseConflict(path, index, choice),
+        onSave: (save) => conflictActions.current.saveConflictFile(path, save),
+        onReset: () => conflictActions.current.resetConflictFile(path),
+      }
+      handlersRef.current.set(path, handlers)
+    }
+    return handlers
   }
 
   // Bulk actions take only the listed paths. Conflicts are not in either list, so their markers are never staged here.
@@ -338,7 +433,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   const choose = (change: FileChange, isStaged: boolean) => {
-    revealRef.current = change.path
+    revealRef.current = { path: change.path, from: scrollKey }
     setSelection({ path: change.path, staged: isStaged })
   }
 
@@ -411,12 +506,18 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
   }
 
   // One load per section and option in a set: the section view and the all view share it, and a failed load is retried.
+  // Files a reload finds unchanged keep their loaded objects.
   function loadWorking(loads: Loads, isStaged: boolean, hideWhitespace: boolean): Promise<Working> {
     const key = loadKey(isStaged, hideWhitespace)
     let load = loads.pending.get(key)
     if (!load) {
       load = api.working(repo, isStaged, context, undefined, hideWhitespace)
         .then((next: Working) => widen(repo, next, isStaged, extraRef.current, hideWhitespace))
+        .then((next) => {
+          const shared = shareFiles(lastWorking.current.get(key), next)
+          lastWorking.current.set(key, shared)
+          return shared
+        })
       load.then((next) => { loads.done.set(key, next) }, () => { loads.pending.delete(key) })
       loads.pending.set(key, load)
     }
@@ -537,46 +638,61 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
       {detailOpen && (
         <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll}>
-          {!selection && status.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
-          {!selection && status.changes.length > 0 && (
+          {!selection && shownStatus.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
+          {!selection && shownStatus.changes.length > 0 && (
             <>
               <h2 className="diff-section">Staged {stagedShown && stagedShown !== LOAD_FAILED && <span className="count">{stagedShown.files.length}</span>}</h2>
               {/* While it loads, with the whitespace option on, or after a failed load, a section with changes still mounts its DiffView, so the toolbar stays usable. */}
-              {((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && staged.length > 0)) && (
+              {showStaged && (
                 <DiffView
-                  files={stagedShown?.files ?? NO_FILES.files}
+                  files={stagedFiles}
                   moves={stagedShown?.moves ?? NO_FILES.moves}
                   stage={{ staged: true, disabled: !!busy, onToggle: togglePath }}
                   onExpand={(file) => expandFile('staged', file)}
                   persist={{ id: `${repo}|changes-staged`, key: 'all' }}
+                  refreshOf={`${repo} staged`}
+                  onShown={shownHandlers.staged}
                   emptyHint={stagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : stagedShown ? undefined : LOADING_HINT}
                 />
               )}
               <h2 className="diff-section">Unstaged {unstagedShown && unstagedShown !== LOAD_FAILED && <span className="count">{unstagedShown.files.length}</span>}</h2>
-              {((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && unstaged.length > 0)) && (
+              {showUnstaged && (
                 <DiffView
-                  files={unstagedShown?.files ?? NO_FILES.files}
+                  files={unstagedFiles}
                   moves={unstagedShown?.moves ?? NO_FILES.moves}
                   stage={{ staged: false, disabled: !!busy, onToggle: togglePath }}
                   edit={edit}
                   onExpand={(file) => expandFile('unstaged', file)}
                   persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
+                  refreshOf={`${repo} unstaged`}
+                  onShown={shownHandlers.unstaged}
                   emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
                 />
               )}
             </>
           )}
-          {selection && conflictSelected && (conflict?.path === selection.path
-            ? <ConflictView path={selection.path} model={conflict.model} choices={conflict.choices} onChoose={chooseConflict} onSave={saveConflictFile} onReset={resetConflictFile} busy={busy} />
-            : <p className="hint">Loading conflict…</p>)}
+          {/* Every conflicted file, each in its own section, in the list's order. Picking one scrolls to it. */}
+          {conflictSelected && order.conflicts.map((path) => {
+            const file = conflictOf(conflictFiles, path)
+            return file
+              ? <ConflictFile key={path} path={path} model={file.model} choices={file.choices} {...handlersFor(path)} busy={fileBusy(busy, path)} />
+              : (
+                <section key={path} className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
+                  <header className="conflict-bar"><span className="conflict-path" title={path}>{path}</span></header>
+                  <p className="hint">Loading conflict…</p>
+                </section>
+              )
+          })}
           {selection && !conflictSelected && (
             <DiffView
-              files={diffShown?.files ?? NO_FILES.files}
-              moves={diffShown?.moves ?? NO_FILES.moves}
+              files={selectedFiles}
+              moves={selectedShown?.moves ?? NO_FILES.moves}
               stage={{ staged: selection.staged, disabled: !!busy, onToggle: togglePath }}
               edit={selection.staged ? undefined : edit}
               onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
+              refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
+              onShown={shownHandlers.selection}
               emptyHint={diffShown === LOAD_FAILED ? LOAD_FAILED_HINT : diffShown ? undefined : LOADING_HINT}
             />
           )}
@@ -584,6 +700,25 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen, onCh
       )}
     </div>
   )
+}
+
+type ConflictHandlers = Pick<ConflictViewProps, 'onChoose' | 'onSave' | 'onReset'>
+
+const NO_CONFLICTS: Record<string, ConflictState> = {}
+
+// Paths are keys, and a file may be named `constructor` or `__proto__`, so only the object's own entries count.
+function conflictOf(files: Record<string, ConflictState>, path: string): ConflictState | undefined {
+  return Object.hasOwn(files, path) ? files[path] : undefined
+}
+
+// Memoised, so a choice, a save or a load in one file leaves the other files' diffs alone.
+const ConflictFile = memo(ConflictView)
+
+// The busy key as one file's bar reads it. Its own save or reset shows as running there. In any other file it only blocks.
+function fileBusy(busy: string | null, path: string): string | null {
+  if (busy === `resolve:${path}`) return 'resolve'
+  if (busy === `conflict-reset:${path}`) return 'conflict-reset'
+  return busy
 }
 
 // Two loads describe the same file and merge state when their fingerprints match. An unsupported file never matches.
@@ -609,13 +744,15 @@ const LOAD_FAILED_HINT = 'Could not load these changes.'
 const NO_FILES: Working = { files: [], moves: [] }
 const LOADING_HINT = 'Loading…'
 
-// A picked file glides to its header and its header flashes once, so the eye lands on it. Restores jump without motion.
-function revealFile(pane: HTMLElement | null, path: string, picked = false) {
+// A picked file glides to its header and its header flashes once, so the eye lands on it. Restores, and picks that swap
+// the pane's section, jump without motion.
+// `held` keeps the pane's hold on while it jumps, for a view just swapped in whose rows above still settle their heights.
+function revealFile(pane: HTMLElement | null, path: string, picked = false, glide = true, held = false) {
   const find = () => Array.from(pane?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find((element) => element.dataset.path === path)
   const section = find()
   if (!section || !pane) return
-  const still = !picked || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  if (still) suspendHold(pane)
+  const still = !picked || !glide || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  if (still && !held) suspendHold(pane)
   section.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' })
   void settleOn(pane, find)
   if (!picked) return
@@ -780,10 +917,22 @@ function buildTree(changes: FileChange[]): Folder {
     }
     folder.files.push(change)
   }
-  return root
+  return sortTree(root)
 }
 
-// Folders first, then files, each alphabetical. A collapsed folder's contents are not rendered.
+// Folders first, then files, each alphabetical. The file list draws this order and the diffs follow it.
+function sortTree(folder: Folder): Folder {
+  folder.folders = new Map([...folder.folders].sort(([a], [b]) => a.localeCompare(b)))
+  folder.folders.forEach(sortTree)
+  folder.files.sort((a, b) => splitPath(a.path).name.localeCompare(splitPath(b.path).name))
+  return folder
+}
+
+function treeOrder(folder: Folder): FileChange[] {
+  return [...[...folder.folders.values()].flatMap(treeOrder), ...folder.files]
+}
+
+// In buildTree's order. A collapsed folder's contents are not rendered.
 function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
   folder: Folder
   section: string
@@ -791,8 +940,8 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
   onToggleFolder: (key: string) => void
   renderFile: (change: FileChange) => ReactNode
 }) {
-  const folders = [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name))
-  const files = [...folder.files].sort((a, b) => splitPath(a.path).name.localeCompare(splitPath(b.path).name))
+  const folders = [...folder.folders.values()]
+  const files = folder.files
   return (
     <>
       {folders.map((child) => {

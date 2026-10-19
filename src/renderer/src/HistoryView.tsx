@@ -117,18 +117,25 @@ export function HistoryView({ repo, head, revision, listOpen, detailOpen, onErro
   }
   const cached = selected ? commits_.current.done.get(JSON.stringify([repo, selected, context, ignoreWhitespace])) : undefined
 
+  // A refresh of the same list reloads every row already shown, so paged rows stay and the scroll does not jump.
+  const listKey = useRef('')
+  const shownCount = useRef(0)
+  shownCount.current = commits.length
   useEffect(() => {
     const gen = ++generation.current
     pageBusy.current = true
-    setExhausted(false)
+    const key = JSON.stringify([repo, query, authors])
+    const limit = key === listKey.current ? Math.max(PAGE, shownCount.current) : PAGE
+    listKey.current = key
     const load = query.trim()
       ? api.searchHistory(repo, query.trim(), authors)
-      : api.history(repo, 0, PAGE, authors)
+      : api.history(repo, 0, limit, authors)
     load.then((rows: Commit[]) => {
       // A reply for an older query, repo, or refresh must not overwrite the current list.
       if (gen !== generation.current) return
-      setCommits(rows)
-      setExhausted(rows.length < PAGE)
+      // An unchanged list keeps its array, so the graph is not laid out again and no row re-renders.
+      setCommits((shown) => JSON.stringify(shown) === JSON.stringify(rows) ? shown : rows)
+      setExhausted(rows.length < limit)
     }).catch((failure: unknown) => {
       if (gen === generation.current) errorRef.current(failure)
     }).finally(() => {

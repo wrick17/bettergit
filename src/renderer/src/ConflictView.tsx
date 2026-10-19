@@ -2,7 +2,7 @@ import { type FocusEvent, type ReactNode, useMemo, useState } from 'react'
 import type { MovedBlock } from '../../main/git/diff'
 import { applyChoices, conflictBlocks, type Choice, type ChoiceKind, type Combine, type ConflictDocument, type ConflictSave, type Part } from '../../shared/conflict'
 import { conflictFile, isMarker } from './conflict-rows'
-import { DiffView, useDiffLayout, type ConflictDecor } from './DiffView'
+import { DiffView, LayoutToggles, useDiffLayout, type ConflictDecor } from './DiffView'
 import { IconButton } from './Icons'
 import { CONTEXT_OPTIONS, useContextLines } from './prefs'
 import { blockedReason } from './repo-busy'
@@ -41,11 +41,13 @@ export interface ConflictViewProps {
 
 // No hooks here: the diff below owns them, so this stays a plain function of its props.
 export function ConflictView({ path, model, choices, onChoose, onSave, onReset, busy }: ConflictViewProps) {
-  // The bar shows in every state, so a file with broken markers or none left can still be reset.
+  // The bar shows in every state, so a file with broken markers or none left can still be reset. With a diff below, it
+  // also holds that diff's layout controls, so each file's controls stay in its own sticky bar.
   const bar = (middle: ReactNode, save?: ReactNode) => (
     <header className="conflict-bar">
       <span className="conflict-path" title={path}>{path}</span>
       {middle}
+      {save && <LayoutToggles />}
       <IconButton
         icon="reset"
         label="Reset resolution"
@@ -60,7 +62,7 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
   const spacer = <span className="conflict-count" aria-hidden="true" />
   if (!model.supported) {
     return (
-      <section className="conflict" aria-label={`Conflict in ${path}`}>
+      <section className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
         {bar(spacer)}
         <p className="conflict-unsupported" role="status">{model.message}</p>
       </section>
@@ -70,7 +72,7 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
   const blocks = conflictBlocks(model.parts)
   if (blocks.length === 0) {
     return (
-      <section className="conflict" aria-label={`Conflict in ${path}`}>
+      <section className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
         {bar(spacer)}
         <p className="conflict-note" role="status">No conflict markers remain in this file. Stage it to mark it resolved.</p>
       </section>
@@ -82,7 +84,7 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
   const canSave = busy === null && result.ok && resolved > 0
 
   return (
-    <section className="conflict" aria-label={`Conflict in ${path}`} onFocus={keepFocusInView}>
+    <section className="conflict" aria-label={`Conflict in ${path}`} data-path={path} onFocus={keepFocusInView}>
       {bar(
         <span className="conflict-count" aria-live="polite">{resolved} of {blocks.length} resolved</span>,
         <button type="button" className="conflict-save" disabled={!canSave} aria-busy={saving || undefined} onClick={() => onSave({ fingerprint, choices: Array.from({ length: blocks.length }, (_, index) => choices[index] ?? null) })}>
@@ -142,6 +144,7 @@ function ConflictDiff({ path, parts, combine, choices, shown, disabled, onChoose
       moves={NO_MOVES}
       onExpand={() => setWidened({ path, lines: CONTEXT_OPTIONS.find((lines) => lines > context) ?? context })}
       conflict={decor}
+      toolbar={false}
     />
   )
 }

@@ -140,10 +140,14 @@ const stageDigest = (stages: Map<number, StageEntry>) =>
 // The working file and the index stages of one unmerged path, read and checked together. Anything unsupported throws.
 async function readSnapshot(repo: string, relPath: unknown): Promise<Snapshot> {
   const checked = checkRelativePath(relPath)
-  const stages = await unmergedEntries(repo, checked)
+  // Both are reads, so they run at once. Their refusals still come in this order.
+  const listing = unmergedEntries(repo, checked)
+  const format = assertSupportedConflictFormat(repo, checked)
+  format.catch(() => {})
+  const stages = await listing
   if (!stages) throw new ConflictRefusal('This file is not in a merge conflict.')
   requireTextualStages(stages)
-  await assertSupportedConflictFormat(repo, checked)
+  await format
   const root = await fs.realpath(repo)
   const file = path.join(root, checked)
   const missing = new ConflictRefusal('The conflicted file is missing from the working tree.')
@@ -175,28 +179,63 @@ async function withTempDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+type Sides = [Buffer, Buffer, Buffer]
+
+// Each git spawn costs tens of milliseconds, so one snapshot's load, combine, and reset share a single read of its sides.
+const sidesRead = new WeakMap<Snapshot, Promise<Sides>>()
+
 // The three stage sides as bytes, ours, base, theirs. Sizes come first, in one call, so an oversized blob is never
 // read. Throws a refusal when git lacks a side, or a side is too large or not text.
-async function readStageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer]> {
+function readStageSides(repo: string, snapshot: Snapshot): Promise<Sides> {
+  let read = sidesRead.get(snapshot)
+  if (!read) {
+    read = readSides(repo, snapshot.stages)
+    read.catch(() => {})
+    sidesRead.set(snapshot, read)
+  }
+  return read
+}
+
+async function readSides(repo: string, stages: Map<number, StageEntry>): Promise<Sides> {
   const unreadable = new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
   const shas = [2, 1, 3].map((stage) => stages.get(stage)?.sha)
   if (shas.some((sha) => !sha)) throw unreadable
-  const sizes = await gitRaw(repo, ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], Buffer.from(`${shas.join('\n')}\n`))
+  const input = Buffer.from(`${shas.join('\n')}\n`)
+  const sizes = await gitRaw(repo, ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], input)
   const listed = sizes.stdout.toString('utf8').trim().split('\n')
   if (sizes.code !== 0 || listed.length !== 3 || listed.some((line) => !/^blob \d+$/.test(line))) throw unreadable
   if (listed.some((line) => Number(line.slice(5)) > MAX_BYTES)) throw new ConflictRefusal(TOO_LARGE)
-  const blobs = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', 'blob', sha!])))
-  if (blobs.some((blob) => blob.code !== 0 || blob.stdout.length > MAX_BYTES)) throw unreadable
-  if (blobs.some((blob) => decodeText(blob.stdout) === null)) {
+  const batch = await gitRaw(repo, ['cat-file', '--batch'], input)
+  const blobs = batch.code === 0 ? batchBlobs(batch.stdout, 3) : null
+  if (!blobs || blobs.some((blob) => blob.length > MAX_BYTES)) throw unreadable
+  if (blobs.some((blob) => decodeText(blob) === null)) {
     throw new ConflictRefusal('A version of this file in Git is not UTF-8 text, so it cannot be reset here.')
   }
-  return [blobs[0].stdout, blobs[1].stdout, blobs[2].stdout]
+  return [blobs[0], blobs[1], blobs[2]]
+}
+
+// `git cat-file --batch` prints each object as "<sha> <type> <size>", a newline, its bytes, and a newline. Null unless
+// the output holds `count` blobs.
+export function batchBlobs(output: Buffer, count: number): Buffer[] | null {
+  const blobs: Buffer[] = []
+  let at = 0
+  while (blobs.length < count) {
+    const end = output.indexOf(10, at)
+    const header = end < 0 ? null : /^[0-9a-f]+ blob (\d+)$/.exec(output.subarray(at, end).toString('latin1'))
+    if (!header) return null
+    const start = end + 1
+    const stop = start + Number(header[1])
+    if (stop >= output.length || output[stop] !== 10) return null
+    blobs.push(output.subarray(start, stop))
+    at = stop + 1
+  }
+  return blobs
 }
 
 // The same sides for combining, or null when they cannot be read within the limits.
-async function stageSides(repo: string, stages: Map<number, StageEntry>): Promise<[Buffer, Buffer, Buffer] | null> {
+async function stageSides(repo: string, snapshot: Snapshot): Promise<Sides | null> {
   try {
-    return await readStageSides(repo, stages)
+    return await readStageSides(repo, snapshot)
   } catch (error) {
     if (error instanceof ConflictRefusal) return null
     throw error
@@ -227,8 +266,8 @@ async function mergeStages(sides: [Buffer, Buffer, Buffer], style: (typeof STYLE
 }
 
 // One run per marker style, so a file written in any style can find its base. Null when git's stages cannot be read.
-async function stageRuns(repo: string, stages: Map<number, StageEntry>): Promise<StageBlock[][] | null> {
-  const sides = await stageSides(repo, stages)
+async function stageRuns(repo: string, snapshot: Snapshot): Promise<StageBlock[][] | null> {
+  const sides = await stageSides(repo, snapshot)
   if (!sides) return null
   const runs = await Promise.all(STYLES.map((style) => mergeStages(sides, style)))
   return runs.every((run) => run !== null) ? runs : null
@@ -266,7 +305,7 @@ async function combineStates(repo: string, snapshot: Snapshot, blocks: ConflictB
   if (blocks.length === 0) return []
   const unavailable = (reason: BaseReason): Combine => ({ state: 'unavailable', reason: BASE_REASON_TEXT[reason] })
   if (!snapshot.stages.has(1)) return blocks.map(() => unavailable('no-ancestor'))
-  const runs = await stageRuns(repo, snapshot.stages)
+  const runs = await stageRuns(repo, snapshot)
   if (!runs) return blocks.map(() => unavailable('unreadable'))
   const matches = matchBasesAcrossRuns(blocks, runs)
   const states = new Array<Combine>(matches.length)
@@ -292,9 +331,12 @@ async function stageText(repo: string, sha: string): Promise<string | null> {
 
 // The parts, with the block that ends the file marked from stages 2 and 3, ours and theirs. The stages are in the
 // fingerprint, so a save reads the same stage ends as the load it was reviewed from.
-async function withStageEndsOf(repo: string, stages: Map<number, StageEntry>, parts: Part[]): Promise<Part[]> {
+async function withStageEndsOf(repo: string, snapshot: Snapshot, parts: Part[]): Promise<Part[]> {
   if (parts.at(-1)?.kind !== 'conflict') return parts
-  const [ours, theirs] = await Promise.all([2, 3].map((stage) => stageText(repo, stages.get(stage)!.sha)))
+  // The shared read holds both stages as text when it succeeds. Otherwise each stage is read on its own.
+  const sides = snapshot.stages.has(1) ? await stageSides(repo, snapshot) : null
+  if (sides) return withStageEnds(parts, decodeText(sides[0]), decodeText(sides[2]))
+  const [ours, theirs] = await Promise.all([2, 3].map((stage) => stageText(repo, snapshot.stages.get(stage)!.sha)))
   return withStageEnds(parts, ours, theirs)
 }
 
@@ -303,7 +345,7 @@ async function withStageEndsOf(repo: string, stages: Map<number, StageEntry>, pa
 // equal its raw bytes, which catches line-ending conversion from autocrlf, eol, or core.eol.
 // shortcut: stages with no newline do not reveal CRLF conversion, so their recreated markers end in LF. Git normalizes
 // them again on add. Upgrade if such files need checkout-exact markers.
-async function assertRawCheckout(repo: string, snapshot: Snapshot, sides: [Buffer, Buffer, Buffer]): Promise<void> {
+async function assertRawCheckout(repo: string, snapshot: Snapshot, sides: Promise<Sides>): Promise<void> {
   const listed = await gitRaw(repo, ['check-attr', '-z', 'filter', 'ident', 'working-tree-encoding', '--', snapshot.relPath])
   if (listed.code !== 0) throw new ConflictRefusal('Git could not read the checkout attributes. Reload the conflict.')
   const fields = listed.stdout.toString('utf8').split('\0')
@@ -326,7 +368,8 @@ async function assertRawCheckout(repo: string, snapshot: Snapshot, sides: [Buffe
   const shas = [2, 1, 3].map((stage) => snapshot.stages.get(stage)!.sha)
   const converted = await Promise.all(shas.map((sha) => gitRaw(repo, ['cat-file', '--filters', `--path=${snapshot.relPath}`, sha])))
   if (converted.some((result) => result.code !== 0)) throw new ConflictRefusal('Git could not read a version of this file, so it cannot be reset.')
-  if (converted.some((result, index) => !result.stdout.equals(sides[index]))) {
+  const raw = await sides
+  if (converted.some((result, index) => !result.stdout.equals(raw[index]))) {
     throw new ConflictRefusal('Git converts this file on checkout, such as its line endings, so it cannot be reset here.')
   }
 }
@@ -337,9 +380,15 @@ async function reconstruct(repo: string, snapshot: Snapshot): Promise<{ bytes: B
   if (!snapshot.stages.has(1)) {
     throw new ConflictRefusal('Git has no common base for this conflict, so it cannot be recreated. Resolve it outside BetterGit.')
   }
-  const sides = await readStageSides(repo, snapshot.stages)
-  await assertRawCheckout(repo, snapshot, sides)
-  const merged = await mergeSides(sides, '--diff3', ['Current', 'Base', 'Incoming'])
+  // The checkout check, the read and the merge are independent reads, so they run at once. Refusals keep this order.
+  const reading = readStageSides(repo, snapshot)
+  const checking = assertRawCheckout(repo, snapshot, reading)
+  checking.catch(() => {})
+  const sides = await reading
+  const merging = mergeSides(sides, '--diff3', ['Current', 'Base', 'Incoming'])
+  merging.catch(() => {})
+  await checking
+  const merged = await merging
   if (merged.code === 0) throw new ConflictRefusal('Git merges these versions without a conflict, so there is no conflict to recreate.')
   if (merged.code < 1 || merged.code > MERGE_CONFLICTS_MAX) throw new ConflictRefusal('Git could not recreate this conflict.')
   if (merged.stdout.length > MAX_BYTES) throw new ConflictRefusal(TOO_LARGE)
@@ -374,7 +423,7 @@ export async function loadConflict(repo: string, relPath: string): Promise<Confl
     if (!parsed.ok) return { supported: false, message: parsed.failure.message, reset: await resetting }
     const blocks = conflictBlocks(parsed.parts)
     if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS, reset: await resetting }
-    const [parts, combine, reset] = await Promise.all([withStageEndsOf(repo, snapshot.stages, parsed.parts), combineStates(repo, snapshot, blocks), resetting])
+    const [parts, combine, reset] = await Promise.all([withStageEndsOf(repo, snapshot, parsed.parts), combineStates(repo, snapshot, blocks), resetting])
     return { supported: true, fingerprint: snapshot.fingerprint, parts, combine, reset }
   } catch (error) {
     if (error instanceof ConflictRefusal) return { supported: false, message: error.message, reset: { available: false, reason: error.message } }
@@ -392,7 +441,7 @@ async function resolve(repo: string, relPath: string, save: ConflictSave): Promi
   if (blocks.length > MAX_CONFLICT_BLOCKS) throw new ConflictRefusal(TOO_MANY_CONFLICTS)
   if (save.choices.length !== blocks.length) throw new ConflictRefusal('The choices no longer match the conflicts in this file. Reload the conflict.')
   const combine = save.choices.includes('combine') ? await combineStates(repo, snapshot, blocks) : []
-  const applied = applyChoices(await withStageEndsOf(repo, snapshot.stages, parsed.parts), save.choices, combine)
+  const applied = applyChoices(await withStageEndsOf(repo, snapshot, parsed.parts), save.choices, combine)
   if (!applied.ok) throw new ConflictRefusal(applied.reason)
   if (Buffer.byteLength(applied.text, 'utf8') > MAX_BYTES) throw new ConflictRefusal(TOO_LARGE)
   return { snapshot, text: applied.text, unresolved: applied.unresolved }

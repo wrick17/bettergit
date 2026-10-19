@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
 import type { Marks, Mounted, Preview } from './cm-editor'
 import { Code } from './DiffView'
-import { tokenize, type Segment } from './highlight'
+import { cachedTokens, tokenize, type Segment } from './highlight'
 import { charWidth, columns, hscrollOf } from './hscroll'
 import { useWordWrap } from './prefs'
 import { originalText } from './original-text'
@@ -115,6 +115,27 @@ const whenIdle = (run: () => void) => {
   return () => window.cancelIdleCallback?.(handle)
 }
 
+// Colours a loaded file's editor-look rows before they show, so they paint coloured. Within tokenize's limits.
+async function colouredSource(loaded: string, hunks: DiffHunk[], language: string | null, module: CodeMirror, stale?: () => boolean): Promise<Source> {
+  const original = originalText(loaded, hunks)
+  if (original === null) return { error: 'This diff is out of date. It refreshes when the file is reloaded.' }
+  const preview = module.previewOf(loaded, original)
+  if (preview) await Promise.all([tokenize(preview.lines.join('\n'), language, stale), tokenize(preview.old.join('\n'), language, stale)])
+  return { loaded, original, preview }
+}
+
+// Sources loaded ahead of a refresh, by file key. A file that mounts with the same hunks starts on its editor-look rows,
+// so it appears once at its final height instead of on its read-only rows first.
+const prepared = new Map<string, { hunks: DiffHunk[]; source: Source }>()
+
+export function prepareSource(edit: EditBridge, path: string, hunks: DiffHunk[], language: string | null): Promise<void> {
+  const key = keyOf(edit.repo, path)
+  if (dirty(drafts.get(key))) return Promise.resolve()
+  return Promise.all([edit.load(path), loadCodeMirror()])
+    .then(([loaded, module]) => colouredSource(loaded, hunks, language, module))
+    .then((source) => { if (!('error' in source)) prepared.set(key, { hunks, source }) }, () => undefined)
+}
+
 // The folds a user opened, per file, by their first current-side line. Shared by the static rows and the editor, so
 // opening a fold in one shows in the other.
 const openedFolds = new Map<string, Set<number>>()
@@ -186,7 +207,13 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   wrapRef.current = wrap
   const editRef = useRef(edit)
   editRef.current = edit
-  const [source, setSource] = useState<Source | null>(null)
+  const [source, setSource] = useState<Source | null>(() => {
+    const ready = prepared.get(key)
+    prepared.delete(key)
+    return ready?.hunks === hunks ? ready.source : null
+  })
+  // The hunks the source on screen was loaded for, so a prepared source is not loaded again.
+  const sourceFor = useRef<DiffHunk[] | null>(source ? hunks : null)
   const sourceRef = useRef(source)
   sourceRef.current = source
   const [active, setActive] = useState(() => dirty(drafts.get(key)))
@@ -236,15 +263,19 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
       })
       return () => { stale = true }
     }
+    if (sourceFor.current === hunks) return
+    // The rows on screen stay until the new ones are loaded and coloured.
     const cancel = whenIdle(() => {
-      Promise.all([editRef.current.load(path), loadCodeMirror()]).then(
-        ([loaded, module]) => {
-          if (stale || dirty(drafts.get(key))) return
-          const original = originalText(loaded, hunks)
-          setSource(original === null ? { error: 'This diff is out of date. It refreshes when the file is reloaded.' } : { loaded, original, preview: module.previewOf(loaded, original) })
-        },
-        (error) => { if (!stale) setSource({ error: messageOf(error) }) },
-      )
+      Promise.all([editRef.current.load(path), loadCodeMirror()])
+        .then(([loaded, module]) => colouredSource(loaded, hunks, language, module, () => stale))
+        .then(
+          (next) => {
+            if (stale || dirty(drafts.get(key))) return
+            sourceFor.current = hunks
+            setSource(next)
+          },
+          (error) => { if (!stale) setSource({ error: messageOf(error) }) },
+        )
     })
     return () => {
       stale = true
@@ -459,16 +490,23 @@ function dragged(event: ReactMouseEvent) {
 // Shiki colours for the static rows, in the same cache the editor reads, so it is coloured on its first frame.
 function usePreviewTokens(preview: Preview | null, language: string | null, layout: 'unified' | 'split') {
   const [tokens, setTokens] = useState<{ preview: Preview; old: Segment[][] | null; new: Segment[][] | null } | null>(null)
+  // Rows coloured before they showed (or seen before) have their colours on their first frame.
+  const cached = useMemo(() => {
+    if (!preview || !language) return null
+    const next = cachedTokens(preview.lines.join('\n'), language)
+    const old = layout === 'split' ? cachedTokens(preview.old.join('\n'), language) : null
+    return next && (layout !== 'split' || old) ? { preview, new: next, old: old ?? null } : null
+  }, [preview, language, layout])
   useEffect(() => {
-    if (!preview || !language) return
+    if (!preview || !language || cached) return
     let stale = false
     const gone = () => stale
     void Promise.all([tokenize(preview.lines.join('\n'), language, gone), layout === 'split' ? tokenize(preview.old.join('\n'), language, gone) : null]).then(([next, old]) => {
       if (!stale) setTokens({ preview, new: next, old })
     })
     return () => { stale = true }
-  }, [preview, language, layout])
-  return tokens?.preview === preview ? tokens : null
+  }, [preview, language, layout, cached])
+  return cached ?? (tokens?.preview === preview ? tokens : null)
 }
 
 type Row =

@@ -6,11 +6,11 @@ import { Icon, IconButton, TextToggle, toggleLabel } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, setWordWrap, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides, useWordWrap } from './prefs'
 import { charWidth, columns, hscrollOf } from './hscroll'
-import { highlightFile, languageFor, type Segment } from './highlight'
+import { cachedFileTokens, highlightFile, languageFor, warmColours, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
-import { DraftActions, EditableDiff, type EditBridge } from './DiffEditor'
+import { DraftActions, EditableDiff, prepareSource, type EditBridge } from './DiffEditor'
 import { useFindSource } from './find'
 import { chunked, range, RowChunk } from './row-chunk'
 import { holdPlace, suspendHold } from './scroll-anchor'
@@ -31,6 +31,13 @@ interface Props {
   emptyHint?: string
   // Set in the Changes view for working-tree diffs. Each text file then edits in place, with save and discard in its header.
   edit?: EditBridge
+  // False when the caller shows the layout controls itself, as the conflict resolver does in each file's bar.
+  toolbar?: boolean
+  // The view the files belong to, set where files change by refresh, not by the user's hand. While it stays the same, a
+  // refresh waits briefly for the colours of new or changed files, so they paint coloured instead of plain then coloured.
+  refreshOf?: string
+  // Called once the files passed in are the ones on screen, after the deferred render and any refresh wait.
+  onShown?: (files: DiffFile[]) => void
 }
 
 // A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
@@ -76,22 +83,28 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, persist, conflict, emptyHint, edit }: Props) {
+export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, persist, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
   const layoutNow = useDiffLayout()
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   const formatNow = useFormatMarkdown()
   const wrap = useWordWrap()
+  const overrides = useLanguageOverrides()
+  const { files, moves } = useColouredFirst(nextFiles, nextMoves, refreshOf, overrides, edit)
   // The toolbar shows a toggle at once. The diff under it re-renders from these deferred copies, in the background and
   // interruptibly, so a click, scroll or second toggle never waits for a large diff to rebuild.
   const shown = useDeferredValue(useMemo(() => ({ files, moves, layout: layoutNow, format: formatNow }), [files, moves, layoutNow, formatNow]))
+  const onShownRef = useRef(onShown)
+  onShownRef.current = onShown
+  useLayoutEffect(() => {
+    if (shown.files === nextFiles) onShownRef.current?.(nextFiles)
+  }, [shown.files, nextFiles])
   const current = shown.layout
   const formatMarkdown = shown.format
   const { labels, anchors } = useMemo(() => indexMoves(shown.files, shown.moves), [shown])
   const stats = useMemo(() => shown.files.map(countLines), [shown])
   // Conflict markers are source, so a conflicted file is never formatted.
   const formatted = formatMarkdown && !conflict
-  const overrides = useLanguageOverrides()
   useTokens(shown.files, overrides)
   usePreparedMarkdown(shown.files, labels, formatted || !!conflict)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -207,7 +220,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
           ))}
         </svg>
       )}
-      <div className="diff-toolbar">
+      {toolbar && <div className="diff-toolbar">
         <span className="moves">
           {moves.length > 0 ? `${moves.length} moved block${moves.length === 1 ? '' : 's'} detected` : ''}
         </span>
@@ -245,22 +258,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
               />
             </div>
           )}
-          <div className="diff-layout-toggle" role="group" aria-label="Diff layout">
-            <IconButton icon="rows" label={layoutNow === 'unified' ? 'Unified layout: on' : toggleLabel('Unified layout: off', 'show one column')} active={layoutNow === 'unified'} onClick={() => setDiffLayout('unified')} />
-            <IconButton icon="columns" label={layoutNow === 'split' ? 'Split layout: on' : toggleLabel('Split layout: off', 'show side by side')} active={layoutNow === 'split'} onClick={() => setDiffLayout('split')} />
-          </div>
-          {/* Long lines wrap, or scroll sideways per file. Formatted Markdown is prose, so it always wraps. */}
-          <div className="diff-layout-toggle" role="group" aria-label="Word wrap">
-            <IconButton
-              icon="wrap"
-              label={wrap ? toggleLabel('Word wrap: on', 'scroll long lines') : toggleLabel('Word wrap: off', 'wrap long lines')}
-              active={wrap}
-              onClick={() => {
-                captureSourceAnchors()
-                setWordWrap(!wrap)
-              }}
-            />
-          </div>
+          <LayoutToggles />
           {/* Last in the row. It stays visible when the filtered patch is empty, so the user can turn the option off in place. */}
           <div className="diff-layout-toggle" role="group" aria-label="Whitespace">
             <IconButton
@@ -271,7 +269,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
             />
           </div>
         </div>
-      </div>
+      </div>}
       {!shown.files.length && (
         <p className="hint">{emptyHint ?? (ignoreWhitespace ? 'No changes shown. Whitespace changes are hidden.' : 'No changes in this view.')}</p>
       )}
@@ -282,7 +280,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
         const open = choices[path] ?? (!!conflict || !startsCollapsed(file, stat.adds + stat.dels))
         return (
           <FileSection
-            key={`${fileIndex}-${path}`}
+            key={path}
             file={file}
             fileIndex={fileIndex}
             stat={stat}
@@ -291,7 +289,7 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
             layout={current}
             formatted={formatted}
             language={languageFor(path, overrides)}
-            tokens={fileTokens(file, overrides)}
+            tokens={open ? fileTokens(file, overrides) : undefined}
             labels={labels}
             anchors={anchors}
             conflict={conflict}
@@ -304,6 +302,32 @@ export const DiffView = memo(function DiffView({ files, moves, stage, onExpand, 
     </div>
   )
 })
+
+// The layout and word wrap toggles. Both are app-wide, so every diff on screen follows them.
+export function LayoutToggles() {
+  const layoutNow = useDiffLayout()
+  const wrap = useWordWrap()
+  return (
+    <>
+      <div className="diff-layout-toggle" role="group" aria-label="Diff layout">
+        <IconButton icon="rows" label={layoutNow === 'unified' ? 'Unified layout: on' : toggleLabel('Unified layout: off', 'show one column')} active={layoutNow === 'unified'} onClick={() => setDiffLayout('unified')} />
+        <IconButton icon="columns" label={layoutNow === 'split' ? 'Split layout: on' : toggleLabel('Split layout: off', 'show side by side')} active={layoutNow === 'split'} onClick={() => setDiffLayout('split')} />
+      </div>
+      {/* Long lines wrap, or scroll sideways per file. Formatted Markdown is prose, so it always wraps. */}
+      <div className="diff-layout-toggle" role="group" aria-label="Word wrap">
+        <IconButton
+          icon="wrap"
+          label={wrap ? toggleLabel('Word wrap: on', 'scroll long lines') : toggleLabel('Word wrap: off', 'wrap long lines')}
+          active={wrap}
+          onClick={() => {
+            captureSourceAnchors()
+            setWordWrap(!wrap)
+          }}
+        />
+      </div>
+    </>
+  )
+}
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
@@ -510,10 +534,63 @@ const LANE_COLUMNS = 3
 // Colours per file, kept with the file. A diff shown again (a toggle back, a cached reload) has its colours at once; new
 // files show plain text until theirs arrive, each file re-rendering alone as its colours land.
 const colours = new WeakMap<DiffFile, { overrides: Record<string, string>; tokens: Segment[][][] }>()
+// The last colours of each path's lines. A file reloaded after an edit paints its unchanged lines coloured while its own
+// colours load. shortcut: cleared whole past 500 paths; an LRU is worth it only if a clear is ever seen.
+const linesByPath = new Map<string, { overrides: Record<string, string>; lines: Map<string, Segment[]> }>()
 
-function fileTokens(file: DiffFile, overrides: Record<string, string>) {
+// The file's own colours, also when the same code was coloured before under another file object (a refresh).
+function exactTokens(file: DiffFile, overrides: Record<string, string>) {
   const entry = colours.get(file)
-  return entry?.overrides === overrides ? entry.tokens : undefined
+  if (entry?.overrides === overrides) return entry.tokens
+  const tokens = cachedFileTokens(file, overrides)
+  if (tokens) keepColours(file, overrides, tokens)
+  return tokens
+}
+
+function keepColours(file: DiffFile, overrides: Record<string, string>, tokens: Segment[][][]) {
+  colours.set(file, { overrides, tokens })
+  if (linesByPath.size > 500) linesByPath.clear()
+  const lines = new Map<string, Segment[]>()
+  file.hunks.forEach((hunk, hunkIndex) => hunk.lines.forEach((line, lineIndex) => lines.set(line.text, tokens[hunkIndex][lineIndex])))
+  linesByPath.set(pathOf(file), { overrides, lines })
+}
+
+// Until a file's own colours arrive, its lines borrow the colours they had in the path's last coloured version.
+function fileTokens(file: DiffFile, overrides: Record<string, string>) {
+  const tokens = exactTokens(file, overrides)
+  if (tokens) return tokens
+  const last = linesByPath.get(pathOf(file))
+  if (last?.overrides !== overrides) return undefined
+  return file.hunks.map((hunk) => hunk.lines.map((line) => last.lines.get(line.text) ?? [{ text: line.text }]))
+}
+
+// The files to show. A refresh that keeps some of the paths on screen holds the shown files until the new or changed
+// ones are coloured, and new editable files have their editor-look rows, for at most WARM_MS. Other changes (a first
+// load, another view) show at once.
+const WARM_MS = 150
+function useColouredFirst(files: DiffFile[], moves: MovedBlock[], view: string | undefined, overrides: Record<string, string>, edit?: EditBridge) {
+  const [settled, setSettled] = useState({ files, moves, view })
+  const editRef = useRef(edit)
+  editRef.current = edit
+  const pending = useMemo(() => {
+    if (view === undefined || settled.view !== view || settled.files === files) return null
+    const shownPaths = new Set(settled.files.map(pathOf))
+    if (!files.some((file) => shownPaths.has(pathOf(file)))) return null
+    const uncoloured = files.filter((file) => !exactTokens(file, overrides))
+    const added = edit ? files.filter((file) => !shownPaths.has(pathOf(file)) && !file.binary && file.status !== 'deleted') : []
+    return uncoloured.length || added.length ? { uncoloured, added } : null
+  }, [view, settled, files, overrides, !!edit])
+  useEffect(() => {
+    if (settled.files === files && settled.moves === moves && settled.view === view) return
+    if (!pending) return setSettled({ files, moves, view })
+    let stale = false
+    const bridge = editRef.current
+    const sources = bridge ? pending.added.map((file) => prepareSource(bridge, pathOf(file), file.hunks, languageFor(pathOf(file), overrides))) : []
+    const ready = Promise.all([warmColours(pending.uncoloured, overrides, WARM_MS), ...sources])
+    void Promise.race([ready, new Promise((resolve) => setTimeout(resolve, WARM_MS))]).then(() => { if (!stale) setSettled({ files, moves, view }) })
+    return () => { stale = true }
+  }, [files, moves, view, pending])
+  return pending ? settled : { files, moves }
 }
 
 // Files are coloured one at a time in diff order, so the first files on screen get colours first. A new diff stops the
@@ -524,10 +601,10 @@ function useTokens(files: DiffFile[], overrides: Record<string, string>) {
     let stale = false
     void (async () => {
       for (const file of files) {
-        if (fileTokens(file, overrides)) continue
+        if (exactTokens(file, overrides)) continue
         const tokens = await highlightFile(file, overrides, () => stale)
         if (stale) return
-        colours.set(file, { overrides, tokens })
+        keepColours(file, overrides, tokens)
         startTransition(() => setVersion((version) => version + 1))
       }
     })()

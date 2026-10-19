@@ -4,10 +4,12 @@
    header stick below it. */
 .conflict-bar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 12px; height: var(--conflict-bar-height); margin: 0 -20px; padding: 0 20px; background: var(--content); box-shadow: inset 0 -0.5px 0 var(--line); }
 .conflict > .diff { margin: 0 -20px; }
-.conflict .diff-toolbar { top: var(--conflict-bar-height); }
+/* The bar holds the layout controls, so the diff has no toolbar and its file header sticks right under the bar. */
+.conflict .diff { --diff-toolbar-height: 0px; }
 .conflict-sides { color: var(--text-3); font: 500 12px/28px var(--font-ui); }
 .conflict-sides > span { padding-left: 44px; }
-.conflict .diff-file > header { top: calc(var(--conflict-bar-height) + var(--diff-toolbar-height)); }
+.conflict .diff-file { scroll-margin-top: var(--conflict-bar-height); }
+.conflict .diff-file > header { top: var(--conflict-bar-height); }
 .conflict-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/1 var(--font-code); }
 .conflict-count { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conflict-save { flex: none; height: 30px; padding: 0 14px; border-radius: var(--radius-pill); background: var(--accent-fill); color: var(--on-accent); font-weight: 600; box-shadow: none; transition: background 100ms var(--ease), filter 100ms var(--ease); }

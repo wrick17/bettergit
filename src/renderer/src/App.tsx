@@ -78,24 +78,26 @@ export function App() {
     api.getConfig().then(setConfig).then(refreshTree).catch(reportError)
   }, [refreshTree])
 
+  const selectedRef = useRef<string | null>(null)
+  selectedRef.current = selected
   useEffect(() => {
     // Live file changes and background fetch results both mean "the open repo may have new data".
     const offChanged = api.onEvent('repos:changed', (payload) => {
       const event = payload as { repos: string[]; tree: boolean }
       if (event.tree) refreshTree().catch(reportError)
-      setRevision((value) => value + 1)
+      // A path is a repo root, or a sources root when a working file changed, so it covers the repos under it.
+      const repo = selectedRef.current
+      if (event.tree || (repo && event.repos.some((root) => repo === root || repo.startsWith(root + '/')))) setRevision((value) => value + 1)
     })
     const offFetch = api.onEvent('fetch:report', () => setRevision((value) => value + 1))
     const offDirty = api.onEvent('repos:dirty', (payload) => {
       const { path, count } = payload as { path: string; count: number }
-      setDirty((prev) => ({ ...prev, [path]: count }))
+      setDirty((prev) => prev[path] === count ? prev : { ...prev, [path]: count })
     })
     return () => { offChanged(); offFetch(); offDirty() }
   }, [refreshTree])
 
   // Menu commands that need the open repo or the sidebar are handled here, where that state lives.
-  const selectedRef = useRef<string | null>(null)
-  selectedRef.current = selected
   useEffect(() => {
     const off = api.onEvent('menu:action', (payload) => {
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
@@ -365,14 +367,21 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
   const editorLaunch = useEditorLaunch(() => api.openInEditor(repo.path), onError)
 
-  const load = useCallback(async () => {
-    const [nextStatus, nextBranches] = await Promise.all([api.status(repo.path), api.branches(repo.path)])
-    setStatus(nextStatus)
-    setBranches(nextBranches)
+  // The revision the status on screen was read for. Changes reloads on it, after the status, so its rows and diffs land together.
+  const [statusRevision, setStatusRevision] = useState(revision)
+  const load = useCallback(async (loading: number) => {
+    try {
+      const [nextStatus, nextBranches] = await Promise.all([api.status(repo.path), api.branches(repo.path)])
+      // An unchanged answer keeps the old object, so the views under it do not reload for nothing.
+      setStatus((prev) => JSON.stringify(prev) === JSON.stringify(nextStatus) ? prev : nextStatus)
+      setBranches((prev) => JSON.stringify(prev) === JSON.stringify(nextBranches) ? prev : nextBranches)
+    } finally {
+      setStatusRevision((prev) => Math.max(prev, loading))
+    }
   }, [repo.path])
 
   useEffect(() => {
-    load().catch(onError)
+    load(revision).catch(onError)
   }, [load, revision])
 
   // A clean repo opens on History, and Changes hands over to History when its last change goes (after a commit, say).
@@ -447,7 +456,7 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
         titlebar,
       )}
       {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
-        onRefresh={load} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} />}
+        onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
         <nav
@@ -475,7 +484,7 @@ function RepoPane({ titlebar, repo, editor, tab, onTab, sidebarOpen, onToggleSid
       </div>
       {tab === 'changes' && (
         <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" style={PANEL_STYLE}>
-          {status && <ChangesView repo={repo.path} status={status} revision={revision} listOpen={listOpen} detailOpen={detailOpen} onChanged={onChanged} onError={onError} />}
+          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} onChanged={onChanged} onError={onError} />}
         </div>
       )}
       {tab === 'history' && (

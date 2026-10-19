@@ -5,6 +5,32 @@ interface Working {
   moves: MovedBlock[]
 }
 
+// The files in the order of `paths`, the order the file list shows them. Files the list does not name keep their
+// order after the rest. Moves name files by index, so they follow their files.
+export function orderFiles(working: Working, paths: readonly string[]): Working {
+  const rank = new Map(paths.map((path, index) => [path, index]))
+  const at = (file: DiffFile) => rank.get(file.newPath ?? file.oldPath ?? '') ?? paths.length
+  const order = working.files.map((_, index) => index).sort((a, b) => at(working.files[a]) - at(working.files[b]) || a - b)
+  if (order.every((from, to) => from === to)) return working
+  const moved = new Map(order.map((from, to) => [from, to]))
+  const remap = (ref: LineRef): LineRef => ({ ...ref, file: moved.get(ref.file)! })
+  return {
+    files: order.map((index) => working.files[index]),
+    moves: working.moves.map((move) => ({ from: move.from.map(remap), to: move.to.map(remap) })),
+  }
+}
+
+// A reload that finds a file unchanged keeps the loaded object, so its section does not re-render and its colours stay.
+// An unchanged reload returns the previous result itself.
+export function shareFiles(previous: Working | undefined, next: Working): Working {
+  if (!previous) return next
+  const kept = new Map(previous.files.map((file) => [JSON.stringify(file), file]))
+  const files = next.files.map((file) => kept.get(JSON.stringify(file)) ?? file)
+  const sameMoves = JSON.stringify(previous.moves) === JSON.stringify(next.moves)
+  if (sameMoves && files.length === previous.files.length && files.every((file, index) => file === previous.files[index])) return previous
+  return { files, moves: sameMoves ? previous.moves : next.moves }
+}
+
 // Widening only adds unchanged lines, so every add and delete keeps its line number on its side. A move endpoint is
 // matched to the same change in the new file by that number, so no endpoint points at a stale line.
 // An endpoint with no match drops its move rather than drawing it at a guessed line.

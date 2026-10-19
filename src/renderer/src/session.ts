@@ -1,4 +1,5 @@
-import { useEffect, useRef, type RefObject, type UIEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, type RefObject, type UIEvent } from 'react'
+import { adoptView } from './scroll-anchor'
 
 // The last state the user left the window in. Kept in localStorage, so a renderer reload returns to the same spot.
 const KEY = 'bettergit.session'
@@ -83,10 +84,13 @@ window.addEventListener('pagehide', flushScroll)
 // Each element restores once per id and key, so a pane that mounts later (a pane shown again, or a new commit) restores too,
 // and so does a pane that stays mounted while its key changes. With no saved position, the fallback runs instead.
 // Returns the scroll handler to put on the container.
-export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, key: string, ready: boolean, fallback?: (element: HTMLElement) => void) {
+// `onScreen` is for a caller whose `ready` means the content is already laid out: the position is then set before that
+// frame paints, in one step. `skip` marks the key restored without moving, for a caller placing the pane itself.
+export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, key: string, ready: boolean, fallback?: (element: HTMLElement) => void,
+  { onScreen = false, skip = false }: { onScreen?: boolean; skip?: boolean } = {}) {
   const restored = useRef<{ element: HTMLElement; id: string; key: string; frame: number } | null>(null)
   // No dependency list: a container that mounts after the first render is caught on the render that mounts it.
-  useEffect(() => {
+  ;(onScreen ? useLayoutEffect : useEffect)(() => {
     const element = ref.current
     const last = restored.current
     if (last?.element === element && last.id === id && last.key === key) return
@@ -101,7 +105,14 @@ export function useScrollMemory(ref: RefObject<HTMLElement | null>, id: string, 
     const top = savedView<number | null>(id, key, null)
     const entry = { element, id, key, frame: 0 }
     restored.current = entry
-    if (top === null && !fallback) return
+    // The diff pane's hold must not move the pane for the files this view just swapped in.
+    if (onScreen) adoptView(element)
+    if (skip || (top === null && !fallback)) return
+    if (onScreen) {
+      if (top === null) fallback?.(element)
+      else element.scrollTop = top
+      return
+    }
     // Rows and diffs lay out a frame after their data arrives, so the position is set after two frames.
     entry.frame = requestAnimationFrame(() => {
       entry.frame = requestAnimationFrame(() => {

@@ -755,8 +755,8 @@ describe('reset resolution on real Git merges', () => {
     expect(model.reset).toEqual({ available: false, reason: 'This file is too large to resolve here.' })
     expect(model.supported && model.combine).toEqual([{ state: 'unavailable', reason: expect.stringContaining('could not be read') }])
     const traced = readFileSync(trace, 'utf8')
-    // Both readers ran their size check: one for reset, one for combine.
-    expect(traced.split("cat-file '--batch-check").length - 1).toBe(2)
+    // Reset and combine share one read of the sides, so its size check runs once and refuses for both.
+    expect(traced.split("cat-file '--batch-check").length - 1).toBe(1)
     expect(traced).not.toContain(`cat-file blob ${big}`)
     expect(traced).not.toContain('merge-file')
   }, 60_000)

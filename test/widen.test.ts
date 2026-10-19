@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { detectMoves, parseDiff, type LineRef, type DiffFile } from '../src/main/git/diff'
-import { swapFile } from '../src/renderer/src/widen'
+import { orderFiles, shareFiles, swapFile } from '../src/renderer/src/widen'
 
 // Three lines leave a.ts and arrive in b.ts. a.ts is shown again with more context, as a per-file widen does.
 const NARROW_A = `diff --git a/a.ts b/a.ts
@@ -55,4 +55,27 @@ test('widening a file keeps its move, and each endpoint still points at its own 
   // The widened file's endpoints moved down by the three added context lines. The other file's endpoints are unchanged.
   expect(move.from[0]).toEqual({ file: 0, hunk: 0, line: 4 })
   expect(move.to).toEqual(before.moves[0].to)
+})
+
+test('ordering files to match the file list keeps each move on its own lines, and unlisted files go last', () => {
+  const [a] = parseDiff(NARROW_A)
+  const [b] = parseDiff(NARROW_B)
+  const before = { files: [a, b], moves: detectMoves([a, b]) }
+  const after = orderFiles(before, ['b.ts', 'a.ts'])
+  expect(after.files).toEqual([b, a])
+  const moved = ['moved one', 'moved two', 'moved three']
+  expect(after.moves[0].from.map((ref) => textAt(after.files, ref))).toEqual(moved)
+  expect(after.moves[0].to.map((ref) => textAt(after.files, ref))).toEqual(moved)
+  expect(orderFiles(before, ['b.ts']).files).toEqual([b, a])
+  expect(orderFiles(before, ['a.ts', 'b.ts'])).toBe(before)
+})
+
+test('a reload keeps unchanged files as the same objects, and an unchanged reload keeps the whole result', () => {
+  const load = () => ({ files: [...parseDiff(NARROW_A), ...parseDiff(NARROW_B)], moves: [] })
+  const first = load()
+  expect(shareFiles(first, load())).toBe(first)
+  const edited = { files: [...parseDiff(WIDE_A), ...parseDiff(NARROW_B)], moves: [] }
+  const shared = shareFiles(first, edited)
+  expect(shared.files[0]).toBe(edited.files[0])
+  expect(shared.files[1]).toBe(first.files[1])
 })

@@ -94,7 +94,7 @@ Object.assign(globalThis, {
   window: {
     innerWidth: 1900, addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout,
     bettergit: {
-      history: (_repo, skip) => Promise.resolve(pages(skip).map((hash) => ({ hash, parents: [], refs: [], author: 'x', date: 0, subject: 'subject ' + hash }))),
+      history: (_repo, skip, limit) => Promise.resolve(pages(skip, limit).map((hash) => ({ hash, parents: [], refs: [], author: 'x', date: 0, subject: 'subject ' + hash }))),
       status: () => Promise.resolve({ upstream: null }),
       remotes: () => Promise.resolve([]),
       commit: (...args) => later(calls.commit, args),
@@ -186,7 +186,7 @@ const compareBase = () => commitItems(find(tree, (p) => p.input?.onCompare).inpu
 // Paging appends a page: the selection stays, the rows already laid out are kept as they are, and the arrow keys step
 // past the end of the first page.
 {
-  pages = (skip) => (skip >= 600 ? [] : Array.from({ length: 300 }, (_, index) => 'P' + (skip + index)))
+  pages = (skip, limit = 300) => (skip >= 600 ? [] : Array.from({ length: Math.min(limit, 600 - skip) }, (_, index) => 'P' + (skip + index)))
   await mount({ places: { '/repo': { commit: 'P298' } } })
   const list = () => find(tree, (p) => p.rows && p.onSelect)
   const first = list().rows
@@ -199,8 +199,22 @@ const compareBase = () => commitItems(find(tree, (p) => p.input?.onCompare).inpu
   assert.ok(first.every((row, index) => list().rows[index] === row), 'paging laid out the shown rows again')
   key('ArrowDown'); render()
   assert.equal(list().selected, 'P300', 'the arrow key stepped into the appended page')
+  // A refresh with nothing new reloads every paged row and keeps the laid-out graph.
+  const paged = list().rows
+  props.revision = 2; render(); await flush()
+  assert.equal(list().rows, paged, 'an unchanged refresh laid out the graph again or dropped paged rows')
+  props.revision = 1
   unmount()
   pages = twoCommits
+}
+// A refresh of a short history does not show "Load more" while it loads.
+{
+  await mount({ places: {} })
+  props.revision = 2; render()
+  assert.ok(!find(tree, (p) => p.className === 'more'), 'Load more flashed during a refresh')
+  await flush()
+  props.revision = 1
+  unmount()
 }
 console.log('paging cases passed')
 

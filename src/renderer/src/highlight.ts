@@ -124,7 +124,25 @@ export async function tokenize(code: string, language: string | null, stale?: ()
 // A run cut short by `stale` returns plain text, which the caller drops.
 export async function highlightFile(file: DiffFile, overrides: Record<string, string>, stale?: () => boolean): Promise<Segment[][][]> {
   const flat = file.hunks.flatMap((hunk) => hunk.lines.map((line) => line.text))
-  const segments = await highlightLines(flat, languageFor(file.newPath ?? file.oldPath ?? '', overrides), stale)
+  return byHunk(file, flat, await highlightLines(flat, languageFor(file.newPath ?? file.oldPath ?? '', overrides), stale))
+}
+
+// Colours files ahead of showing them. Resolves when they are done or after `ms`, whichever comes first.
+export function warmColours(files: DiffFile[], overrides: Record<string, string>, ms = 150): Promise<void> {
+  const done = Promise.all(files.map((file) => highlightFile(file, overrides))).then(() => undefined, () => undefined)
+  return Promise.race([done, new Promise<void>((resolve) => setTimeout(resolve, ms))])
+}
+
+// highlightFile's result without waiting, when the same code was coloured before.
+export function cachedFileTokens(file: DiffFile, overrides: Record<string, string>): Segment[][][] | undefined {
+  const language = languageFor(file.newPath ?? file.oldPath ?? '', overrides)
+  if (!language) return undefined
+  const flat = file.hunks.flatMap((hunk) => hunk.lines.map((line) => line.text))
+  const segments = cachedTokens(flat.join('\n'), language)
+  return segments && byHunk(file, flat, segments)
+}
+
+function byHunk(file: DiffFile, flat: string[], segments: Segment[][]): Segment[][][] {
   let cursor = 0
   return file.hunks.map((hunk) => hunk.lines.map(() => {
     const line = segments[cursor] ?? [{ text: flat[cursor] }]
