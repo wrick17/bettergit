@@ -327,6 +327,11 @@ export async function stashPush(repo: string, message: string, includeUntracked:
 }
 
 export async function stashAction(repo: string, action: 'pop' | 'apply' | 'drop', ref: string): Promise<void> {
+  if (!ref || ref.startsWith('-')) throw new Error(`Invalid stash: ${ref}`)
+  if (action !== 'drop') {
+    // A stash writes what it changed from its base, in its working tree and its index. Git checks its untracked part itself.
+    await assertNoUntrackedOverwrite(repo, [...await changedPaths(repo, `${ref}^1`, ref), ...await changedPaths(repo, `${ref}^1`, `${ref}^2`)])
+  }
   await git(repo, ['stash', action, ref])
 }
 
@@ -334,15 +339,52 @@ export async function fetchAll(repo: string): Promise<void> {
   await git(repo, ['fetch', '--all', '--prune', '--no-tags'])
 }
 
+// Git pull fetches and merges in one step, and takes no --no-overwrite-ignore. So this fetches once, then merges or
+// rebases exactly the commit that fetch brought: a commit pushed after the fetch is never written unchecked.
 export async function pull(repo: string, mode: 'merge' | 'rebase' = 'merge'): Promise<void> {
   if (mode !== 'merge' && mode !== 'rebase') throw new Error(`Unknown pull mode: ${mode}`)
-  await git(repo, ['pull', mode === 'rebase' ? '--rebase' : '--no-rebase'], { interactive: false })
+  const branch = (await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')).trim()
+  if (!branch) throw new Error('Pull needs a branch, not a detached HEAD.')
+  const tracking = (await git(repo, ['rev-parse', '--symbolic-full-name', '@{u}']).catch(() => '')).trim()
+  if (!tracking) throw new Error(`${branch} has no upstream branch to pull from.`)
+  // Like git pull, a rebase starts from the fork point read before the fetch moves the remote branch.
+  const forkPoint = mode === 'rebase' ? (await git(repo, ['merge-base', '--fork-point', tracking, 'HEAD']).catch(() => '')).trim() : ''
+  // With no arguments, fetch reads the branch's remote and marks its merge branch in FETCH_HEAD, as git pull does.
+  await git(repo, ['fetch'], { interactive: false })
+  await integrateFetched(repo, mode, forkPoint)
 }
 
 export async function pullFrom(repo: string, remote: string, branch: string): Promise<void> {
   await assertRemote(repo, remote)
   await assertBranchName(repo, branch)
-  await git(repo, ['pull', '--no-rebase', remote, branch], { interactive: false })
+  await git(repo, ['fetch', remote, branch], { interactive: false })
+  await integrateFetched(repo, 'merge', '')
+}
+
+// Merges or rebases the one commit the last fetch marked for merging, by hash. A merge refuses ignored files through
+// Git's own flag; a rebase has none, so its paths are checked against that same hash first.
+async function integrateFetched(repo: string, mode: 'merge' | 'rebase', forkPoint: string): Promise<void> {
+  const fetchHead = path.resolve(repo, (await git(repo, ['rev-parse', '--git-path', 'FETCH_HEAD'])).trim())
+  const heads = (await fs.readFile(fetchHead, 'utf8')).split('\n').filter((line) => line && line.split('\t')[1] === '')
+  if (heads.length !== 1) throw new Error(heads.length ? 'The fetch found several branches to merge. Pull one branch at a time.' : 'The fetch found no branch to merge.')
+  const target = heads[0].split('\t')[0]
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(target)) throw new Error('The fetch did not record a commit to merge.')
+  if (mode === 'rebase') {
+    await assertNoUntrackedOverwrite(repo, await changedPaths(repo, 'HEAD', target))
+    await git(repo, ['rebase', '--onto', target, forkPoint || target])
+    return
+  }
+  // The message git pull would write, read from the same FETCH_HEAD line.
+  const message = (await git(repo, ['fmt-merge-msg'], { input: `${heads[0]}\n` })).trim()
+  await git(repo, ['merge', '--no-overwrite-ignore', '--no-edit', ...await pullFastForward(repo), '-m', message, target])
+}
+
+// git pull's pull.ff setting, which a plain merge would not read.
+async function pullFastForward(repo: string): Promise<string[]> {
+  const value = (await git(repo, ['config', '--get', 'pull.ff']).catch(() => '')).trim()
+  if (value === 'only') return ['--ff-only']
+  if (!value) return []
+  return (await git(repo, ['config', '--type=bool', '--get', 'pull.ff']).catch(() => '')).trim() === 'false' ? ['--no-ff'] : ['--ff']
 }
 
 // Fetch URLs only: push URLs are rarely set, and listing each remote once keeps the picker simple.
@@ -399,21 +441,25 @@ export async function createBackupRef(repo: string, label: string): Promise<stri
 
 export async function restoreBackup(repo: string, ref: string): Promise<void> {
   const hash = (await git(repo, ['rev-parse', ref])).trim()
-  // --keep refuses to overwrite local changes, so an undo never discards work.
+  // --keep refuses to overwrite local changes, so an undo never discards work. It would still replace ignored files.
+  await assertNoUntrackedOverwrite(repo, await changedPaths(repo, 'HEAD', hash))
   await git(repo, ['reset', '--keep', hash])
 }
 
 // Returns the backup ref so the user can undo. Uncommitted edits are not backed up.
 export async function resetToUpstream(repo: string): Promise<string> {
-  const upstream = await git(repo, ['rev-parse', '--abbrev-ref', '@{u}']).catch(() => '')
-  if (!upstream.trim()) throw new Error('This HEAD has no upstream branch to reset to.')
+  const upstream = (await git(repo, ['rev-parse', '--verify', '--quiet', '@{u}^{commit}']).catch(() => '')).trim()
+  if (!upstream) throw new Error('This HEAD has no upstream branch to reset to.')
+  // Tracked edits are what the reset discards. Untracked and ignored files are not, though reset --hard replaces them.
+  await assertNoUntrackedOverwrite(repo, await changedPaths(repo, 'HEAD', upstream))
   const backup = await createBackupRef(repo, 'reset')
-  await git(repo, ['reset', '--hard', '@{u}'])
+  await git(repo, ['reset', '--hard', upstream])
   return backup
 }
 
 export async function cherryPick(repo: string, hash: string): Promise<string> {
   const commit = await resolveCommit(repo, hash)
+  await assertNoUntrackedOverwrite(repo, await commitPaths(repo, commit, 'd'))
   const backup = await createBackupRef(repo, 'cherry-pick')
   await git(repo, ['cherry-pick', commit])
   return backup
@@ -421,6 +467,8 @@ export async function cherryPick(repo: string, hash: string): Promise<string> {
 
 export async function revertCommit(repo: string, hash: string): Promise<string> {
   const commit = await resolveCommit(repo, hash)
+  // A revert writes back what the commit modified or deleted.
+  await assertNoUntrackedOverwrite(repo, await commitPaths(repo, commit, 'a'))
   const backup = await createBackupRef(repo, 'revert')
   await git(repo, ['revert', '--no-edit', commit])
   return backup
@@ -428,6 +476,48 @@ export async function revertCommit(repo: string, hash: string): Promise<string> 
 
 export async function checkoutDetached(repo: string, hash: string): Promise<void> {
   await git(repo, ['switch', '--detach', await resolveCommit(repo, hash)])
+}
+
+// Git treats ignored files as expendable: reset, rebase, cherry-pick, revert and stash apply replace an ignored local
+// file (a .env, say) with a tracked one without asking, and reset --hard does the same to any untracked file. Only
+// switch and merge take --no-overwrite-ignore, so the other writes pass the paths they could write here first.
+// A path conflicts when what is on disk there is not tracked: a file outside the index, or a folder that a file
+// replaces while it still holds untracked or ignored files. A folder of tracked files only is Git's to replace.
+async function assertNoUntrackedOverwrite(repo: string, paths: string[]): Promise<void> {
+  const files = new Set<string>()
+  const folders = new Set<string>()
+  await Promise.all(paths.map(async (file) => {
+    const parts = file.split('/')
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const stat = await fs.lstat(path.join(repo, ...parts.slice(0, depth))).catch(() => null)
+      if (!stat) return
+      const at = parts.slice(0, depth).join('/')
+      if (!stat.isDirectory()) return void files.add(at)
+      if (depth === parts.length) return void folders.add(at)
+    }
+  }))
+  const blocked: string[] = []
+  if (files.size) {
+    const tracked = new Set((await git(repo, ['ls-files', '-z'])).split('\0'))
+    blocked.push(...[...files].filter((file) => !tracked.has(file)))
+  }
+  for (const folder of folders) {
+    blocked.push(...(await git(repo, ['--literal-pathspecs', 'ls-files', '-z', '--others', '--directory', '--', `${folder}/`])).split('\0').filter(Boolean))
+  }
+  if (!blocked.length) return
+  blocked.sort()
+  const shown = blocked.slice(0, 5).join(', ') + (blocked.length > 5 ? `, and ${blocked.length - 5} more` : '')
+  throw new Error(`This would overwrite untracked or ignored files: ${shown}. Move or delete them first.`)
+}
+
+// Paths that differ between two revisions, leaving out deletions. Renames count as an add, so the new path is checked.
+async function changedPaths(repo: string, from: string, to: string): Promise<string[]> {
+  return (await git(repo, ['diff', '--name-only', '-z', '--no-renames', '--diff-filter=d', from, to, '--'])).split('\0').filter(Boolean)
+}
+
+// Paths one commit touched against its first parent, filtered with a --diff-filter value.
+async function commitPaths(repo: string, commit: string, filter: string): Promise<string[]> {
+  return (await git(repo, ['diff-tree', '-r', '--root', '--no-commit-id', '--name-only', '-z', '--no-renames', `--diff-filter=${filter}`, commit])).split('\0').filter(Boolean)
 }
 
 export async function branchFromCommit(repo: string, name: string, hash: string): Promise<void> {

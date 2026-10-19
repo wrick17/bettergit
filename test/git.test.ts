@@ -9,7 +9,7 @@ import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/d
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
-import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees } from '../src/main/git/ops'
+import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, pull, resetToUpstream, cherryPick } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -1070,4 +1070,107 @@ describe('branch picker operations with real Git', () => {
     expect((await readStatus(dir)).head).toBe('after-lock')
   })
 
+})
+
+describe('writes that could overwrite untracked or ignored files', () => {
+  const dirs: string[] = []
+  afterAll(() => dirs.forEach(cleanup))
+  const sha = async (dir: string, ref = 'HEAD') => (await git(dir, ['rev-parse', ref])).trim()
+  const read = (dir: string, file: string) => readFileSync(path.join(dir, file), 'utf8')
+  // A local clone and a second clone that pushes to the same bare remote. `.env` and `*.secret` are ignored in both.
+  const fixture = async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-ignored-'))
+    dirs.push(dir)
+    const remote = path.join(dir, 'remote.git'), local = path.join(dir, 'local'), other = path.join(dir, 'other')
+    await git(dir, ['init', '-q', '--bare', '-b', 'main', remote])
+    await git(dir, ['clone', '-q', remote, other])
+    for (const clone of [other]) {
+      await git(clone, ['config', 'user.name', 'Guard Test'])
+      await git(clone, ['config', 'user.email', 'guard@example.com'])
+    }
+    writeFileSync(path.join(other, '.gitignore'), '.env\n*.secret\n')
+    await git(other, ['add', '.gitignore'])
+    await git(other, ['commit', '-qm', 'base'])
+    await git(other, ['push', '-q', '-u', 'origin', 'main'])
+    await git(dir, ['clone', '-q', remote, local])
+    await git(local, ['config', 'user.name', 'Guard Test'])
+    await git(local, ['config', 'user.email', 'guard@example.com'])
+    return { dir, local, other }
+  }
+  // Writes files in the pushing clone (null removes one), force-adds them past .gitignore, commits and pushes.
+  const publish = async (other: string, files: Record<string, string | null>, message: string) => {
+    for (const [file, text] of Object.entries(files)) {
+      if (text === null) await git(other, ['rm', '-rq', '--', file])
+      else {
+        mkdirSync(path.dirname(path.join(other, file)), { recursive: true })
+        writeFileSync(path.join(other, file), text)
+        await git(other, ['add', '-f', '--', file])
+      }
+    }
+    await git(other, ['commit', '-qm', message])
+    await git(other, ['push', '-q', 'origin', 'main'])
+    return sha(other)
+  }
+
+  for (const mode of ['merge', 'rebase'] as const) {
+    test(`a ${mode} pull integrates only what its one fetch saw, and refuses a later commit that tracks an ignored file`, async () => {
+      const { dir, local, other } = await fixture()
+      const seen = await publish(other, { 'b.txt': 'b\n' }, 'b')
+      writeFileSync(path.join(local, '.env'), 'SECRET=local\n')
+      // The remote advances the moment the fetch updates origin/main, before any merge or rebase runs.
+      const hooks = path.join(dir, 'hooks')
+      mkdirSync(hooks)
+      writeFileSync(path.join(hooks, 'reference-transaction'), [
+        '#!/bin/sh',
+        '[ "$1" = committed ] || exit 0',
+        'grep -q refs/remotes/origin/main || exit 0',
+        `[ -e '${dir}/advanced' ] && exit 0`,
+        `touch '${dir}/advanced'`,
+        `cd '${other}' && env -i PATH="$PATH" HOME="$HOME" sh -c 'echo REMOTE=1 > .env && git add -f .env && git commit -qm late && git push -q origin main'`,
+      ].join('\n'))
+      chmodSync(path.join(hooks, 'reference-transaction'), 0o755)
+      await git(local, ['config', 'core.hooksPath', hooks])
+      await pull(local, mode)
+      const late = await sha(other)
+      expect(late).not.toBe(seen)
+      expect(await sha(local)).toBe(seen)
+      expect(read(local, '.env')).toBe('SECRET=local\n')
+      // The next pull sees the late commit and refuses it, Git's flag for a merge and the guard for a rebase.
+      await expect(pull(local, mode)).rejects.toThrow(/\.env/)
+      expect(read(local, '.env')).toBe('SECRET=local\n')
+      expect(await sha(local)).toBe(seen)
+    })
+  }
+
+  test('a folder of tracked files may become a file, but not while it holds an ignored file', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'config/old.txt': 'old\n' }, 'folder')
+    await git(local, ['pull', '-q'])
+    await publish(other, { config: null }, 'drop folder')
+    await publish(other, { config: 'FILE\n' }, 'file')
+    await git(local, ['fetch', '-q'])
+    writeFileSync(path.join(local, 'config', '.env'), 'SECRET=local\n')
+    await expect(resetToUpstream(local)).rejects.toThrow('config/.env')
+    expect(read(local, 'config/.env')).toBe('SECRET=local\n')
+    unlinkSync(path.join(local, 'config', '.env'))
+    await resetToUpstream(local)
+    expect(read(local, 'config')).toBe('FILE\n')
+  })
+
+  test('a renamed path with spaces and non-ASCII letters is checked under its new name', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'docs/old name.txt': 'tracked\n' }, 'doc')
+    await git(local, ['pull', '-q'])
+    mkdirSync(path.join(other, 'dócs'))
+    await git(other, ['mv', 'docs/old name.txt', 'dócs/nëw näme.secret'])
+    const renamed = await publish(other, {}, 'rename')
+    await git(local, ['fetch', '-q'])
+    mkdirSync(path.join(local, 'dócs'))
+    writeFileSync(path.join(local, 'dócs', 'nëw näme.secret'), 'local\n')
+    await expect(cherryPick(local, renamed)).rejects.toThrow('dócs/nëw näme.secret')
+    expect(read(local, 'dócs/nëw näme.secret')).toBe('local\n')
+    unlinkSync(path.join(local, 'dócs', 'nëw näme.secret'))
+    await cherryPick(local, renamed)
+    expect(read(local, 'dócs/nëw näme.secret')).toBe('tracked\n')
+  })
 })
