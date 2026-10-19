@@ -52,6 +52,11 @@ function tablePrefix(texts: string[]): string {
 const DELIMITER_RUN_LIMIT = 1_000
 const PLAIN_DELIMITERS = { disable: { null: ['attention', 'strikethrough'] } }
 const denseDelimiters = (source: string) => source.split(/\n[ \t]*\n/).some(block => (block.match(/\*+|_+|~+/g)?.length ?? 0) > DELIMITER_RUN_LIMIT)
+// Each `]` tries to close a link, image or footnote, and micromark's cost grows quadratically in them per paragraph
+// (`[a]` x 20k: ~2 s in V8). Past the limit brackets stay literal text; emphasis, code and blocks still format.
+const BRACKET_LIMIT = 1_000
+const PLAIN_BRACKETS = { disable: { null: ['labelStartLink', 'labelStartImage', 'labelEnd', 'gfmFootnoteCall', 'gfmPotentialFootnoteCall'] } }
+const denseBrackets = (source: string) => source.split(/\n[ \t]*\n/).some(block => (block.match(/]/g)?.length ?? 0) > BRACKET_LIMIT)
 
 function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<number, Span[]>): MarkdownSide {
   const entries: MarkdownSource[] = []
@@ -65,7 +70,8 @@ function parseSide(lines: DiffLine[], excluded: 'add' | 'del', changes: Map<numb
     source += line.text
     entries.push({ line, index, start, end: source.length })
   })
-  const tree = fromMarkdown(source, { extensions: [gfm(), ...(denseDelimiters(source) ? [PLAIN_DELIMITERS] : [])], mdastExtensions: [gfmFromMarkdown()] })
+  const extensions = [gfm(), ...(denseDelimiters(source) ? [PLAIN_DELIMITERS] : []), ...(denseBrackets(source) ? [PLAIN_BRACKETS] : [])]
+  const tree = fromMarkdown(source, { extensions, mdastExtensions: [gfmFromMarkdown()] })
   const definitions = new Map<string, Definition>()
   const footnotes = new Map<string, FootnoteDefinition>()
   const collect = (node: Nodes) => {

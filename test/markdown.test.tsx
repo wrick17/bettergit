@@ -591,6 +591,9 @@ test('long malformed syntax stays bounded without dropping source', () => {
   expect(renderToStaticMarkup(<MarkdownContent nodes={markdownHunk(rows).new.nodes} side={markdownHunk(rows).new} />)).not.toContain('<del')
   // Alternating markers are separate runs to the parser, so they count separately.
   for (const mixed of ['*_'.repeat(10_000) + 'x', '*~_'.repeat(7_000) + 'x']) expect(markdownHunk([line(mixed)]).new.entries[0].line.text).toBe(mixed)
+  // Closing brackets are bounded too: each tries to close a link or reference, and they stay literal past the limit.
+  const brackets = markdownHunk([line('[a][b]'.repeat(40_000))]).new
+  expect((renderToStaticMarkup(<MarkdownContent nodes={brackets.nodes} side={brackets} />).match(/\]/g) ?? []).length).toBe(80_000)
   // Unbounded, these take seconds even on a fast machine (quadratic delimiter matching); bounded, tens of milliseconds.
   expect(performance.now() - started).toBeLessThan(2000)
 })
