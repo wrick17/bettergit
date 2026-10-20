@@ -1,7 +1,8 @@
 import { Fragment, memo, startTransition, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { DiffFile, DiffHunk, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
+import type { HunkAction } from '../../main/git/hunks'
 import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
-import { Icon, IconButton, TextToggle, toggleLabel } from './Icons'
+import { Icon, IconButton, TextToggle, toggleLabel, type IconName } from './Icons'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, setContextLines, setFormatMarkdown, setIgnoreWhitespace, setWordWrap, useContextLines, useFormatMarkdown, useIgnoreWhitespace, useLanguageOverrides, useWordWrap } from './prefs'
 import { charWidth, columns, hscrollOf, useCodeMetrics } from './hscroll'
@@ -9,7 +10,8 @@ import { cachedFileTokens, highlightFile, languageFor, warmColours, type Segment
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
-import { DraftActions, EditableDiff, prepareSource, type EditBridge } from './DiffEditor'
+import { DraftActions, EditableDiff, prepareSource, useUnsaved, type EditBridge } from './DiffEditor'
+import { blockedReason, workingLabel } from './repo-busy'
 import { useFindSource } from './find'
 import { chunked, range, RowChunk } from './row-chunk'
 import { holdPlace, suspendHold } from './scroll-anchor'
@@ -18,8 +20,16 @@ import './intraline.css'
 interface Props {
   files: DiffFile[]
   moves: MovedBlock[]
-  // Set in the Changes view. Each file header then shows a checkbox. Checked = staged. Disabled while a repository change runs.
-  stage?: { staged: boolean; disabled?: boolean; onToggle: (path: string, stage: boolean) => void }
+  // Set in the Changes view. Each file header then shows Stage or Unstage, and Discard for a tracked unstaged file.
+  // `busy` is the write running in the repo: the button that started it spins, the others say why they wait.
+  // `onHunk`, when set, adds the same actions to each hunk of a modified text file.
+  stage?: {
+    staged: boolean
+    busy?: string | null
+    onToggle: (path: string, stage: boolean) => void
+    onDiscard?: (path: string) => void
+    onHunk?: (path: string, hunk: DiffHunk, action: HunkAction) => void
+  }
   // Set in the Changes view. Each hunk gets an expand row above and below to show more context for that file.
   onExpand?: (file: DiffFile) => void
   // Where the open and closed choices of each file are saved. The choices come back only for the same key, such as a commit.
@@ -121,8 +131,13 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   // File sections are memoised, so the callbacks they get stay the same object and always call the caller's latest one.
   const latest = useRef({ stage, onExpand, edit })
   latest.current = { stage, onExpand, edit }
-  const stageFor = useMemo(() => stage && { staged: stage.staged, disabled: stage.disabled, onToggle: (path: string, next: boolean) => latest.current.stage?.onToggle(path, next) },
-    [!!stage, stage?.staged, stage?.disabled])
+  const stageFor = useMemo(() => stage && {
+    staged: stage.staged,
+    busy: stage.busy,
+    onToggle: (path: string, next: boolean) => latest.current.stage?.onToggle(path, next),
+    onDiscard: stage.onDiscard && ((path: string) => latest.current.stage?.onDiscard?.(path)),
+    onHunk: stage.onHunk && ((path: string, hunk: DiffHunk, action: HunkAction) => latest.current.stage?.onHunk?.(path, hunk, action)),
+  }, [!!stage, stage?.staged, stage?.busy, !!stage?.onDiscard, !!stage?.onHunk])
   const expand = useMemo(() => onExpand && ((file: DiffFile) => latest.current.onExpand?.(file)), [!!onExpand])
   const editFor = useMemo<EditBridge | undefined>(() => edit && {
     repo: edit.repo,
@@ -352,6 +367,11 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
   const toggle = () => onToggle(path, open)
   const text = edit && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
   const markdown = formatted && isMarkdownPath(path)
+  // Hunks of a modified text file change one at a time. Not while the file has unsaved edits, which the write could lose.
+  const unsaved = useUnsaved(text, path)
+  const hunkActions = stage?.onHunk && !conflict && file.status === 'modified' && !file.binary && !unsaved
+    ? (hunk: DiffHunk) => <HunkActions path={path} hunk={hunk} stage={stage} />
+    : undefined
   // Formatted Markdown is not source, so it stays read-only; the raw view edits it.
   const editor = text && !markdown ? text : undefined
   const sectionRef = useRef<HTMLElement>(null)
@@ -439,7 +459,9 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
       <Fragment key={hunkIndex}>
         {onExpand && <ExpandRow label={`Show more context above line ${edgeLines(hunk.lines).first}`} onExpand={() => onExpand(file)} />}
         <div className="hunk">
-          <div className="hunk-header">{hunk.header}</div>
+          {hunkActions
+            ? <div className="hunk-header with-actions"><span className="hunk-title">{hunk.header}</span>{hunkActions(hunk)}</div>
+            : <div className="hunk-header">{hunk.header}</div>}
           {markdown && !format && <div className="md-fragment-note">Too large to format as Markdown. Showing the source diff.</div>}
           {body}
           {conflict?.controls(hunk, hunk.lines.length)}
@@ -461,7 +483,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
       )}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
-        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} />
+        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
         : hunks())}
       {open && !markdown && file.hunks.length > 0 && <HScrollBar file={file} extra={editor ? editorExtent : 0} />}
     </section>
@@ -857,8 +879,8 @@ function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHun
   )
 }
 
-// The sticky header for one file: optional stage checkbox, collapse toggle, status, name with its folder,
-// and how many lines were added and removed.
+// The sticky header for one file: collapse toggle, status, name with its folder, how many lines were added and
+// removed, then its actions.
 function FileHeader({ file, stat, open, onToggle, stage, actions }: {
   file: DiffFile
   stat: { adds: number; dels: number }
@@ -872,17 +894,6 @@ function FileHeader({ file, stat, open, onToggle, stage, actions }: {
   const editor = useContext(EditorContext)
   return (
     <header>
-      {stage && (
-        <span className="diff-file-stage">
-          <input
-            type="checkbox"
-            checked={stage.staged}
-            aria-label={`Stage ${path}`}
-            disabled={stage.disabled}
-            onChange={() => stage.onToggle(path, !stage.staged)}
-          />
-        </span>
-      )}
       <button className="diff-file-toggle" aria-expanded={open} aria-label={open ? toggleLabel(`${path}: expanded`, 'collapse it') : toggleLabel(`${path}: collapsed`, 'expand it')}
         title={open ? 'Expanded — click to collapse' : 'Collapsed — click to expand'} onClick={onToggle}>
         <Icon name={open ? 'chevronDown' : 'chevron'} />
@@ -898,7 +909,51 @@ function FileHeader({ file, stat, open, onToggle, stage, actions }: {
       </span>
       {actions}
       {editor && <OpenInEditorButton file={file} bridge={editor} />}
+      {stage && <FileStageActions file={file} path={path} stage={stage} />}
     </header>
+  )
+}
+
+// The busy keys of staging writes, shared with the Changes view, so the button that started a write is the one that spins.
+export const fileKey = (action: HunkAction, path: string) => `${action}:${path}`
+export const hunkKey = (action: HunkAction, path: string, header: string) => `hunk-${action}:${path}\n${header}`
+
+function StageButton({ busy, running, ...button }: { busy: string | null; running: string; icon: IconName; text: string; label: string; className?: string; onClick: () => void }) {
+  return <IconButton {...button} label={busy === running ? workingLabel(running) : button.label} busy={busy === running}
+    blocked={busy !== null && busy !== running ? blockedReason(busy) : undefined} />
+}
+
+// Discard and Stage in an unstaged file's header, Unstage in a staged one. An untracked file has nothing to discard.
+function FileStageActions({ file, path, stage }: { file: DiffFile; path: string; stage: NonNullable<Props['stage']> }) {
+  const busy = stage.busy ?? null
+  return (
+    <span className="diff-file-actions">
+      {stage.staged
+        ? <StageButton busy={busy} running={fileKey('unstage', path)} icon="minus" text="Unstage" label={`Unstage ${path}`} onClick={() => stage.onToggle(path, false)} />
+        : (
+          <>
+            {stage.onDiscard && file.status !== 'added' && (
+              <StageButton busy={busy} running={fileKey('discard', path)} icon="trash" text="Discard" label={`Discard changes to ${path}`} className="discard" onClick={() => stage.onDiscard!(path)} />
+            )}
+            <StageButton busy={busy} running={fileKey('stage', path)} icon="plus" text="Stage" label={`Stage ${path}`} onClick={() => stage.onToggle(path, true)} />
+          </>
+        )}
+    </span>
+  )
+}
+
+// The same actions for one hunk, in its header row, or in the editable view's row above the hunk's first change.
+function HunkActions({ path, hunk, stage }: { path: string; hunk: DiffHunk; stage: NonNullable<Props['stage']> }) {
+  const busy = stage.busy ?? null
+  const line = edgeLines(hunk.lines).first
+  const button = (action: HunkAction, icon: IconName, text: string, className?: string) => (
+    <StageButton busy={busy} running={hunkKey(action, path, hunk.header)} icon={icon} text={text} label={`${text} at line ${line} of ${path}`}
+      className={className} onClick={() => stage.onHunk?.(path, hunk, action)} />
+  )
+  return (
+    <span className="hunk-actions">
+      {stage.staged ? button('unstage', 'minus', 'Unstage hunk') : <>{button('discard', 'trash', 'Discard hunk', 'discard')}{button('stage', 'plus', 'Stage hunk')}</>}
+    </span>
   )
 }
 

@@ -23,6 +23,7 @@ import type { EditorId } from '../src/shared/editors'
 import { git } from '../src/main/git/exec'
 import { workingDiff } from '../src/main/git/diff'
 import { originalText } from '../src/renderer/src/original-text'
+import { hunkStarts } from '../src/renderer/src/hunk-rows'
 
 // Tests stop at the native process boundary. No test starts an editor.
 const dirs: string[] = []
@@ -117,6 +118,13 @@ test('the diff editor rebuilds the old file from the working file and its hunks,
   expect(originalText('a\nb\n', untracked.hunks)).toBe('')
   // A diff that no longer matches the file is refused, so the editor never shows a wrong old side.
   expect(originalText(current.replace('new A', 'other'), file.hunks)).toBeNull()
+  // Each Git hunk's actions row sits above the first editor change of that hunk, not above a later change in it.
+  // The editor module reads saved prefs when it loads, so they load after a localStorage stand-in.
+  Object.assign(globalThis, { localStorage: globalThis.localStorage ?? { getItem: () => null, setItem: () => undefined } })
+  const { previewOf } = await import('../src/renderer/src/cm-editor')
+  const model = previewOf(current, index)
+  const starts = hunkStarts(model, file.hunks)
+  expect(model.stretches.flatMap((stretch) => (starts.has(stretch) ? [[starts.get(stretch), stretch.b]] : []))).toEqual([[0, 1], [1, 20], [2, 34]])
 })
 
 test('file and folder targets must match their kind', async () => {

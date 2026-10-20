@@ -14,6 +14,7 @@ import { readHistory, commitDetails, searchHistory, readAuthors } from './git/hi
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
+import { applyHunk, parseHunk } from './git/hunks'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
@@ -268,6 +269,8 @@ function registerIpc() {
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>
     ops.restoreBackup(repoPath, ref))
   handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
+  // One hunk of one file. Main validates the request and cuts the patch from its own fresh diff.
+  handleWrite('repo:hunk', (_event, repoPath: string, action: unknown, request: unknown) => applyHunk(repoPath, ...parseHunk(action, request)))
   ipcMain.handle('repo:search', (_event, repoPath: string, query: string, authors?: unknown) =>
     searchHistory(assertKnownRepo(repoPath), query, authorList(authors)))
   // Reads take no lock. The save runs under the repo lock, and it checks the fingerprint the renderer got at load.

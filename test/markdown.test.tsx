@@ -45,7 +45,7 @@ function render(files: DiffFile[], layout: 'unified' | 'split' = 'unified', form
   const child = Bun.spawnSync([process.execPath, '-e', RENDER], {
     cwd: `${import.meta.dir}/..`, stderr: 'pipe',
     env: {
-      ...process.env, MARKDOWN_PROPS: JSON.stringify({ files, moves, stage: { staged: false, disabled: true } }),
+      ...process.env, MARKDOWN_PROPS: JSON.stringify({ files, moves, stage: { staged: false, busy: 'commit' } }),
       MARKDOWN_STORAGE: JSON.stringify({ 'bettergit.diffLayout': layout, 'bettergit.formatMarkdown': String(formatted), ...storage }),
       MARKDOWN_RESET: 'true', MARKDOWN_CONFLICT: String(conflict),
     },
@@ -482,7 +482,7 @@ test('formatting preserves patch order, pairing, gutters, move targets, signs, s
     expect((html.match(/data-move-id="0-to"/g) ?? []).length).toBe(1)
     expect(html).toContain('md-moved-text')
     expect(html).toContain('aria-label="1 added, 2 removed"')
-    expect(html).toContain('aria-label="Stage move.md" disabled=""')
+    expect(html).toContain('aria-label="Stage move.md" aria-disabled="true"')
     expect(html).toContain('aria-label="move.md: expanded — click to collapse it"')
     expect(html).toContain('@@ empty @@')
     expect(html).toContain('data-path="header.MD"')

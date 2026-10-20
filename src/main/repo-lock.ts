@@ -18,6 +18,7 @@ const OPERATION_NAMES: Record<string, string> = {
   'repo:stage': 'Staging',
   'repo:unstage': 'Unstaging',
   'repo:discard': 'Discarding',
+  'repo:hunk': 'Updating hunk',
   'repo:commit-changes': 'Committing',
   'repo:switch': 'Switching branch',
   'repo:create-branch': 'Creating branch',

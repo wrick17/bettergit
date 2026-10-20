@@ -407,9 +407,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 /* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
 .group > .tree { padding-left: 8px; }
-.group li .check { display: inline-flex; }
-/* Tree file rows: checkbox, icon, and name share one centre line. */
-.tree-row .check { display: inline-flex; flex: none; align-items: center; }
+/* Staging: each file row starts with a compact + (stage) or − (unstage) button on the row's centre line. */
+.icon-button.stage-toggle { flex: none; width: 20px; height: 20px; color: var(--muted-on); }
+.icon-button.stage-toggle svg { width: 14px; height: 14px; }
 .tree-row .file { flex: 1; min-width: 0; align-items: center; }
 .file-with-action { display: flex; flex: 1; min-width: 0; }
 /* The action overlays the 14px leading icon; only its hit area extends 3px around it. */
@@ -513,11 +513,14 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-file > header .path-name { font-weight: 600; }
-/* Header controls: a chevron that collapses the file, and a checkbox wrapper. The icon swaps between right and down, so it does not rotate. */
+/* Header controls: a chevron that collapses the file. The icon swaps between right and down, so it does not rotate. */
 .diff-file-toggle { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
 .diff-file-toggle svg { width: 10px; height: 10px; }
-.diff-file-stage { display: inline-grid; flex: none; place-items: center; }
-.diff-file-stage input:disabled { opacity: 0.4; cursor: default; }
+/* Staging: named actions (Discard, Stage, Unstage) in file headers and hunk rows. They keep their size as paths truncate. */
+.icon-button.with-text { width: auto; height: 24px; grid-auto-flow: column; gap: 5px; padding: 0 8px; font: 500 calc(12.5px + var(--ui-delta))/1 var(--font-ui); white-space: nowrap; }
+.icon-button.with-text svg { width: 13px; height: 13px; }
+.diff-file-actions, .hunk-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.hunk-actions .icon-button.with-text { height: 22px; font-size: calc(12px + var(--ui-delta)); }
 /* Open in editor keeps its size when the path truncates, so the header's file counts stay visible. */
 .diff-file-open { flex: none; display: inline-grid; place-items: center; }
 /* Stands in for a collapsed file's hunks. */
@@ -527,6 +530,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .stat .add { color: var(--add); }
 .stat .del { color: var(--del); }
 .hunk-header { padding: 0 20px; line-height: 28px; color: var(--text-3); background: var(--sunken); font-size: calc(12px + var(--ui-delta)); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* Staging: a hunk header with actions keeps its 28px row; the header text truncates first. */
+.hunk-header.with-actions { display: flex; align-items: center; gap: 8px; height: 28px; padding-right: 8px; }
+.hunk-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The editable view's hunk row, above the change a Git hunk starts with. Same height and tint as a hunk header. */
+.ed-hunk-actions { display: flex; align-items: center; justify-content: flex-end; height: 28px; padding: 0 8px; background: var(--sunken); }
 /* Expand rows sit above and below a hunk. */
 .hunk-expand { display: flex; justify-content: center; align-items: center; gap: 4px; height: 20px; padding: 0 20px; font: calc(12px + var(--ui-delta))/1 var(--font-ui); }
 .hunk-expand-btn { height: 20px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }

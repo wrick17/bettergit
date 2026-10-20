@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
+import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
@@ -29,6 +30,8 @@ const api = {
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
   discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),
+  // Main re-reads the diff and applies the hunk only if it still matches what was shown.
+  applyHunk: (repo: string, action: HunkAction, request: HunkRequest) => invoke('repo:hunk', repo, action, request) as Promise<void>,
   commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
   branches: (repo: string) => invoke('repo:branches', repo) as Promise<Branch[]>,
   switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,
