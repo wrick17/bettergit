@@ -276,6 +276,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .row-icon svg { width: 14px; height: 14px; }
 .tree-row .icon-button { width: 20px; height: 20px; color: var(--muted-on); }
 .tree-row .icon-button svg { width: 14px; height: 14px; }
+/* Reorder drop marker: a line on the edge of the sibling row the dragged row will land beside. */
+.tree-row:is(.drop-before, .drop-after)::after {
+  content: ''; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.tree-row.drop-before::after { top: -1px; }
+.tree-row.drop-after::after { bottom: -2px; }
 
 /* Sits in the tab row, between the toolbar and the diff toolbar, so it covers neither. */
 .banner {
