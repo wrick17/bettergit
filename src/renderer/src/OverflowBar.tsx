@@ -19,7 +19,13 @@ export interface BarItem {
   group: string
   // The app menu's key equivalent, in macOS glyphs such as ⇧⌘F. Menus show it after the label.
   shortcut?: string
+  // A dimmer line under the label that says what the action does.
+  detail?: string
+  // Options for a toolbar button, shown in a dropdown beside it. The button itself still runs onClick.
+  menu?: BarItem[]
 }
+
+const HOVER_DELAY = 150
 
 // The sync actions used most often stay one click away. The menu lists them too, so it names every action.
 const QUICK = new Set(['fetch', 'pullMerge', 'push'])
@@ -33,10 +39,10 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
 
   return (
     <>
-      {items.filter((item) => QUICK.has(item.key)).map((item) => (
-        <IconButton key={item.key} icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked}
-          className={item.danger ? 'danger' : undefined} onClick={item.onClick} />
-      ))}
+      {items.filter((item) => QUICK.has(item.key)).map((item) => item.menu
+        ? <SplitButton key={item.key} item={item} menu={item.menu} />
+        : <IconButton key={item.key} icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked}
+          className={item.danger ? 'danger' : undefined} onClick={item.onClick} />)}
       <div className="overflow-more" onKeyDown={(event) => { if (open && event.key === 'Escape') { event.preventDefault(); close() } }}>
         <button
           ref={triggerRef}
@@ -67,6 +73,78 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
   )
 }
 
+// A quick action with a dropdown of its options. Hovering the pair opens it after a short delay without taking focus, so
+// typing elsewhere carries on, and it closes once the pointer has left for the same delay. The chevron opens it by click,
+// Enter, Space or ArrowDown with focus on the first option. Escape or a press outside dismisses it either way.
+function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const chevronRef = useRef<HTMLButtonElement>(null)
+  const timer = useRef<number | undefined>(undefined)
+  // 'hover' leaves focus where it was; 'focus' moves it into the menu.
+  const [open, setOpen] = useState<'hover' | 'focus' | null>(null)
+  const later = (next: () => void) => { window.clearTimeout(timer.current); timer.current = window.setTimeout(next, HOVER_DELAY) }
+  const close = (refocus: boolean) => {
+    window.clearTimeout(timer.current)
+    setOpen(null)
+    if (refocus) chevronRef.current?.focus()
+  }
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  // A hover-opened menu never holds focus, so presses and Escape are watched on the document.
+  useEffect(() => {
+    if (!open) return
+    const press = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) close(false) }
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      close(!!rootRef.current?.contains(document.activeElement))
+    }
+    document.addEventListener('pointerdown', press)
+    document.addEventListener('keydown', key)
+    return () => {
+      document.removeEventListener('pointerdown', press)
+      document.removeEventListener('keydown', key)
+    }
+  }, [open])
+
+  return (
+    <div
+      ref={rootRef}
+      className="split-action"
+      onMouseEnter={() => { if (item.disabled) return; if (open) window.clearTimeout(timer.current); else later(() => setOpen('hover')) }}
+      onMouseLeave={() => later(() => setOpen((current) => current === 'hover' ? null : current))}
+    >
+      <IconButton icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked}
+        className={item.danger ? 'danger' : undefined} onClick={item.onClick} />
+      <button
+        ref={chevronRef}
+        type="button"
+        className={`split-chevron${open ? ' on' : ''}`}
+        aria-label={`${item.label} options`}
+        aria-haspopup="menu"
+        aria-expanded={!!open}
+        disabled={item.disabled}
+        // While focused open, a press here must not blur the menu first: it would close, then the click reopen it.
+        onMouseDown={(event) => { if (open === 'focus') event.preventDefault() }}
+        onClick={() => { if (open === 'focus') close(true); else setOpen('focus') }}
+        onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen('focus') } }}
+      >
+        <Icon name="chevronDown" className="chevron-down" />
+      </button>
+      {open && (
+        <ActionMenu
+          className="overflow-menu split-menu"
+          label={`${item.label} options`}
+          items={menu}
+          autoFocus={open === 'focus'}
+          onPick={(option) => { close(open === 'focus'); option.onClick() }}
+          onDismiss={() => setOpen(null)}
+        />
+      )}
+    </div>
+  )
+}
+
 const ENABLED_ITEM = '[role="menuitem"]:not(:disabled):not([aria-disabled="true"])'
 
 // A running or blocked action keeps its place and tooltip, but does nothing when picked.
@@ -77,9 +155,11 @@ function inertItem(item: BarItem): boolean {
 // A popover of actions, with a divider between groups. Arrow keys, Home, and End move between enabled items.
 // With `at`, the menu opens at that point and is kept inside the window. Focus leaving the menu, by Tab or a click
 // elsewhere, dismisses it and keeps focus where it went.
-export function ActionMenu({ items, onPick, onDismiss, className, at, label }: {
+export function ActionMenu({ items, onPick, onDismiss, className, at, label, autoFocus = true }: {
   items: BarItem[]
   label?: string
+  // False for a menu opened by hover, which must not pull focus from where the user is typing.
+  autoFocus?: boolean
   onPick: (item: BarItem) => void
   onDismiss?: () => void
   className?: string
@@ -89,8 +169,8 @@ export function ActionMenu({ items, onPick, onDismiss, className, at, label }: {
 
   // Focus goes to the first enabled item when the menu opens. Blocked items are skipped by focus and arrow keys.
   useEffect(() => {
-    rootRef.current?.querySelector<HTMLElement>(ENABLED_ITEM)?.focus()
-  }, [])
+    if (autoFocus) rootRef.current?.querySelector<HTMLElement>(ENABLED_ITEM)?.focus()
+  }, [autoFocus])
 
   useLayoutEffect(() => {
     const menu = rootRef.current
@@ -132,7 +212,9 @@ export function ActionMenu({ items, onPick, onDismiss, className, at, label }: {
             onClick={() => { if (!inertItem(item)) onPick(item) }}
           >
             <Icon name={item.busy ? 'loader' : item.icon} className={item.busy ? 'action-spin' : undefined} />
-            {item.label}
+            {item.detail
+              ? <span className="menu-text"><span className="menu-label">{item.label}</span><span className="menu-detail">{item.detail}</span></span>
+              : item.label}
             {item.shortcut && <kbd className="menu-shortcut">{item.shortcut}</kbd>}
           </button>
         </Fragment>

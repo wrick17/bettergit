@@ -2,7 +2,8 @@ import type { RepoStatus } from '../../main/git/status'
 import { PullFromDialog, StashDialog, type StashMode } from './StashDialog'
 import type { BarItem } from './OverflowBar'
 import { confirmOverBlur } from './confirm'
-import { blockedReason, REPO_WORKING_LABELS } from './repo-busy'
+import { blockedReason, workingLabel } from './repo-busy'
+import type { PullMode } from '../../main/git/ops'
 
 const api = window.bettergit
 
@@ -26,9 +27,10 @@ interface RepoActions {
 // Shortcuts repeat the Repository menu's accelerators (main/menu.ts), which run the same actions.
 export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onDialog }: RepoActions): BarItem[] {
   // The running action shows its working label and spinner. Every other write in the repo is blocked and says why.
-  const state = (key: string, label: string) => {
-    const running = busy === key || (key === 'fetch' && busy === 'background-fetch')
-    return { label: running ? REPO_WORKING_LABELS[key] : label, busy: running, blocked: busy !== null && !running ? blockedReason(busy) : undefined }
+  // A toolbar button also runs for the options in its dropdown that have no button of their own.
+  const state = (key: string, label: string, also: string[] = []) => {
+    const running = busy !== null && (busy === key || also.includes(busy))
+    return { label: running ? workingLabel(busy) : label, busy: running, blocked: busy !== null && !running ? blockedReason(busy) : undefined }
   }
   const blocked = busy !== null ? blockedReason(busy) : undefined
   const resetLabel = status?.upstream ? `Reset branch to ${status.upstream}…` : 'Reset branch (no upstream set)…'
@@ -45,14 +47,50 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     void run('reset', async () => onNote(`Backup kept at ${await api.resetToUpstream(repo)}`))
   }
 
+  const pullOption = (key: string, label: string, mode: PullMode, detail: string): BarItem => ({
+    key, icon: mode.startsWith('rebase') ? 'pullRebase' : 'pullMerge', ...state(key, label), detail, group: 'pull',
+    onClick: () => void run(key, () => api.pull(repo, mode)),
+  })
+  const fetchOption = (key: string, label: string, mode: 'fetch' | 'tags' | 'prune', detail: string): BarItem => ({
+    key, icon: 'refresh', ...state(key, label), detail, group: 'fetch', onClick: () => void run(key, () => api.fetch(repo, mode)),
+  })
+  // The dropdowns name each option by the git command it runs, as Sublime Merge does.
+  const fetchMenu: BarItem[] = [
+    pullOption('pull-merge', 'pull', 'merge', 'Retrieves changes from the remote and merges them into the current branch'),
+    pullOption('pull-ff', 'pull --ff-only', 'ff-only', 'Retrieves changes from the remote and fast-forwards the current branch'),
+    pullOption('pull-rebase', 'pull --rebase', 'rebase', 'Retrieves changes from the remote and rebases the current branch onto them'),
+    pullOption('pull-autostash', 'pull --rebase --autostash', 'rebase-autostash', 'Stashes any uncommitted changes before running pull --rebase'),
+    fetchOption('fetch-plain', 'fetch', 'fetch', 'Retrieves changes from the remote'),
+    fetchOption('fetch-tags', 'fetch --tags', 'tags', 'Retrieves changes from the remote including all tags'),
+    fetchOption('fetch-prune', 'fetch --prune', 'prune', 'Retrieves changes from the remote and removes deleted remote branches'),
+  ]
+
+  // A force push replaces the upstream branch, so it names both and asks first. Main refuses it if either changed since.
+  const forcePush = async (key: string, mode: 'force' | 'force-with-lease') => {
+    if (!status?.head || !status.upstream) return
+    const { head, upstream } = status
+    const message = mode === 'force'
+      ? `Force push ${head} to ${upstream}?\n\nCommits on ${upstream} that ${head} does not have are removed from the remote.`
+      : `Force push ${head} to ${upstream} with lease?\n\nGit refuses if ${upstream} moved since your last fetch. Otherwise commits on it that ${head} does not have are removed from the remote.`
+    if (!(await confirmOverBlur(message))) return
+    void run(key, () => api.push(repo, mode, { branch: head, upstream }))
+  }
+  const noForce = !status?.head || !status.upstream
+  const pushMenu: BarItem[] = [
+    { key: 'push', icon: 'push', ...state('push', 'push'), detail: 'Sends changes from the current local branch to the remote', group: 'push', onClick: () => void run('push', () => api.push(repo)) },
+    { key: 'push-force', icon: 'push', ...state('push-force', 'push --force'), detail: 'Replaces the branch on the remote with the current local branch', group: 'push', danger: true, disabled: noForce, onClick: () => void forcePush('push-force', 'force') },
+    { key: 'push-lease', icon: 'push', ...state('push-lease', 'push --force-with-lease'), detail: 'push --force, but checks that the remote branch has not been updated since the last fetch', group: 'push', danger: true, disabled: noForce, onClick: () => void forcePush('push-lease', 'force-with-lease') },
+    { key: 'push-no-verify', icon: 'push', ...state('push-no-verify', 'push --no-verify'), detail: 'Push without running the pre-push hook', group: 'push', onClick: () => void run('push-no-verify', () => api.push(repo, 'no-verify')) },
+  ]
+
   return [
     { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick: () => onTab('history') },
     { key: 'copy', icon: 'copy', label: 'Copy Branch Name', group: 'view', disabled: !status?.head, onClick: copyBranch },
-    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch'), group: 'sync', shortcut: '⇧⌘F', onClick: () => void run('fetch', () => api.fetch(repo)) },
+    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch', ['background-fetch', 'pull-ff', 'pull-autostash', 'fetch-plain', 'fetch-tags', 'fetch-prune']), group: 'sync', shortcut: '⇧⌘F', menu: fetchMenu, onClick: () => void run('fetch', () => api.fetch(repo)) },
     { key: 'pullMerge', icon: 'pullMerge', ...state('pull-merge', 'Pull and Merge'), group: 'sync', shortcut: '⇧⌘L', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
     { key: 'pullRebase', icon: 'pullRebase', ...state('pull-rebase', 'Pull and Rebase'), group: 'sync', onClick: () => void run('pull-rebase', () => api.pull(repo, 'rebase')) },
     { key: 'pullFrom', icon: 'pullFrom', ...state('pull', 'Pull from…'), group: 'sync', onClick: () => onDialog('pull-from') },
-    { key: 'push', icon: 'push', ...state('push', 'Push'), group: 'sync', shortcut: '⇧⌘P', onClick: () => void run('push', () => api.push(repo)) },
+    { key: 'push', icon: 'push', ...state('push', 'Push', ['push-force', 'push-lease', 'push-no-verify']), group: 'sync', shortcut: '⇧⌘P', menu: pushMenu, onClick: () => void run('push', () => api.push(repo)) },
     { key: 'reset', icon: 'reset', ...state('reset', resetLabel), group: 'reset', danger: true, disabled: !status?.upstream, onClick: resetToUpstream },
     { key: 'stash', icon: 'stash', ...state('stash', 'Stash Changes'), group: 'stash', shortcut: '⇧⌘H', onClick: () => void run('stash', () => api.stash(repo, 'BetterGit stash')) },
     // Less common stash actions sit in their own group, after the stash itself. View Stash only reads, so it stays usable while busy.

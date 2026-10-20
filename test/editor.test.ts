@@ -368,7 +368,13 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   expect(toolbar).toContain('aria-haspopup="menu"')
   expect(toolbar).toContain('aria-expanded="false"')
   expect(toolbar).toContain('>Actions<')
-  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Pull and Merge', 'Push'])
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options'])
+  // Fetch and Push open dropdowns of git commands; the force pushes are marked dangerous.
+  const options = (key: string) => items.find((item) => item.key === key)!.menu!
+  expect(options('fetch').map((item) => item.label)).toEqual(['pull', 'pull --ff-only', 'pull --rebase', 'pull --rebase --autostash', 'fetch', 'fetch --tags', 'fetch --prune'])
+  expect(options('push').map((item) => item.label)).toEqual(['push', 'push --force', 'push --force-with-lease', 'push --no-verify'])
+  expect(options('push').filter((item) => item.danger).map((item) => item.key)).toEqual(['push-force', 'push-lease'])
+  expect([...options('fetch'), ...options('push')].every((item) => item.detail)).toBe(true)
 
   const list = renderToStaticMarkup(React.createElement(bar.ActionMenu, { items, onPick: noop, label: 'Repository actions' }))
   expect(list).toContain('role="menu" aria-label="Repository actions"')

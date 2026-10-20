@@ -10,6 +10,7 @@ import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
+import { fetchAll, push } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -1448,4 +1449,97 @@ describe('writes that could overwrite untracked or ignored files', () => {
       expect(await git(fresh, ['status', '--porcelain'])).toBe('')
     })
   }
+
+  // The toolbar's Fetch and Push dropdown modes, against a local bare remote.
+  const commitFile = async (dir: string, file: string, text: string) => {
+    writeFileSync(path.join(dir, file), text)
+    await git(dir, ['add', file])
+    await git(dir, ['commit', '-qm', file])
+    return sha(dir)
+  }
+
+  test('pull --ff-only fast-forwards a branch that is only behind, and refuses a diverged one without writing', async () => {
+    const { local, other } = await fixture()
+    const upstream = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await pull(local, 'ff-only')
+    expect(await sha(local)).toBe(upstream)
+    expect((await git(local, ['rev-list', '--parents', '-n1', 'HEAD'])).trim().split(' ')).toHaveLength(2)
+    const mine = await commitFile(local, 'c.txt', 'c\n')
+    await publish(other, { 'd.txt': 'd\n' }, 'd')
+    await expect(pull(local, 'ff-only')).rejects.toThrow(/fast-forward/)
+    expect(await sha(local)).toBe(mine)
+  })
+
+  test('pull --rebase --autostash rebases over uncommitted edits and puts them back', async () => {
+    const { local, other } = await fixture()
+    await commitFile(local, 'c.txt', 'c\n')
+    const upstream = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    writeFileSync(path.join(local, 'c.txt'), 'c edited\n')
+    // Without autostash, Git refuses to rebase a dirty tree.
+    await expect(pull(local, 'rebase')).rejects.toThrow()
+    await pull(local, 'rebase-autostash')
+    expect(await sha(local, 'HEAD^')).toBe(upstream)
+    expect(read(local, 'c.txt')).toBe('c edited\n')
+    expect(await git(local, ['stash', 'list'])).toBe('')
+  })
+
+  test('fetch --tags brings tags the default fetch skips, and fetch --prune drops deleted remote branches', async () => {
+    const { local, other } = await fixture()
+    await git(local, ['config', 'fetch.prune', 'false'])
+    await git(other, ['tag', 'v1'])
+    await git(other, ['push', '-q', 'origin', 'v1', 'HEAD:refs/heads/gone'])
+    await fetchAll(local)
+    expect(await git(local, ['tag', '--list'])).toBe('')
+    await fetchAll(local, 'tags')
+    expect((await git(local, ['tag', '--list'])).trim()).toBe('v1')
+    await fetchAll(local, 'fetch')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(true)
+    await git(other, ['push', '-q', 'origin', ':gone'])
+    await fetchAll(local, 'fetch')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(true)
+    await fetchAll(local, 'prune')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(false)
+  })
+
+  test('force with lease refuses an upstream that moved since the fetch, and force replaces it', async () => {
+    const { local, other } = await fixture()
+    await commitFile(local, 'c.txt', 'c\n')
+    await git(local, ['commit', '-q', '--amend', '-m', 'rewritten'])
+    const theirs = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await expect(push(local, true, 'main')).rejects.toThrow()
+    await expect(push(local, true, 'main', 'force-with-lease')).rejects.toThrow()
+    expect(await sha(other, 'origin/main')).toBe(theirs)
+    await push(local, true, 'main', 'force')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(await sha(local))
+    // After a fetch the lease holds, so a rewrite of the now-known upstream goes through.
+    await git(local, ['fetch', '-q'])
+    await git(local, ['commit', '-q', '--amend', '-m', 'again'])
+    await push(local, true, 'main', 'force-with-lease')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(await sha(local))
+  })
+
+  test('push --no-verify skips a failing pre-push hook, and a force push needs an upstream', async () => {
+    const { dir, local } = await fixture()
+    const hooks = path.join(dir, 'push-hooks')
+    mkdirSync(hooks)
+    writeFileSync(path.join(hooks, 'pre-push'), '#!/bin/sh\nexit 1\n')
+    chmodSync(path.join(hooks, 'pre-push'), 0o755)
+    await git(local, ['config', 'core.hooksPath', hooks])
+    const mine = await commitFile(local, 'c.txt', 'c\n')
+    await expect(push(local, true, 'main')).rejects.toThrow()
+    await push(local, true, 'main', 'no-verify')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(mine)
+    await expect(push(local, false, 'main', 'force')).rejects.toThrow(/no upstream/)
+  })
+
+  test('unknown sync modes are refused before Git runs', async () => {
+    const { local, other } = await fixture()
+    const head = await sha(local)
+    await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await expect(pull(local, '--autostash' as never)).rejects.toThrow('Unknown pull mode')
+    await expect(fetchAll(local, '--upload-pack=x' as never)).rejects.toThrow('Unknown fetch mode')
+    await expect(push(local, true, 'main', '--mirror' as never)).rejects.toThrow('Unknown push mode')
+    expect(await sha(local)).toBe(head)
+    expect(await git(local, ['rev-parse', 'origin/main'])).toStartWith(head)
+  })
 })

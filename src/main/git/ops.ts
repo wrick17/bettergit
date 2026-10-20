@@ -356,20 +356,37 @@ export async function stashAction(repo: string, action: 'pop' | 'apply' | 'drop'
   await git(repo, ['stash', action, ref])
 }
 
-export async function fetchAll(repo: string): Promise<void> {
-  await git(repo, ['fetch', '--all', '--prune', '--no-tags'])
+export type FetchMode = 'fetch' | 'tags' | 'prune'
+export type PullMode = 'merge' | 'ff-only' | 'rebase' | 'rebase-autostash'
+export type PushMode = 'push' | 'force' | 'force-with-lease' | 'no-verify'
+
+// Modes arrive from the renderer, so each is checked against its list before it picks Git arguments.
+function assertMode<T extends string>(kind: string, mode: unknown, modes: readonly T[]): asserts mode is T {
+  if (!modes.includes(mode as T)) throw new Error(`Unknown ${kind} mode: ${String(mode)}`)
+}
+
+const FETCH_ARGS: Record<FetchMode, string[]> = {
+  fetch: ['fetch', '--all'],
+  tags: ['fetch', '--all', '--tags'],
+  prune: ['fetch', '--all', '--prune'],
+}
+
+// With no mode, as the background fetch, native menu and Fetch All call it, every remote is fetched and pruned without tags.
+export async function fetchAll(repo: string, mode?: FetchMode): Promise<void> {
+  if (mode !== undefined) assertMode('fetch', mode, Object.keys(FETCH_ARGS) as FetchMode[])
+  await git(repo, mode === undefined ? ['fetch', '--all', '--prune', '--no-tags'] : FETCH_ARGS[mode])
 }
 
 // Git pull fetches and merges in one step, and takes no --no-overwrite-ignore. So this fetches once, then merges or
 // rebases exactly the commit that fetch brought: a commit pushed after the fetch is never written unchecked.
-export async function pull(repo: string, mode: 'merge' | 'rebase' = 'merge'): Promise<void> {
-  if (mode !== 'merge' && mode !== 'rebase') throw new Error(`Unknown pull mode: ${mode}`)
+export async function pull(repo: string, mode: PullMode = 'merge'): Promise<void> {
+  assertMode('pull', mode, ['merge', 'ff-only', 'rebase', 'rebase-autostash'])
   const branch = (await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')).trim()
   if (!branch) throw new Error('Pull needs a branch, not a detached HEAD.')
   const tracking = (await git(repo, ['rev-parse', '--symbolic-full-name', '@{u}']).catch(() => '')).trim()
   if (!tracking) throw new Error(`${branch} has no upstream branch to pull from.`)
   // Like git pull, a rebase starts from the fork point read before the fetch moves the remote branch.
-  const forkPoint = mode === 'rebase' ? (await git(repo, ['merge-base', '--fork-point', tracking, 'HEAD']).catch(() => '')).trim() : ''
+  const forkPoint = mode.startsWith('rebase') ? (await git(repo, ['merge-base', '--fork-point', tracking, 'HEAD']).catch(() => '')).trim() : ''
   // With no arguments, fetch reads the branch's remote and marks its merge branch in FETCH_HEAD, as git pull does.
   await git(repo, ['fetch'], { interactive: false })
   await integrateFetched(repo, mode, forkPoint)
@@ -384,7 +401,7 @@ export async function pullFrom(repo: string, remote: string, branch: string): Pr
 
 // Merges or rebases the one commit the last fetch marked for merging, by hash, after checking what that commit writes.
 // A merge also passes Git's own --no-overwrite-ignore; a rebase has no such flag.
-async function integrateFetched(repo: string, mode: 'merge' | 'rebase', forkPoint: string): Promise<void> {
+async function integrateFetched(repo: string, mode: PullMode, forkPoint: string): Promise<void> {
   const fetchHead = path.resolve(repo, (await git(repo, ['rev-parse', '--git-path', 'FETCH_HEAD'])).trim())
   const heads = (await fs.readFile(fetchHead, 'utf8')).split('\n').filter((line) => line && line.split('\t')[1] === '')
   if (heads.length !== 1) throw new Error(heads.length ? 'The fetch found several branches to merge. Pull one branch at a time.' : 'The fetch found no branch to merge.')
@@ -398,10 +415,20 @@ async function integrateFetched(repo: string, mode: 'merge' | 'rebase', forkPoin
     await git(repo, ['merge', '--no-overwrite-ignore', '--ff', target])
     return
   }
-  if (mode === 'rebase') {
+  if (mode === 'rebase' || mode === 'rebase-autostash') {
     const writes = await rebaseWrites(repo, target, forkPoint || target)
     await assertNoUntrackedOverwrite(repo, writes.paths, writes.moved)
-    await git(repo, ['rebase', '--onto', target, forkPoint || target])
+    // --autostash stashes tracked edits and reapplies them after; a conflicting reapply leaves them in the stash list.
+    await git(repo, ['rebase', ...(mode === 'rebase-autostash' ? ['--autostash'] : []), '--onto', target, forkPoint || target])
+    return
+  }
+  if (mode === 'ff-only') {
+    // Refused before the untracked check, so a diverged branch gets the reason that matters.
+    if (!(await gitOk(repo, ['merge-base', '--is-ancestor', 'HEAD', target]))) {
+      throw new Error('Cannot fast-forward: the branch and its upstream have diverged. Pull with merge or rebase instead.')
+    }
+    await assertNoUntrackedOverwrite(repo, await treePaths(repo, target))
+    await git(repo, ['merge', '--ff-only', '--no-overwrite-ignore', target])
     return
   }
   const merged = await previewMerge(repo, 'HEAD', target)
@@ -430,9 +457,20 @@ export async function readRemotes(repo: string): Promise<{ name: string; url: st
   return [...remotes].map(([name, url]) => ({ name, url }))
 }
 
-export async function push(repo: string, hasUpstream: boolean, branch: string): Promise<void> {
-  const args = hasUpstream ? ['push'] : ['push', '--set-upstream', 'origin', branch]
-  await git(repo, args)
+// A branch with no upstream is pushed to origin and set to track it. A force push names the upstream ref explicitly, so
+// push.default=matching can never force other branches too, and a lease checks it against its remote-tracking ref.
+export async function push(repo: string, hasUpstream: boolean, branch: string, mode: PushMode = 'push'): Promise<void> {
+  assertMode('push', mode, ['push', 'force', 'force-with-lease', 'no-verify'])
+  if (mode === 'force' || mode === 'force-with-lease') {
+    if (!hasUpstream) throw new Error(`${branch} has no upstream branch to force push to.`)
+    const remote = (await git(repo, ['config', '--get', `branch.${branch}.remote`]).catch(() => '')).trim()
+    const merge = (await git(repo, ['config', '--get', `branch.${branch}.merge`]).catch(() => '')).trim()
+    if (!remote || remote.startsWith('-') || !merge.startsWith('refs/heads/')) throw new Error(`${branch} has no remote branch to force push to.`)
+    await git(repo, ['push', mode === 'force' ? '--force' : '--force-with-lease', remote, `refs/heads/${branch}:${merge}`])
+    return
+  }
+  const verify = mode === 'no-verify' ? ['--no-verify'] : []
+  await git(repo, hasUpstream ? ['push', ...verify] : ['push', ...verify, '--set-upstream', 'origin', branch])
 }
 
 export async function clone(url: string, destination: string): Promise<void> {
