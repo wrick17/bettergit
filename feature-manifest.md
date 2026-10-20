@@ -64,6 +64,23 @@ Status key: **done** (implementation found in code), **partial** (some parts fou
 
 Feature rows describe source coverage unless they explicitly cite bounded native verification. `done` does not mean accepted on current unpublished source. Older code-read and command evidence is dated baseline evidence; it is not a fresh full-source audit. The tracker takes precedence for current acceptance. Planned and unsupported rows retain absences or limits; performance remains unmeasured. Command results are recorded separately below.
 
+## 0.0.5 workflow release (2026-10-20)
+
+`package.json` version 0.0.5. Each feature is a completed source patch being integrated; focused worker checks passed where available. Combined checks, native checks and review on the integrated branch are pending. The release build stays unsigned and not notarized.
+
+| Area | Feature | Status |
+|---|---|---|
+| History | Graph row gaps step down 11, 9, 8 ... 4 px | done, combined checks pending |
+| History | Branch switch selects and reveals the new HEAD, paging older commits with a bounded 10k search; a fetch with an unchanged HEAD keeps the selection | done, combined checks pending |
+| History | Search field fixed outside the scroller | done, combined checks pending |
+| Diff | Code diff toggle cached per view; the file stays changed in both History and Changes | done, combined checks pending |
+| Toolbar | Fetch menu: pull, pull ff-only, pull rebase, pull rebase autostash, fetch, fetch tags, fetch prune | done, combined checks pending |
+| Toolbar | Push menu: push, force, force-with-lease, no-verify; hover, click and keyboard; destructive pushes confirm with the branch name | done, combined checks pending |
+| Sidebar | Sibling reorder by drag and Alt+Arrow, persisted | done, combined checks pending |
+| Changes | Per-file Stage, Unstage and Discard with icon and label, beside the VS Code action | done, combined checks pending |
+| Changes | Per-hunk stage, unstage and discard for modified text files only; refuses when the raw diff no longer matches exactly; guards unsaved edits | done, combined checks pending |
+| Changes | Compact +/- staging in list and tree | done, combined checks pending |
+
 ## Feature table
 
 ### Sidebar and repos
@@ -100,7 +117,7 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 | Area | Feature | Status | Evidence |
 |---|---|---|---|
 | Changes | Staged, unstaged, conflict groups | done | `src/renderer/src/ChangesView.tsx` (`staged`, `unstaged`, `conflicted`). Current order is Staged, Conflicts, Unstaged in both list and tree (live in R19) |
-| Changes | Stage and unstage per file | done | `src/main/git/ops.ts` (`stagePaths`, `unstagePaths`), `ChangesView.tsx` (checkbox) |
+| Changes | Stage and unstage per file | done (0.0.5, combined checks pending) | `src/main/git/ops.ts` (`stagePaths`, `unstagePaths`), `ChangesView.tsx` compact +/- stage and unstage controls in list and tree, plus per-file icon-and-label Stage, Unstage and Discard |
 | Changes | Discard with confirm and Trash2 button in list and tree | done | `ChangesView.tsx` shared `FileRow`, `Icons.tsx` Trash2 and `ops.ts` discard remain. Y now places the tracked-unstaged-only action over the leading file icon as a sibling button; no staged, untracked or conflict discard. Busy/confirmation/propagation guards preserved; R26 native busy/pointer-leave PASS (Y) |
 | Changes | Commit with Cmd+Enter | done | `ChangesView.tsx` (`onKeyDown`, `metaKey`), `src/main/git/ops.ts` (`commit`) |
 | Changes | Untracked files shown as added in Unstaged | done | `src/main/git/diff.ts` (`untrackedFiles`), `src/main/git/status.ts` (`'?'` records) |
