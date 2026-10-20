@@ -196,7 +196,7 @@ const scenarios = {
       "globalThis.CSS?.highlights?.has('find-current') && (() => { const r = [...CSS.highlights.get('find-current')][0].getBoundingClientRect(); return r.top > 0 && r.bottom < innerHeight })()")
     await page.keyboard.press('Escape')
     await measure(page, 'big history', 'load more x5', async () => { for (let i = 0; i < 5; i++) { await page.locator('.history-list .more').click(); await page.waitForTimeout(300) } })
-    await scroll(page, 'big history list', '.history-list', 'scroll commit list', false)
+    await scroll(page, 'big history list', '.history-scroll', 'scroll commit list', false)
     await measure(page, 'big history', 'switch repo', click(page, `[role="treeitem"]:has-text("spur-snapshot")`))
     await page.close()
   },

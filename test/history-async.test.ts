@@ -97,6 +97,7 @@ Object.assign(globalThis, {
       history: (_repo, skip, limit) => Promise.resolve(pages(skip, limit).map((hash) => ({ hash, parents: [], refs: [], author: 'x', date: 0, subject: 'subject ' + hash }))),
       status: () => Promise.resolve({ upstream: null }),
       remotes: () => Promise.resolve([]),
+      searchHistory: () => Promise.resolve([]),
       commit: (...args) => later(calls.commit, args),
       mergeBase: (...args) => later(calls.mergeBase, args),
       compare: (...args) => later(calls.compare, args),
@@ -136,7 +137,7 @@ react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 const { HistoryView } = await import('./src/renderer/src/HistoryView')
 const { commitItems } = await import('./src/renderer/src/CommitMenu')
 
-const props = { repo: '/repo', head: 'H', revision: 1, listOpen: true, detailOpen: true, onError: (error) => { throw error } }
+const props = { repo: '/repo', head: 'H', branch: null, revision: 1, listOpen: true, detailOpen: true, diffOpen: true, onShowDiff() {}, onError: (error) => { throw error } }
 function render() {
   do {
     dirty = false; cursor = 0; effects = []
@@ -312,6 +313,71 @@ console.log('compare selection and restore cases passed')
   window.bettergit.history = history
 }
 console.log('first commit and author filter cases passed')
+
+// History opens on HEAD and follows it when it moves, as on a branch switch: a HEAD older than the loaded rows is paged
+// in, selected and revealed. A refresh that leaves HEAD alone, like a fetch, keeps the user's pick, and a search never pages.
+{
+  const asked = []
+  const history = window.bettergit.history
+  window.bettergit.history = (...args) => { asked.push(args.slice(1, 3)); return history(...args) }
+  pages = (skip, limit = 300) => (skip >= 900 ? [] : Array.from({ length: Math.min(limit, 900 - skip) }, (_, index) => 'P' + (skip + index)))
+  const settle = async () => { for (let i = 0; i < 8; i++) await flush() }
+  const list = () => find(tree, (p) => p.rows && p.onSelect)
+  props.head = 'P5'; props.branch = 'main'
+  await mount({ places: {} })
+  assert.equal(list().selected, 'P5', 'History did not open on HEAD')
+  assert.deepEqual(calls.commit.map((c) => c.args[1]), ['P5'], 'another commit loaded before HEAD')
+  list().onSelect('P7'); render(); await flush()
+  props.revision = 2; render(); await settle()
+  assert.equal(list().selected, 'P7', 'a refresh with HEAD unchanged moved the selection')
+  const revealed = list().reveal
+  props.head = 'P750'; props.branch = 'feature'; props.revision = 3; render(); await settle()
+  assert.equal(list().selected, 'P750', 'a branch switch did not select an older HEAD')
+  assert.equal(list().rows.length, 900)
+  assert.ok(list().reveal > revealed, 'HEAD was not scrolled into view')
+  // Detaching at the same commit focuses it again, even though it is already selected.
+  props.branch = null; render(); await settle()
+  assert.equal(list().reveal, revealed + 2)
+  // A switch made while History is closed is followed when it opens, over the commit saved before it.
+  unmount(); props.head = 'P20'; props.branch = 'other'
+  mounted = true; slots = []; render(); await settle()
+  assert.equal(list().selected, 'P20', 'a switch made while History was closed was not followed')
+  find(tree, (p) => p['aria-label'] === 'Search commit messages').onChange({ target: { value: 'nothing' } })
+  render(); await settle()
+  const before = asked.length
+  props.head = 'P880'; props.branch = 'other'; render(); await settle()
+  assert.equal(asked.length, before, 'a search paged the history for HEAD')
+  assert.equal(JSON.parse(stored.get('bettergit.session')).places['/repo'].commit, 'P20', 'a HEAD outside the search moved the selection')
+  unmount()
+  window.bettergit.history = history
+  pages = twoCommits
+  props.head = 'H'; props.branch = null; props.revision = 1
+}
+console.log('head focus cases passed')
+
+// The code diff hides on its own: the commit's details and files stay, and picking a file asks for the diff back.
+{
+  let shows = 0
+  props.diffOpen = false; props.onShowDiff = () => { shows++ }
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await detail('A')
+  assert.equal(find(tree, (p) => p.className === 'diff-pane'), undefined, 'the hidden code diff rendered')
+  assert.equal(find(tree, (p) => p.className === 'commit-subject')?.children, 'subject A')
+  const files = find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)
+  assert.deepEqual(files.files.map((file) => file.path), ['A.ts'])
+  files.onSelect('A.ts')
+  assert.equal(shows, 1, 'a file click did not show the code diff')
+  // The file is scrolled to once the shown diff lays out, two frames on.
+  const frames = []
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback)
+  props.diffOpen = true; render(); await flush()
+  assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
+  assert.equal(frames.length, 1)
+  delete globalThis.requestAnimationFrame
+  unmount()
+  props.onShowDiff = () => {}
+}
+console.log('code diff visibility cases passed')
 
 // A whitespace toggle refetches the commit. Until that reply, hunks fetched with the other option are not shown;
 // the heading and the diff toolbar stay. A reply for an option already left is dropped.
@@ -660,6 +726,8 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('paging cases passed')
   expect(child.stdout.toString()).toContain('refresh layout cases passed')
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
+  expect(child.stdout.toString()).toContain('head focus cases passed')
+  expect(child.stdout.toString()).toContain('code diff visibility cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
 })

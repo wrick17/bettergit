@@ -12,17 +12,20 @@ import { ActionMenu } from './OverflowBar'
 import { useContextLines, useIgnoreWhitespace } from './prefs'
 import { useRepoBusy } from './repo-busy'
 import { useResizable } from './Splitter'
+import { graphWidth, laneX, LANE_STEP } from './graph-x'
 import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { loadSession, rememberScroll, savePlace, savedView, saveView, useScrollMemory } from './session'
 
 const api = window.bettergit
 const PAGE = 300
+// A HEAD older than the loaded rows is paged in up to this many commits, then left unselected.
+const HEAD_REACH = 10_000
 const COMMIT_CACHE = 24
 type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
-// Geometry and colors match better-source-control's graph, so the two read the same. Like Sublime Merge, each row's graph
-// is as wide as the lanes in that row, and its text starts after them. A laid-out row never changes, so loading another
-// page or any other reply never moves a row on screen, and every commit's marker is drawn on its own lane.
-const LANE_WIDTH = 11
+// Colors match better-source-control's graph. Like Sublime Merge, lanes sit closer together further right (graph-x.ts),
+// and each row's graph is as wide as the lanes in that row, with its text starting after them. A laid-out row never
+// changes, so loading another page or any other reply never moves a row on screen, and every commit's marker is drawn on
+// its own lane.
 // A commit row holds two lines, the subject over the author and refs, so it is this many single rows tall.
 const ROW_LINES = 1.65
 // Rows scale --row-h-eff (styles.css: density plus a larger UI font). appearance.ts writes its inputs on :root, so the height
@@ -51,17 +54,22 @@ const COLORS = ['#4daafc', '#FFB000', '#DC267F', '#994F00', '#40B0A6', '#B66DFF'
 
 interface Props {
   repo: string
+  // HEAD's commit and the branch checked out (null when detached or not loaded yet). A change of either selects HEAD.
   head: string | null
+  branch: string | null
   revision: number
   // Counts explicit Refresh commands. Only those, and a new repo or filter, lay the graph out from scratch.
   refreshes: number
   listOpen: boolean
   detailOpen: boolean
+  // Whether the commit's code diff shows beside its details. Hidden, the details take the pane; a file click shows it again.
+  diffOpen: boolean
+  onShowDiff: () => void
   onError: (error: unknown) => void
   onChanged?: () => void
 }
 
-export function HistoryView({ repo, head, revision, refreshes, listOpen, detailOpen, onError, onChanged }: Props) {
+export function HistoryView({ repo, head, branch, revision, refreshes, listOpen, detailOpen, diffOpen, onShowDiff, onError, onChanged }: Props) {
   const [commits, setCommits] = useState<Commit[]>([])
   const [query, setQuery] = useState(() => loadSession().places[repo]?.query ?? '')
   // Author names the list is limited to. Empty shows every author.
@@ -99,11 +107,13 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
   const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
   // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
   const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, 'ul.commits')
-  const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen, '.commit-info button:not(.fold-strip)')
+  // The details fold only beside the code diff. Without it they are the whole pane.
+  const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen && diffOpen, '.commit-info button:not(.fold-strip)')
   const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : historyWidth
   const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : detailWidth
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
+  const listScroll = useRef<HTMLDivElement>(null)
   const selectedRef = useRef(selected)
   // Each list (repo, search, or refresh) has a generation. Replies from an older one are dropped.
   const generation = useRef(0)
@@ -144,6 +154,11 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
   // background refresh that replaces the request, or a reply that fails or is dropped, does not use it up.
   const freshPending = useRef(true)
   const shownCount = useRef(0)
+  // The HEAD commit to select once it is in the list, and a count of list replies that lets that search look again.
+  const headTarget = useRef<string | null>(null)
+  const [listReplies, setListReplies] = useState(0)
+  // Bumped to scroll the selected row into view again, as when HEAD is focused while already selected.
+  const [reveal, setReveal] = useState(0)
   shownCount.current = commits.length
   useEffect(() => {
     const gen = ++generation.current
@@ -169,7 +184,10 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     }).catch((failure: unknown) => {
       if (gen === generation.current) errorRef.current(failure)
     }).finally(() => {
-      if (gen === generation.current) pageBusy.current = false
+      if (gen !== generation.current) return
+      pageBusy.current = false
+      // A HEAD search waiting on this reply looks again, even when the list came back unchanged.
+      if (headTarget.current) setListReplies((count) => count + 1)
     })
   }, [repo, query, authors, revision, refreshes])
 
@@ -280,19 +298,54 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     return graph.current.rows
   }, [commits])
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row.commit.hash, index])), [rows])
-  // History opens on the newest commit when nothing is selected. Only once per open: a commit that fails to load is not picked again.
+  // History opens on HEAD when nothing is selected, as the list's decorations mark it, or else on the newest commit. Only
+  // once per open: a commit that fails to load is not picked again.
   const opened = useRef(false)
   useEffect(() => {
     if (opened.current || !rows.length) return
     opened.current = true
-    if (!selected) setSelected(rows[0].commit.hash)
+    if (!selected) setSelected((rows.find((row) => isHeadCommit(row.commit)) ?? rows[0]).commit.hash)
   }, [rows, selected])
+  // A branch switch, commit or pull moves HEAD, and the list follows it: HEAD is selected and scrolled into view. The HEAD
+  // last followed is saved, so a switch made while History was closed is followed when it opens, and an unchanged HEAD
+  // keeps a saved selection. A fetch moves no HEAD, so it never moves the selection.
+  const [savedHead] = useState(() => loadSession().places[repo]?.head ?? null)
+  const seenHead = useRef(savedHead)
+  useEffect(() => {
+    if (!head) return
+    const key = JSON.stringify([branch, head])
+    const first = seenHead.current === null
+    if (key === seenHead.current) return
+    seenHead.current = key
+    savePlace(repo, { head: key })
+    if (first && selectedRef.current) return
+    headTarget.current = head
+    setListReplies((count) => count + 1)
+  }, [branch, head])
+  // Selects the HEAD asked for once it is listed. A HEAD older than the loaded rows pages in, up to HEAD_REACH commits.
+  // A search lists only its matches and has no pages, so a HEAD outside it is dropped rather than paged for.
+  useEffect(() => {
+    const target = headTarget.current
+    if (!target) return
+    if (indexOf.has(target)) {
+      headTarget.current = null
+      setSelected(target)
+      setReveal((count) => count + 1)
+    } else if (query.trim() || exhausted || commits.length >= HEAD_REACH) {
+      if (!pageBusy.current) headTarget.current = null
+    } else loadMore()
+  }, [listReplies, indexOf, exhausted, query])
+  // A commit the user picks replaces a HEAD still being looked for.
+  const choose = useMemo(() => (hash: string) => {
+    headTarget.current = null
+    setSelected(hash)
+  }, [])
   const picked = commits.find((commit) => commit.hash === selected) ?? null
   // Detail for another commit is not shown, so moving the selection clears it until its own reply arrives.
   const current = detail && detail.hash === selected ? detail : null
   // The list and the open commit's diff return to their saved scroll. A diff only returns for the commit it was saved with.
   // The diff's file collapse map has its own id: a scroll write replaces whatever is stored under the scroll's id.
-  const onListScroll = useScrollMemory(list.pane, `${repo}|history-list`, 'list', rows.length > 0)
+  const onListScroll = useScrollMemory(listScroll, `${repo}|history-list`, 'list', rows.length > 0)
   // The diff on screen: the compare, or else the commit's own diff, each only for the whitespace option it was fetched with.
   // After a toggle the heading and toolbar stay, and the diff shows loading until its reply.
   const patch = compare ?? (current?.ignoreWhitespace === ignoreWhitespace ? current : cached ?? null)
@@ -378,11 +431,29 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     head,
     upstream,
     webBase,
-    onOpenChanges: () => diffRef.current?.scrollTo({ top: 0 }),
+    onOpenChanges: () => (diffOpen ? diffRef.current?.scrollTo({ top: 0 }) : onShowDiff()),
     onCompare: compareWith,
     onChanged,
     onError,
   } : null
+
+  // A file picked in the details scrolls the code diff to it. With the code diff hidden, it is shown first, and the file is
+  // scrolled to once its rows lay out, after the pane's own scroll restore.
+  const pendingFile = useRef<string | null>(null)
+  const scrollToFile = (path: string) => {
+    Array.from(diffRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
+      .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
+  }
+  const showFile = (path: string) => {
+    if (diffOpen) return scrollToFile(path)
+    pendingFile.current = path
+    onShowDiff()
+  }
+  useEffect(() => {
+    const path = pendingFile.current
+    pendingFile.current = null
+    if (diffOpen && path) requestAnimationFrame(() => requestAnimationFrame(() => scrollToFile(path)))
+  }, [diffOpen])
 
   // One page request at a time per generation. A reply for a replaced list is dropped, and rows already shown are skipped.
   const loadMore = () => {
@@ -399,13 +470,15 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     }).catch((failure: unknown) => {
       if (gen === generation.current) errorRef.current(failure)
     }).finally(() => {
-      if (gen === generation.current) pageBusy.current = false
+      if (gen !== generation.current) return
+      pageBusy.current = false
+      if (headTarget.current) setListReplies((count) => count + 1)
     })
   }
 
   // A right-click selects its commit and opens the menu for it. One function for every row, so a row re-renders only when its own props change.
   const openMenu = useMemo(() => (hash: string, x: number, y: number) => {
-    setSelected(hash)
+    choose(hash)
     setMenu({ hash, x, y })
   }, [])
 
@@ -414,7 +487,7 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
     if (!rows.length) return
     const index = selected ? indexOf.get(selected) ?? -1 : -1
     const next = Math.min(rows.length - 1, Math.max(0, index < 0 ? 0 : index + delta))
-    setSelected(rows[next].commit.hash)
+    choose(rows[next].commit.hash)
     if (!exhausted && !query.trim() && next >= rows.length - 5) void loadMore()
   }
 
@@ -443,7 +516,6 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
           className={`history-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
           ref={list.pane}
           {...list.paneHandlers}
-          onScroll={onListScroll}
         >
           {list.folded && (
             <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" onClick={list.activate}>
@@ -461,26 +533,31 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
             />
             <AuthorFilter repo={repo} authors={authors} onChange={setAuthors} onError={onError} />
           </div>
-          <CommitList
-            listRef={listRef}
-            rows={rows}
-            indexOf={indexOf}
-            selected={picked ? selected : null}
-            onSelect={setSelected}
-            onMenu={openMenu}
-            onKeyDown={onKeyDown}
-          />
-          {!exhausted && !query.trim() && <button className="more" onClick={loadMore}>Load more</button>}
-          {!rows.length && !empty && exhausted && (
-            <EmptyState compact icon="noResults" title="No matching commits" hint={authors.length ? 'Try another search, or clear the author filter.' : 'Try a different search.'} />
-          )}
+          {/* The search sits above the scroller, not over it: the list's background is translucent, so rows scrolled
+              under a sticky band would show through it. */}
+          <div className="history-scroll" ref={listScroll} onScroll={onListScroll}>
+            <CommitList
+              listRef={listRef}
+              rows={rows}
+              indexOf={indexOf}
+              selected={picked ? selected : null}
+              onSelect={choose}
+              onMenu={openMenu}
+              reveal={reveal}
+              onKeyDown={onKeyDown}
+            />
+            {!exhausted && !query.trim() && <button className="more" onClick={loadMore}>Load more</button>}
+            {!rows.length && !empty && exhausted && (
+              <EmptyState compact icon="noResults" title="No matching commits" hint={authors.length ? 'Try another search, or clear the author filter.' : 'Try a different search.'} />
+            )}
+          </div>
         </div>
       )}
       {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />}
       {detailOpen && (
         <div
           className={`commit-detail${selected && current ? ' has-commit' : ''}`}
-          style={selected && current ? { gridTemplateColumns: `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` } as CSSProperties : undefined}
+          style={selected && current ? { gridTemplateColumns: diffOpen ? `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)' } as CSSProperties : undefined}
         >
           {!selected && (empty
             ? <EmptyState icon="commit" title="No commits yet" hint="Make the first commit from the Changes tab and it shows up here." />
@@ -519,13 +596,10 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
                   )}
                   {body && <pre className="commit-body">{body}</pre>}
                 </header>
-                <CommitStat files={patch?.files ?? []} onSelect={(path) => {
-                  Array.from(diffRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? [])
-                    .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
-                }} />
+                <CommitStat files={patch?.files ?? []} onSelect={showFile} />
               </div>
-              <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />
-              <div className="diff-pane" ref={diffRef} onScroll={onDiffPaneScroll}>
+              {diffOpen && <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />}
+              {diffOpen && <div className="diff-pane" ref={diffRef} onScroll={onDiffPaneScroll}>
                 {compare && totals && (
                   <div className="compare-bar">
                     <span>
@@ -535,7 +609,7 @@ export function HistoryView({ repo, head, revision, refreshes, listOpen, detailO
                   </div>
                 )}
                 <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
-              </div>
+              </div>}
             </>
           )}
         </div>
@@ -565,7 +639,7 @@ interface Segment {
 function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
   const { commit, lane } = row
   const MID = rowHeight / 2
-  const x = (slot: number) => LANE_WIDTH * (slot + 1)
+  const x = laneX
   const color = (index: number) => COLORS[index % COLORS.length]
   const outputOf = (hash: string) => row.output.findIndex((slot) => slot?.hash === hash)
   const segments: Segment[] = []
@@ -586,11 +660,11 @@ function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
 }
 
 // A path from (x1, y1) to (x2, y2) that turns through the row's middle: down to it, across, and down again, rounding each
-// turn by up to one lane width. An end that sits on the middle line has no turn.
+// turn by up to one full lane step. An end that sits on the middle line has no turn.
 function elbow(x1: number, y1: number, x2: number, y2: number, mid: number) {
   const sign = Math.sign(x2 - x1)
   const turns = (y1 < mid ? 1 : 0) + (y2 > mid ? 1 : 0)
-  const radius = Math.min(LANE_WIDTH, mid, Math.abs(x2 - x1) / Math.max(turns, 1))
+  const radius = Math.min(LANE_STEP, mid, Math.abs(x2 - x1) / Math.max(turns, 1))
   const enter = y1 < mid ? `V${mid - radius}Q${x1} ${mid} ${x1 + sign * radius} ${mid}` : ''
   const leave = y2 > mid ? `Q${x2} ${mid} ${x2} ${mid + radius}V${y2}` : ''
   return `M${x1} ${y1}${enter}H${y2 > mid ? x2 - sign * radius : x2}${leave}`
@@ -637,7 +711,7 @@ const isHeadCommit = (commit: Commit) => commit.refs.some((ref) => ref === 'HEAD
 
 // The commit listbox. Rows are a fixed height, so only the window near the pane's viewport mounts, with padding standing in
 // for the rows above and below it. Each row draws its own slice of the graph, so lanes run on unbroken across the window.
-function CommitList({ listRef, rows, indexOf, selected, onSelect, onMenu, onKeyDown }: {
+function CommitList({ listRef, rows, indexOf, selected, onSelect, onMenu, onKeyDown, reveal }: {
   listRef: RefObject<HTMLUListElement | null>
   rows: GraphRow<Commit>[]
   indexOf: Map<string, number>
@@ -645,6 +719,7 @@ function CommitList({ listRef, rows, indexOf, selected, onSelect, onMenu, onKeyD
   onSelect: (hash: string) => void
   onMenu: (hash: string, x: number, y: number) => void
   onKeyDown: (event: KeyboardEvent<HTMLUListElement>) => void
+  reveal: number
 }) {
   const [span, setSpan] = useState({ first: 0, last: FIRST_WINDOW })
   const rowHeight = useSyncExternalStore(subscribeRowHeight, readRowHeight)
@@ -676,18 +751,16 @@ function CommitList({ listRef, rows, indexOf, selected, onSelect, onMenu, onKeyD
       resize?.disconnect()
     }
   }, [listRef, rowHeight])
-  // A new selection scrolls its row into view, mounted or not. The search field is sticky over the list's top, so a row
-  // above the fold is brought to just below it.
+  // A new selection, or a reveal of the one already selected, scrolls its row into view, mounted or not.
   const index = selected ? indexOf.get(selected) : undefined
   useEffect(() => {
     const list = listRef.current
     const element = list?.parentElement
     if (!element || !list || index === undefined) return
-    const offset = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
-    const top = offset + index * rowHeight
-    if (top - offset < element.scrollTop) element.scrollTop = top - offset
+    const top = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop + index * rowHeight
+    if (top < element.scrollTop) element.scrollTop = top
     else if (top + rowHeight > element.scrollTop + element.clientHeight) element.scrollTop = top + rowHeight - element.clientHeight
-  }, [selected])
+  }, [selected, reveal])
   const first = Math.min(span.first, rows.length)
   const last = Math.min(span.last, rows.length)
   return (
@@ -726,12 +799,12 @@ const CommitRow = memo(function CommitRow({ row, rowHeight, active, isHead, onSe
   onMenu: (hash: string, x: number, y: number) => void
 }) {
   const { commit } = row
-  const x = LANE_WIDTH * (row.lane + 1)
+  const x = laneX(row.lane)
   const nodeColor = COLORS[row.color % COLORS.length]
   const refs = commit.refs.filter((ref) => ref !== 'HEAD').map((ref) => ref.replace('HEAD -> ', ''))
   return (
     <li id={optionId(commit.hash)} className={`commit${active ? ' active' : ''}`} role="option" aria-selected={active} data-hash={commit.hash} style={{ height: rowHeight }} onClick={() => onSelect(commit.hash)} onContextMenu={(event) => { event.preventDefault(); onMenu(commit.hash, event.clientX, event.clientY) }}>
-      <svg className="lanes" width={LANE_WIDTH * (row.laneCount + 1)} height={rowHeight} aria-hidden="true">
+      <svg className="lanes" width={graphWidth(row.laneCount)} height={rowHeight} aria-hidden="true">
         {graphSegments(row, rowHeight).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
         ))}

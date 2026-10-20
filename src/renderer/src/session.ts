@@ -12,8 +12,9 @@ export interface Place {
   draft?: string
   collapsed?: string[]
   widened?: Record<string, number>
-  // History view: the search text.
+  // History view: the search text, and the branch and HEAD commit it last followed.
   query?: string
+  head?: string
 }
 
 export interface Session {
@@ -23,13 +24,15 @@ export interface Session {
   // The file or commit list, and the diff or commit detail. Either can be hidden on its own.
   listOpen: boolean
   detailOpen: boolean
+  // The code diff inside the detail pane. Hidden, the commit's details (or the change list's surface) keep the pane.
+  diffOpen: boolean
   // The file and commit open in each repository, keyed by repository path.
   places: Record<string, Place>
   // The state of each view, keyed by view id. It belongs to one key, such as a commit or a file, and comes back only for that key.
   views: Record<string, { key: string; value: unknown }>
 }
 
-const EMPTY: Session = { selected: null, tab: 'changes', sidebarOpen: true, listOpen: true, detailOpen: true, places: {}, views: {} }
+const EMPTY: Session = { selected: null, tab: 'changes', sidebarOpen: true, listOpen: true, detailOpen: true, diffOpen: true, places: {}, views: {} }
 
 export function loadSession(): Session {
   try {
