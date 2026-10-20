@@ -1,3 +1,4 @@
+import { hunkId } from './diff'
 import { gitRaw } from './exec'
 
 // Stage, unstage or discard one hunk of one file. The renderer sends the hunk it showed; the patch applied is always cut
@@ -12,6 +13,8 @@ export interface HunkRequest {
   context: number
   header: string
   lines: { type: 'context' | 'add' | 'del' | 'note'; text: string }[]
+  // The id main gave the hunk it showed. A byte that changed but decodes to the same text changes it.
+  id: string
 }
 
 // The UI's "All" level, as in diff.ts.
@@ -23,7 +26,7 @@ export function parseHunk(action: unknown, request: unknown): [HunkAction, HunkR
   if (action !== 'stage' && action !== 'unstage' && action !== 'discard') throw new Error('Unknown hunk action.')
   const value = request as Partial<HunkRequest> | null
   if (typeof value !== 'object' || value === null) throw new Error('Invalid hunk request.')
-  const { path, staged, context, header, lines } = value
+  const { path, staged, context, header, lines, id } = value
   if (typeof path !== 'string' || !path || path.length > 4096 || /[\0\n]/.test(path) || path.startsWith('/') || path.split('/').some((part) => part === '..' || part === '')) {
     throw new Error('Invalid file path.')
   }
@@ -33,13 +36,14 @@ export function parseHunk(action: unknown, request: unknown): [HunkAction, HunkR
   if (typeof context !== 'number' || !Number.isInteger(context) || context < 0 || context > MAX_CONTEXT) throw new Error('Invalid context level.')
   if (typeof header !== 'string' || !header.startsWith('@@ ') || header.includes('\n')) throw new Error('Invalid hunk header.')
   if (!Array.isArray(lines) || !lines.length) throw new Error('Invalid hunk lines.')
+  if (typeof id !== 'string' || !/^[0-9a-f]{64}$/.test(id)) throw new Error('Invalid hunk id.')
   const clean = lines.map((line) => {
     if (typeof line !== 'object' || line === null || !LINE_TYPES.has(line.type) || typeof line.text !== 'string' || line.text.includes('\n')) {
       throw new Error('Invalid hunk lines.')
     }
     return { type: line.type, text: line.text }
   })
-  return [action, { path, staged, context, header, lines: clean }]
+  return [action, { path, staged, context, header, lines: clean, id }]
 }
 
 interface RawLine { start: number; end: number; text: string }
@@ -112,7 +116,8 @@ export async function applyHunk(repo: string, action: HunkAction, request: HunkR
     const hunk = lines.slice(start, end)
     const shown = hunk.slice(1).flatMap((line) => shownLine(line.text) ?? [])
     if (hunk[0].text === request.header && shown.length === request.lines.length
-      && shown.every((line, index) => line.type === request.lines[index].type && line.text === request.lines[index].text)) found = hunk
+      && shown.every((line, index) => line.type === request.lines[index].type && line.text === request.lines[index].text)
+      && hunkId(diff.stdout.subarray(hunk[0].start, hunk[hunk.length - 1].end)) === request.id) found = hunk
     start = end
   }
   if (!found) throw new Error(`${path} changed since it was shown. Try again on the refreshed diff.`)

@@ -384,6 +384,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     const staged = action === 'unstage'
     const request: HunkRequest = {
       path, staged, context: extra[levelKey(staged, path)] ?? context, header: hunk.header, lines: hunk.lines.map(({ type, text }) => ({ type, text })),
+      id: hunk.id ?? '',
     }
     void runRepoWrite(repo, hunkKey(action, path, hunk.header), () => api.applyHunk(repo, action, request), {
       onError: (failure) => {

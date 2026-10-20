@@ -53,12 +53,13 @@ export async function stagePaths(repo: string, paths: string[]): Promise<void> {
       throw new Error(`${file} still has conflict markers. Resolve the conflict before staging it.`)
     }
   }
-  await git(repo, ['add', '--', ...paths])
+  await git(repo, ['--literal-pathspecs', 'add', '--', ...paths])
 }
 
-// The unmerged paths that git add would touch for these pathspecs. Git applies the same pathspec rules to both.
+// Paths from the file list are names, never patterns, so a file named [ab].txt cannot also act on a.txt and b.txt.
+// The unmerged paths that git add would touch for these paths, read with the same literal rule.
 async function unmergedPaths(repo: string, paths: string[]): Promise<string[]> {
-  const listed = await gitRaw(repo, ['ls-files', '-u', '-z', '--', ...paths])
+  const listed = await gitRaw(repo, ['--literal-pathspecs', 'ls-files', '-u', '-z', '--', ...paths])
   if (listed.code !== 0) throw new Error(listed.stderr || 'Git could not list the conflicts.')
   const files = listed.stdout.toString('utf8').split('\0').flatMap((record) => {
     const tab = record.indexOf('\t')
@@ -94,20 +95,18 @@ export async function unstagePaths(repo: string, paths: string[], hasHead: boole
   if (!paths.length) return
   // Before the first commit there is no HEAD to restore from, so unstaging removes entries from the index.
   if (!hasHead) {
-    await git(repo, ['rm', '--cached', '-q', '--', ...paths])
+    await git(repo, ['--literal-pathspecs', 'rm', '--cached', '-q', '--', ...paths])
     return
   }
   // Status lists a staged rename only under its new path. Restoring that alone leaves the original's deletion staged.
-  // Paths are literal, so an original name such as [ab].txt cannot also unstage a.txt.
   const originals = (await readStatus(repo)).changes.flatMap((change) =>
     change.staged && change.kind === 'renamed' && change.originalPath && paths.includes(change.path) ? [change.originalPath] : [])
-  const literal = [...new Set([...paths, ...originals])].map((file) => `:(literal)${file}`)
-  await git(repo, ['restore', '--staged', '--', ...literal])
+  await git(repo, ['--literal-pathspecs', 'restore', '--staged', '--', ...new Set([...paths, ...originals])])
 }
 
 // Discards worktree changes for tracked files. Callers must confirm with the user first.
 export async function discardPaths(repo: string, paths: string[]): Promise<void> {
-  if (paths.length) await git(repo, ['restore', '--', ...paths])
+  if (paths.length) await git(repo, ['--literal-pathspecs', 'restore', '--', ...paths])
 }
 
 export async function commit(repo: string, message: string, amend = false): Promise<void> {
@@ -417,12 +416,26 @@ async function integrateFetched(repo: string, mode: PullMode, forkPoint: string)
   }
   if (mode === 'rebase' || mode === 'rebase-autostash') {
     const writes = await rebaseWrites(repo, target, forkPoint || target)
-    await assertNoUntrackedOverwrite(repo, writes.paths, writes.moved)
     // --autostash stashes tracked edits and reapplies them after; a conflicting reapply leaves them in the stash list.
+    // That reapply is a stash apply onto the rebased tree, which replaces ignored files too, so it is checked as one.
+    // stash create makes the same stash commit the rebase will, without touching the index, the files or the stash list.
+    const stash = mode === 'rebase-autostash' ? (await git(repo, ['stash', 'create'])).trim() : ''
+    if (stash) {
+      // A rebase that stops reapplies the stash only once the conflict is resolved, onto a tree nobody can know yet.
+      if (writes.conflicted) throw new Error('This rebase would stop on a conflict, and Git would put your uncommitted changes back later without checking for ignored files. Commit or stash them first, or pull with merge.')
+      for (const side of [stash, `${stash}^2`]) {
+        const merged = await previewMerge(repo, writes.tree, side, `${stash}^1`)
+        writes.paths.push(...await treePaths(repo, merged.tree))
+        writes.moved.push(...merged.moved)
+      }
+    }
+    await assertNoUntrackedOverwrite(repo, writes.paths, writes.moved)
     await git(repo, ['rebase', ...(mode === 'rebase-autostash' ? ['--autostash'] : []), '--onto', target, forkPoint || target])
     return
   }
   if (mode === 'ff-only') {
+    // A branch that already has the fetched commit is up to date, as git pull --ff-only reports, and writes nothing.
+    if (await gitOk(repo, ['merge-base', '--is-ancestor', target, 'HEAD'])) return
     // Refused before the untracked check, so a diverged branch gets the reason that matters.
     if (!(await gitOk(repo, ['merge-base', '--is-ancestor', 'HEAD', target]))) {
       throw new Error('Cannot fast-forward: the branch and its upstream have diverged. Pull with merge or rebase instead.')
@@ -659,7 +672,8 @@ async function previewMerge(repo: string, ours: string, theirs: string, base?: s
 // A rebase checks out `onto`, then replays each local commit onto it like a cherry-pick, stopping at a conflict. Each
 // replay writes what it changes, so a file a later commit removes still lands on disk first. The commits and their order
 // are those of Git's own todo list: parents first, no merges, none whose change the upstream side already has.
-async function rebaseWrites(repo: string, onto: string, upstream: string): Promise<{ paths: string[]; moved: string[] }> {
+// `tree` is the tree the rebase ends on, or stops on when `conflicted`.
+async function rebaseWrites(repo: string, onto: string, upstream: string): Promise<{ paths: string[]; moved: string[]; tree: string; conflicted: boolean }> {
   const commits = (await git(repo, ['rev-list', '--reverse', '--topo-order', '--right-only', '--cherry-pick', '--parents', `${upstream}...HEAD`]))
     .split('\n').filter(Boolean).map((line) => line.split(' '))
   if (commits.some((parents) => parents.length > 2)) {
@@ -677,13 +691,14 @@ async function rebaseWrites(repo: string, onto: string, upstream: string): Promi
     if (backend.trim() !== 'merge') {
       // A linear branch already based on onto is up to date, so Git does not replay it.
       if (upstream === onto && commits.every((parents) => parents.length === 2)
-        && await gitOk(repo, ['merge-base', '--is-ancestor', onto, 'HEAD'])) return { paths: [], moved: [] }
+        && await gitOk(repo, ['merge-base', '--is-ancestor', onto, 'HEAD'])) return { paths: [], moved: [], tree: 'HEAD', conflicted: false }
       throw new Error('Could not check which files this rebase would write, so nothing changed: rebase.backend replays commits as patches. Pull with merge, or set rebase.backend to merge.')
     }
   }
   const paths = await treePaths(repo, onto)
   const moved: string[] = []
   let ours = onto
+  let conflicted = false
   for (const [commit, parent, ...others] of commits) {
     if (others.length) continue
     if (!parent) throw new Error('Could not check which files this rebase would write, so nothing changed: it replays a root commit.')
@@ -691,9 +706,10 @@ async function rebaseWrites(repo: string, onto: string, upstream: string): Promi
     paths.push(...(await git(repo, ['diff-tree', '-r', '-z', '--name-only', '--no-renames', '--diff-filter=d', ours, merged.tree])).split('\0').filter(Boolean))
     moved.push(...merged.moved)
     ours = merged.tree
-    if (merged.conflicted) break
+    conflicted = merged.conflicted
+    if (conflicted) break
   }
-  return { paths, moved }
+  return { paths, moved, tree: ours, conflicted }
 }
 
 async function firstParent(repo: string, commit: string): Promise<string | undefined> {
