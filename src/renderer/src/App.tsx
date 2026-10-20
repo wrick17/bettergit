@@ -43,6 +43,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(initial.sidebarOpen)
   const [listOpen, setListOpen] = useState(initial.listOpen)
   const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
+  const [diffOpen, setDiffOpen] = useState(initial.diffOpen)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // The find bar, and a counter bumped by each ⌘F so an open bar takes focus again.
@@ -70,8 +71,8 @@ export function App() {
   }, [error])
 
   useEffect(() => {
-    saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen })
-  }, [selected, tab, sidebarOpen, listOpen, detailOpen])
+    saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen })
+  }, [selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen])
 
   useEffect(() => connectRepoLocks({
     snapshot: () => api.repoLocks(),
@@ -304,6 +305,9 @@ export function App() {
             onToggleList={() => setListOpen((open) => !open)}
             detailOpen={detailOpen}
             onToggleDetail={() => setDetailOpen((open) => !open)}
+            diffOpen={diffOpen}
+            onToggleDiff={() => setDiffOpen((open) => !open)}
+            onShowDiff={() => setDiffOpen(true)}
             revision={revision}
             refreshes={refreshes}
             onChanged={() => setRevision((value) => value + 1)}
@@ -355,7 +359,7 @@ function Empty({ hasSources, onAddFolder, onClone }: {
   )
 }
 
-function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, revision, refreshes, onChanged, onError, onCleanChange, onOpenRepo }: {
+function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarOpen, onToggleSidebar, listOpen, onToggleList, detailOpen, onToggleDetail, diffOpen, onToggleDiff, onShowDiff, revision, refreshes, onChanged, onError, onCleanChange, onOpenRepo }: {
   titlebar: HTMLElement | null
   repo: RepoNode
   // The Open in … apps chosen in Settings (InstalledApp ids). Unset means the default.
@@ -369,6 +373,10 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   onToggleList: () => void
   detailOpen: boolean
   onToggleDetail: () => void
+  // The code diff inside the detail pane, shown or hidden on its own. A file picked while it is hidden shows it.
+  diffOpen: boolean
+  onToggleDiff: () => void
+  onShowDiff: () => void
   revision: number
   refreshes: number
   onChanged: () => void
@@ -503,16 +511,18 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
           <IconButton icon="panelLeft" label={paneLabel('Sidebar', sidebarOpen)} active={sidebarOpen} onClick={onToggleSidebar} />
           <IconButton icon="paneList" label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
           <IconButton icon="panelRight" label={paneLabel(tab === 'changes' ? 'Diff' : 'Commit details', detailOpen)} active={detailOpen} onClick={onToggleDetail} />
+          <IconButton icon="diff" label={paneLabel('Code diff', diffOpen)} active={diffOpen} onClick={onToggleDiff} />
         </div>
       </div>
       {tab === 'changes' && (
         <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" style={PANEL_STYLE}>
-          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} onChanged={onChanged} onError={onError} />}
+          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onChanged={onChanged} onError={onError} />}
         </div>
       )}
       {tab === 'history' && (
         <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" style={PANEL_STYLE}>
-          <HistoryView repo={repo.path} head={status?.headHash ?? null} revision={revision} refreshes={refreshes} listOpen={listOpen} detailOpen={detailOpen} onError={onError} onChanged={onChanged} />
+          <HistoryView repo={repo.path} head={status?.headHash ?? null} branch={status?.head ?? null} revision={revision} refreshes={refreshes}
+            listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onError={onError} onChanged={onChanged} />
         </div>
       )}
     </EditorContext.Provider>

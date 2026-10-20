@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig } from '../../main/config'
 import type { TreeNode } from '../../main/scan'
@@ -6,6 +6,7 @@ import { Icon, IconButton, toggleLabel } from './Icons'
 import { FolderIcon } from './FileIcon'
 import { useScrollMemory } from './session'
 import type { FoldHold } from './fold'
+import { loadTreeOrder, moveSibling, orderTree, REORDER_TYPE, saveTreeOrder, type TreeOrder } from './tree-order'
 
 interface SidebarProps {
   tree: TreeNode[]
@@ -32,6 +33,14 @@ interface ContextState {
   node: TreeNode
 }
 
+// The row being dragged to reorder, with the parent it may move within.
+interface DragRow {
+  path: string
+  parent: string
+}
+
+const isReorder = (event: DragEvent) => event.dataTransfer.types.includes(REORDER_TYPE)
+
 export function Sidebar(props: SidebarProps) {
   const [showHidden, setShowHidden] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
@@ -43,6 +52,19 @@ export function Sidebar(props: SidebarProps) {
   const [focusPath, setFocusPath] = useState<string | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const onTreeScroll = useScrollMemory(treeRef, 'sidebar', '', props.tree.length > 0)
+  const [order, setOrder] = useState<TreeOrder>(() => loadTreeOrder())
+  const tree = useMemo(() => orderTree(props.tree, order), [props.tree, order])
+  const dragRow = useRef<DragRow | null>(null)
+  const [dropAt, setDropAt] = useState<{ path: string; after: boolean } | null>(null)
+
+  // Saves the whole sibling list, which also drops paths that no longer exist under that parent.
+  const reorder = (parent: string, siblings: string[], from: string, to: string, after: boolean) => {
+    const moved = moveSibling(siblings, from, to, after)
+    if (!moved) return
+    const next = { ...order, [parent]: moved }
+    setOrder(next)
+    saveTreeOrder(next)
+  }
 
   // Popovers close on any outside click or Escape.
   useEffect(() => {
@@ -75,7 +97,7 @@ export function Sidebar(props: SidebarProps) {
     setContext({ x: event.clientX, y: event.clientY, node })
   }
 
-  const visible = visibleRows(props.tree, props.config, showHidden)
+  const visible = visibleRows(tree, props.config, showHidden)
   // The one row Tab reaches: the last focused row, else the selected one, else the first.
   const tabStop = [focusPath, props.selected].find((path) => path !== null && visible.includes(path)) ?? visible[0]
 
@@ -84,9 +106,10 @@ export function Sidebar(props: SidebarProps) {
       ref={props.fold.pane}
       {...props.fold.paneHandlers}
       className={`sidebar${dragging ? ' dragging' : ''}${props.fold.folded ? ' folded' : ''}${props.fold.held ? ' held' : ''}`}
-      onDragOver={(event) => { event.preventDefault(); setDragging(true) }}
+      // A sidebar reorder is not a folder drop: no add-folder outline, and the rows handle its drop.
+      onDragOver={(event) => { if (isReorder(event)) return; event.preventDefault(); setDragging(true) }}
       onDragLeave={() => setDragging(false)}
-      onDrop={(event) => { setDragging(false); props.onDrop(event) }}
+      onDrop={(event) => { setDragging(false); if (!isReorder(event)) props.onDrop(event) }}
     >
       {props.fold.folded && (
         <button ref={props.fold.strip} type="button" className="fold-strip" aria-label="Show repositories" onClick={props.fold.activate}>
@@ -133,7 +156,7 @@ export function Sidebar(props: SidebarProps) {
         role="tree"
         onScroll={onTreeScroll}
         onKeyDown={(event) => {
-          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          if ((event.key !== 'ArrowDown' && event.key !== 'ArrowUp') || event.altKey) return
           const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')]
           const item = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]')
           const index = item ? rows.indexOf(item) : -1
@@ -144,8 +167,11 @@ export function Sidebar(props: SidebarProps) {
         }}
       >
         {props.tree.length === 0 && <p className="tree-empty">Drop a projects folder here, or use + to add one.</p>}
-        {props.tree.map((node) => (
-          <TreeItem key={node.path} node={node} depth={0} showHidden={showHidden} {...props} onContext={openContext} tabStop={tabStop} onFocusRow={setFocusPath} />
+        {tree.map((node) => (
+          <TreeItem
+            key={node.path} {...props} node={node} depth={0} showHidden={showHidden} onContext={openContext} tabStop={tabStop} onFocusRow={setFocusPath}
+            parent="" siblings={tree.map((sibling) => sibling.path)} onReorder={reorder} dragRow={dragRow} dropAt={dropAt} onDropAt={setDropAt}
+          />
         ))}
       </div>
 
@@ -196,6 +222,68 @@ type ItemProps = SidebarProps & {
   onFocusRow: (path: string) => void
   // Inside a hidden folder: shown greyed like a hidden row, though not hidden itself.
   inHidden?: boolean
+  // Reordering: the parent path ('' at the top) and its children in displayed order, hidden ones included.
+  parent: string
+  siblings: string[]
+  onReorder: (parent: string, siblings: string[], from: string, to: string, after: boolean) => void
+  dragRow: RefObject<DragRow | null>
+  dropAt: { path: string; after: boolean } | null
+  onDropAt: (target: { path: string; after: boolean } | null) => void
+}
+
+// Alt+Up/Down moves the row past its previous or next shown sibling. Returns whether it handled the key.
+function reorderKey(props: ItemProps, key: string, row: HTMLElement): boolean {
+  if (key !== 'ArrowUp' && key !== 'ArrowDown') return false
+  const shown = props.siblings.filter((path) => props.showHidden || !props.config.hidden.includes(path))
+  const index = shown.indexOf(props.node.path)
+  const target = shown[index + (key === 'ArrowDown' ? 1 : -1)]
+  if (index >= 0 && target) {
+    props.onReorder(props.parent, props.siblings, props.node.path, target, key === 'ArrowDown')
+    // The keyed row may be moved in the DOM, which drops focus; give it back once React has committed.
+    queueMicrotask(() => { if (row.isConnected) row.focus() })
+  }
+  return true
+}
+
+// Drag handlers for a row: it moves only among its own siblings, landing before or after by pointer half.
+function dragHandlers(props: ItemProps) {
+  const { node, parent } = props
+  const accepts = (event: DragEvent) => {
+    const drag = props.dragRow.current
+    return isReorder(event) && !!drag && drag.parent === parent && drag.path !== node.path
+  }
+  const lowerHalf = (event: DragEvent) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return event.clientY > rect.top + rect.height / 2
+  }
+  return {
+    draggable: true,
+    onDragStart: (event: DragEvent) => {
+      event.dataTransfer.setData(REORDER_TYPE, node.path)
+      event.dataTransfer.effectAllowed = 'move'
+      props.dragRow.current = { path: node.path, parent }
+    },
+    onDragEnd: () => { props.dragRow.current = null; props.onDropAt(null) },
+    onDragOver: (event: DragEvent) => {
+      if (!accepts(event)) return
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'move'
+      const after = lowerHalf(event)
+      if (props.dropAt?.path !== node.path || props.dropAt.after !== after) props.onDropAt({ path: node.path, after })
+    },
+    onDrop: (event: DragEvent) => {
+      if (!accepts(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      props.onReorder(parent, props.siblings, props.dragRow.current!.path, node.path, lowerHalf(event))
+      props.dragRow.current = null
+      props.onDropAt(null)
+    },
+  }
+}
+
+function dropClass(props: ItemProps) {
+  return props.dropAt?.path === props.node.path ? (props.dropAt.after ? ' drop-after' : ' drop-before') : ''
 }
 
 function TreeItem(props: ItemProps) {
@@ -210,10 +298,15 @@ function TreeItem(props: ItemProps) {
       <div
         role="treeitem"
         aria-expanded={!collapsed}
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         tabIndex={node.path === props.tabStop ? 0 : -1}
         onFocus={(event) => { if (event.target === event.currentTarget) props.onFocusRow(node.path) }}
         onKeyDown={(event) => {
           if ((event.target as HTMLElement).closest('[role="treeitem"]') !== event.currentTarget) return
+          if (event.altKey) {
+            if (reorderKey(props, event.key, event.currentTarget)) { event.preventDefault(); event.stopPropagation() }
+            return
+          }
           if (event.target !== event.currentTarget && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
           const { key } = event
           if (key === 'Enter' || key === ' ' || (key === 'ArrowRight' && collapsed) || (key === 'ArrowLeft' && !collapsed)) {
@@ -229,7 +322,8 @@ function TreeItem(props: ItemProps) {
         }}
       >
         <div
-          className={`tree-row folder${greyed ? ' is-hidden' : ''}`}
+          className={`tree-row folder${greyed ? ' is-hidden' : ''}${dropClass(props)}`}
+          {...dragHandlers(props)}
           onClick={() => props.onToggleCollapsed(node.path)}
           onContextMenu={(event) => props.onContext(event, node)}
         >
@@ -249,7 +343,10 @@ function TreeItem(props: ItemProps) {
         {!collapsed && (
           <div role="group" className="tree-children">
             {node.children.map((child) => (
-              <TreeItem key={child.path} {...props} node={child} depth={depth + 1} inHidden={greyed} />
+              <TreeItem
+                key={child.path} {...props} node={child} depth={depth + 1} inHidden={greyed}
+                parent={node.path} siblings={node.children.map((sibling) => sibling.path)}
+              />
             ))}
           </div>
         )}
@@ -262,10 +359,15 @@ function TreeItem(props: ItemProps) {
     <div
       role="treeitem"
       aria-selected={selected === node.path}
+      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
       tabIndex={node.path === props.tabStop ? 0 : -1}
       onFocus={(event) => { if (event.target === event.currentTarget) props.onFocusRow(node.path) }}
       onKeyDown={(event) => {
         if ((event.target as HTMLElement).closest('[role="treeitem"]') !== event.currentTarget) return
+        if (event.altKey) {
+          if (reorderKey(props, event.key, event.currentTarget)) { event.preventDefault(); event.stopPropagation() }
+          return
+        }
         if (event.target !== event.currentTarget && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
@@ -277,7 +379,8 @@ function TreeItem(props: ItemProps) {
       }}
     >
       <div
-        className={`tree-row repo${selected === node.path ? ' selected' : ''}${greyed ? ' is-hidden' : ''}`}
+        className={`tree-row repo${selected === node.path ? ' selected' : ''}${greyed ? ' is-hidden' : ''}${dropClass(props)}`}
+        {...dragHandlers(props)}
         onClick={() => props.onSelect(node.path)}
         onContextMenu={(event) => props.onContext(event, node)}
       >

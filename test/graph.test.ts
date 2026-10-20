@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { layoutGraph, rollbackTargets, startGraph, type GraphRow } from '../src/main/git/graph'
+import { graphWidth, laneX } from '../src/renderer/src/graph-x'
 
 // Each commit sits on exactly one lane inside the row's width, and a line passes there: the line coming down into the
 // commit, or one leaving it for a parent.
@@ -119,5 +120,16 @@ describe('rollbackTargets', () => {
       { hash: 'other', parents: [] },
     ], 'head')
     expect([...targets].sort()).toEqual(['parent', 'root'])
+  })
+})
+
+describe('lane geometry', () => {
+  test('lanes sit closer together further right, never closer than 4px, and the graph fits the last marker', () => {
+    const xs = Array.from({ length: 40 }, (_, slot) => laneX(slot))
+    const gaps = xs.slice(1).map((x, index) => x - xs[index])
+    expect(xs.slice(0, 7)).toEqual([11, 20, 28, 35, 41, 46, 50])
+    expect(gaps.every((gap, index) => gap >= 4 && (index === 0 || gap <= gaps[index - 1]))).toBe(true)
+    // HEAD's ring reaches 7px past its lane's centre.
+    for (const count of [1, 2, 9, 40]) expect(graphWidth(count)).toBeGreaterThanOrEqual(laneX(count - 1) + 7)
   })
 })

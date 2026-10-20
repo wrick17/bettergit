@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { git } from './exec'
+import { GitError, git, gitRaw } from './exec'
 
 // "All" in the UI. Git reads it as more context than any file has, so the diff shows the whole file.
 const MAX_CONTEXT = 100000
@@ -16,6 +17,14 @@ export interface DiffLine {
 export interface DiffHunk {
   header: string
   lines: DiffLine[]
+  // Working-tree hunks only: the hash of git's raw bytes for the hunk, which hunk actions send back. Shown text cannot
+  // tell two invalid UTF-8 bytes apart, as both decode to U+FFFD; this can.
+  id?: string
+}
+
+// The hash a hunk's raw bytes are matched by, from its @@ line up to the next hunk or file.
+export function hunkId(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
 }
 
 export interface DiffFile {
@@ -39,14 +48,25 @@ export interface LineRef {
 
 export const MIN_MOVED_LINES = 3
 
-export function parseDiff(text: string): DiffFile[] {
+// Given the bytes `text` was decoded from, each hunk also gets its id. A newline byte is never part of an invalid UTF-8
+// sequence, so the text and the bytes split into the same lines.
+export function parseDiff(text: string, bytes?: Buffer): DiffFile[] {
   const files: DiffFile[] = []
   let file: DiffFile | null = null
   let hunk: DiffHunk | null = null
   let oldNo = 0
   let newNo = 0
+  let at = 0
+  let hunkAt = 0
+  const seal = (end: number) => { if (hunk && bytes) hunk.id = hunkId(bytes.subarray(hunkAt, end)) }
   for (const raw of text.split('\n')) {
+    const start = at
+    if (bytes) {
+      const newline = bytes.indexOf(0x0a, at)
+      at = newline < 0 ? bytes.length : newline + 1
+    }
     if (raw.startsWith('diff --git ')) {
+      seal(start)
       file = { oldPath: null, newPath: null, status: 'modified', binary: false, hunks: [] }
       files.push(file)
       hunk = null
@@ -60,6 +80,7 @@ export function parseDiff(text: string): DiffFile[] {
     // git prints a conflicted path as a combined diff, with two-column markers. Its lines belong to no regular file, so
     // the section is dropped here. Without this, its hunks would attach to the file printed before it.
     if (raw.startsWith('diff --cc ') || raw.startsWith('diff --combined ') || raw.startsWith('@@@')) {
+      seal(start)
       file = null
       hunk = null
       continue
@@ -75,6 +96,8 @@ export function parseDiff(text: string): DiffFile[] {
     } else if (raw.startsWith('Binary files ') || raw.startsWith('GIT binary patch')) {
       file.binary = true
     } else if (raw.startsWith('@@')) {
+      seal(start)
+      hunkAt = start
       const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
       oldNo = match ? Number(match[1]) : 0
       newNo = match ? Number(match[2]) : 0
@@ -94,6 +117,7 @@ export function parseDiff(text: string): DiffFile[] {
       }
     }
   }
+  seal(at)
   return files
 }
 
@@ -183,15 +207,18 @@ export async function compare(repo: string, from: string, to: string, ignoreWhit
 // `path` limits the diff to one file, so the view can widen its context without refetching everything.
 // Untracked files are whole-file additions, so `ignoreWhitespace` never hides them.
 export async function workingDiff(repo: string, staged: boolean, context = 3, path?: string, ignoreWhitespace = false): Promise<DiffFile[]> {
-  const args = ['diff', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', '--no-ext-diff']
+  // A file's own path is a name, never a pattern, so widening [ab].txt cannot load a.txt in its place.
+  const args = ['--literal-pathspecs', 'diff', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', '--no-ext-diff']
   if (staged) args.push('--cached')
   if (path) args.push('--', path)
-  const files = parseDiff(await git(repo, args))
+  const output = await gitRaw(repo, args)
+  if (output.code !== 0) throw new GitError(output.stderr || `git diff failed with code ${output.code}`, args, output.code, output.stderr)
+  const files = parseDiff(output.stdout.toString('utf8'), output.stdout)
   return staged ? files : [...files, ...(await untrackedFiles(repo, path))]
 }
 
 async function untrackedFiles(repo: string, only?: string): Promise<DiffFile[]> {
-  const names = (await git(repo, ['ls-files', '--others', '--exclude-standard', '-z', ...(only ? ['--', only] : [])])).split('\0').filter(Boolean)
+  const names = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...(only ? ['--', only] : [])])).split('\0').filter(Boolean)
   const files: DiffFile[] = []
   for (const name of names) {
     const content = await fs.readFile(path.join(repo, name)).catch(() => null)

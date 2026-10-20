@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
+import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
+import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { AppKind, InstalledApp } from '../shared/editors'
 import type { ColorTheme, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
@@ -28,12 +30,14 @@ const api = {
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
   discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),
+  // Main re-reads the diff and applies the hunk only if it still matches what was shown.
+  applyHunk: (repo: string, action: HunkAction, request: HunkRequest) => invoke('repo:hunk', repo, action, request) as Promise<void>,
   commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
   branches: (repo: string) => invoke('repo:branches', repo) as Promise<Branch[]>,
   switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,
   createBranch: (repo: string, name: string, base: BranchSelection) => invoke('repo:create-branch', repo, name, base) as Promise<void>,
-  fetch: (repo: string) => invoke('repo:fetch', repo),
-  pull: (repo: string, mode?: 'merge' | 'rebase') => invoke('repo:pull', repo, mode),
+  fetch: (repo: string, mode?: FetchMode) => invoke('repo:fetch', repo, mode),
+  pull: (repo: string, mode?: PullMode) => invoke('repo:pull', repo, mode),
   pullFrom: (repo: string, remote: string, branch: string) => invoke('repo:pull-from', repo, remote, branch),
   remotes: (repo: string) => invoke('repo:remotes', repo) as Promise<{ name: string; url: string }[]>,
   resetToUpstream: (repo: string) => invoke('repo:reset-upstream', repo) as Promise<string>,
@@ -47,7 +51,8 @@ const api = {
   compare: (repo: string, from: string, to: string, ignoreWhitespace = false) =>
     invoke('repo:compare', repo, from, to, ignoreWhitespace) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
   openExternal: (url: string) => invoke('system:open-url', url),
-  push: (repo: string) => invoke('repo:push', repo),
+  // Force modes need the branch and upstream the user confirmed; main refuses them if either has changed.
+  push: (repo: string, mode?: PushMode, confirmed?: { branch: string; upstream: string }) => invoke('repo:push', repo, mode, confirmed),
   stashes: (repo: string) => invoke('repo:stashes', repo) as Promise<Stash[]>,
   tags: (repo: string) => invoke('repo:tags', repo) as Promise<Tag[]>,
   worktrees: (repo: string) => invoke('repo:worktrees', repo) as Promise<Worktree[]>,

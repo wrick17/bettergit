@@ -64,6 +64,25 @@ Status key: **done** (implementation found in code), **partial** (some parts fou
 
 Feature rows describe source coverage unless they explicitly cite bounded native verification. `done` does not mean accepted on current unpublished source. Older code-read and command evidence is dated baseline evidence; it is not a fresh full-source audit. The tracker takes precedence for current acceptance. Planned and unsupported rows retain absences or limits; performance remains unmeasured. Command results are recorded separately below.
 
+## 0.0.5 workflow release (2026-10-20)
+
+`package.json` version 0.0.5. Source validation on the integrated branch (Bun 1.4.3): 403 tests passed, plus typecheck, build and `git diff --check`; an independent review's findings were fixed and covered by focused Git and History tests. Native app acceptance is a required release check and is not recorded here. The release build is unsigned and not notarized.
+
+| Area | Feature | Status |
+|---|---|---|
+| History | Graph row gaps step down 11, 9, 8 ... 4 px | done |
+| History | Branch switch selects and reveals the new HEAD, paging older commits with a bounded 10k search; a fetch with an unchanged HEAD keeps the selection | done |
+| History | Search field fixed outside the scroller | done |
+| Diff | Code diff toggle cached per view; the file stays changed in both History and Changes | done |
+| Toolbar | Fetch menu: pull, pull ff-only, pull rebase, pull rebase autostash, fetch, fetch tags, fetch prune. Rebase autostash refuses when tracked edits plus replayed commits could make reapplying the stash unsafe; ignored files such as `.env` do not block it | done |
+| Toolbar | Push menu: push, force, force-with-lease, no-verify; hover, click and keyboard; destructive pushes confirm with the branch name | done |
+| Sidebar | Sibling reorder by drag and Alt+Arrow, persisted | done |
+| Changes | Per-file Stage, Unstage and Discard with icon and label, beside the VS Code action | done |
+| Changes | Per-hunk stage, unstage and discard for modified text files only; refuses when the file's raw bytes changed since the diff loaded (Latin-1 and no-final-newline files kept intact); guards unsaved edits | done |
+| Changes | Compact +/- staging in list and tree; file actions treat paths literally | done |
+| Diff | Comparison label and exit stay visible when the diff pane is hidden | done |
+| History | A repo without HEAD shows its error once instead of retrying in a loop | done |
+
 ## Feature table
 
 ### Sidebar and repos
@@ -100,7 +119,7 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 | Area | Feature | Status | Evidence |
 |---|---|---|---|
 | Changes | Staged, unstaged, conflict groups | done | `src/renderer/src/ChangesView.tsx` (`staged`, `unstaged`, `conflicted`). Current order is Staged, Conflicts, Unstaged in both list and tree (live in R19) |
-| Changes | Stage and unstage per file | done | `src/main/git/ops.ts` (`stagePaths`, `unstagePaths`), `ChangesView.tsx` (checkbox) |
+| Changes | Stage and unstage per file | done (0.0.5) | `src/main/git/ops.ts` (`stagePaths`, `unstagePaths`), `ChangesView.tsx` compact +/- stage and unstage controls in list and tree, plus per-file icon-and-label Stage, Unstage and Discard |
 | Changes | Discard with confirm and Trash2 button in list and tree | done | `ChangesView.tsx` shared `FileRow`, `Icons.tsx` Trash2 and `ops.ts` discard remain. Y now places the tracked-unstaged-only action over the leading file icon as a sibling button; no staged, untracked or conflict discard. Busy/confirmation/propagation guards preserved; R26 native busy/pointer-leave PASS (Y) |
 | Changes | Commit with Cmd+Enter | done | `ChangesView.tsx` (`onKeyDown`, `metaKey`), `src/main/git/ops.ts` (`commit`) |
 | Changes | Untracked files shown as added in Unstaged | done | `src/main/git/diff.ts` (`untrackedFiles`), `src/main/git/status.ts` (`'?'` records) |

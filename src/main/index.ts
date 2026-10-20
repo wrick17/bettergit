@@ -14,6 +14,7 @@ import { readHistory, commitDetails, searchHistory, readAuthors } from './git/hi
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
+import { applyHunk, parseHunk } from './git/hunks'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
@@ -218,8 +219,8 @@ function registerIpc() {
   handleWrite('repo:switch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.switchBranch(repoPath, selection))
   handleWrite('repo:create-branch', (_event, repoPath: string, name: string, base: ops.BranchSelection) =>
     ops.createBranch(repoPath, name, base))
-  handleWrite('repo:fetch', (_event, repoPath: string) => ops.fetchAll(repoPath))
-  handleWrite('repo:pull', (_event, repoPath: string, mode?: 'merge' | 'rebase') => ops.pull(repoPath, mode))
+  handleWrite('repo:fetch', (_event, repoPath: string, mode?: ops.FetchMode) => ops.fetchAll(repoPath, mode))
+  handleWrite('repo:pull', (_event, repoPath: string, mode?: ops.PullMode) => ops.pull(repoPath, mode))
   handleWrite('repo:pull-from', (_event, repoPath: string, remote: string, branch: string) =>
     ops.pullFrom(repoPath, remote, branch))
   ipcMain.handle('repo:remotes', (_event, repoPath: string) => ops.readRemotes(assertKnownRepo(repoPath)))
@@ -246,11 +247,15 @@ function registerIpc() {
     if (parsed.protocol !== 'https:') throw new Error(`Refusing to open non-https link: ${url}`)
     return shell.openExternal(parsed.href)
   })
-  handleWrite('repo:push', async (_event, repoPath: string) => {
+  handleWrite('repo:push', async (_event, repoPath: string, mode?: ops.PushMode, confirmed?: { branch?: unknown; upstream?: unknown }) => {
     const repo = repoPath
     const status = await readStatus(repo)
     if (!status.head) throw new Error('Push needs a branch, not a detached HEAD.')
-    await ops.push(repo, status.upstream !== null, status.head)
+    // A force push only goes ahead for the branch and upstream the user confirmed, in case either changed since.
+    if ((mode === 'force' || mode === 'force-with-lease') && (confirmed?.branch !== status.head || confirmed?.upstream !== status.upstream)) {
+      throw new Error('The branch or its upstream changed since you confirmed. Nothing was pushed.')
+    }
+    await ops.push(repo, status.upstream !== null, status.head, mode)
   })
   ipcMain.handle('repo:tags', (_event, repoPath: string) => ops.readTags(assertKnownRepo(repoPath)))
   ipcMain.handle('repo:worktrees', (_event, repoPath: string) => ops.readWorktrees(assertKnownRepo(repoPath)))
@@ -264,6 +269,8 @@ function registerIpc() {
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>
     ops.restoreBackup(repoPath, ref))
   handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
+  // One hunk of one file. Main validates the request and cuts the patch from its own fresh diff.
+  handleWrite('repo:hunk', (_event, repoPath: string, action: unknown, request: unknown) => applyHunk(repoPath, ...parseHunk(action, request)))
   ipcMain.handle('repo:search', (_event, repoPath: string, query: string, authors?: unknown) =>
     searchHistory(assertKnownRepo(repoPath), query, authorList(authors)))
   // Reads take no lock. The save runs under the repo lock, and it checks the fingerprint the renderer got at load.

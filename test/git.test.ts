@@ -3,13 +3,15 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { git } from '../src/main/git/exec'
+import { git, gitRaw } from '../src/main/git/exec'
+import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
 import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
+import { discardPaths, fetchAll, push } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -203,6 +205,36 @@ describe('operations', () => {
       expect(readFileSync(path.join(dir, 'new.txt'), 'utf8')).toBe('renamed content\n')
       expect(statSync(path.join(dir, 'new.txt')).mode).toBe(mode)
       expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('staged edit\n')
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test('stage, unstage, discard and a widened diff act only on a file whose name is also a pattern', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-literal-'))
+    const names = ['[ab].txt', 'a.txt', 'b.txt']
+    const contents = () => names.map((name) => readFileSync(path.join(dir, name), 'utf8'))
+    const cached = async () => (await git(dir, ['diff', '--cached', '--name-only'])).trim()
+    try {
+      await git(dir, ['init', '-q'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      for (const name of names) writeFileSync(path.join(dir, name), 'original\n')
+      // Before the first commit, unstaging removes index entries.
+      await git(dir, ['add', '-A'])
+      await unstagePaths(dir, ['[ab].txt'], false)
+      expect((await git(dir, ['ls-files'])).trim().split('\n')).toEqual(['a.txt', 'b.txt'])
+      await git(dir, ['add', '-A'])
+      await git(dir, ['commit', '-qm', 'base'])
+      for (const name of names) writeFileSync(path.join(dir, name), 'valuable edit\n')
+      expect((await workingDiff(dir, false, 3, '[ab].txt')).map((file) => file.newPath)).toEqual(['[ab].txt'])
+      await stagePaths(dir, ['[ab].txt'])
+      expect(await cached()).toBe('[ab].txt')
+      await git(dir, ['add', 'a.txt', 'b.txt'])
+      await unstagePaths(dir, ['[ab].txt'], true)
+      expect(await cached()).toBe('a.txt\nb.txt')
+      await discardPaths(dir, ['[ab].txt'])
+      expect(contents()).toEqual(['original\n', 'valuable edit\n', 'valuable edit\n'])
     } finally {
       cleanup(dir)
     }
@@ -1448,4 +1480,270 @@ describe('writes that could overwrite untracked or ignored files', () => {
       expect(await git(fresh, ['status', '--porcelain'])).toBe('')
     })
   }
+
+  // The toolbar's Fetch and Push dropdown modes, against a local bare remote.
+  const commitFile = async (dir: string, file: string, text: string) => {
+    writeFileSync(path.join(dir, file), text)
+    await git(dir, ['add', file])
+    await git(dir, ['commit', '-qm', file])
+    return sha(dir)
+  }
+
+  test('pull --ff-only fast-forwards a branch that is only behind, leaves one only ahead, and refuses a diverged one without writing', async () => {
+    const { local, other } = await fixture()
+    const upstream = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await pull(local, 'ff-only')
+    expect(await sha(local)).toBe(upstream)
+    expect((await git(local, ['rev-list', '--parents', '-n1', 'HEAD'])).trim().split(' ')).toHaveLength(2)
+    const mine = await commitFile(local, 'c.txt', 'c\n')
+    await pull(local, 'ff-only')
+    expect(await sha(local)).toBe(mine)
+    await publish(other, { 'd.txt': 'd\n' }, 'd')
+    await expect(pull(local, 'ff-only')).rejects.toThrow(/fast-forward/)
+    expect(await sha(local)).toBe(mine)
+  })
+
+  test('pull --rebase --autostash rebases over uncommitted edits and puts them back, beside ignored files', async () => {
+    const { local, other } = await fixture()
+    await commitFile(local, 'c.txt', 'c\n')
+    const upstream = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    writeFileSync(path.join(local, 'c.txt'), 'c edited\n')
+    writeFileSync(path.join(local, '.env'), 'SECRET=local\n')
+    // Without autostash, Git refuses to rebase a dirty tree.
+    await expect(pull(local, 'rebase')).rejects.toThrow()
+    await pull(local, 'rebase-autostash')
+    expect(await sha(local, 'HEAD^')).toBe(upstream)
+    expect(read(local, 'c.txt')).toBe('c edited\n')
+    expect(read(local, '.env')).toBe('SECRET=local\n')
+    expect(await git(local, ['stash', 'list'])).toBe('')
+  })
+
+  test('pull --rebase --autostash refuses before writing when putting the stash back would replace an ignored file', async () => {
+    const { local, other } = await fixture()
+    await publish(other, { 'D/a': 'a\n' }, 'folder')
+    await git(local, ['pull', '-q'])
+    await git(other, ['mv', 'D', 'E'])
+    await publish(other, {}, 'rename')
+    // Only the stash holds D/new.secret. Reapplied after the upstream rename, Git puts it at E/new.secret.
+    writeFileSync(path.join(local, 'D', 'new.secret'), 'STAGED=1\n')
+    await git(local, ['add', '-f', 'D/new.secret'])
+    mkdirSync(path.join(local, 'E'))
+    writeFileSync(path.join(local, 'E', 'new.secret'), 'SECRET=local\n')
+    const head = await sha(local), staged = await index(local)
+    await expect(pull(local, 'rebase-autostash')).rejects.toThrow('files: E/new.secret. Move')
+    expect(read(local, 'E/new.secret')).toBe('SECRET=local\n')
+    expect(read(local, 'D/new.secret')).toBe('STAGED=1\n')
+    expect(await sha(local)).toBe(head)
+    expect(await index(local)).toBe(staged)
+    expect(await git(local, ['stash', 'list'])).toBe('')
+
+    // A rebase that stops on a conflict would put the stash back onto a tree no one can check yet.
+    const stops = await fixture()
+    await commitFile(stops.local, 'f.txt', 'local\n')
+    await publish(stops.other, { 'f.txt': 'upstream\n' }, 'f')
+    writeFileSync(path.join(stops.local, 'c.txt'), 'uncommitted\n')
+    await git(stops.local, ['add', 'c.txt'])
+    const stopsHead = await sha(stops.local)
+    await expect(pull(stops.local, 'rebase-autostash')).rejects.toThrow('stop on a conflict')
+    expect(await sha(stops.local)).toBe(stopsHead)
+    expect(read(stops.local, 'c.txt')).toBe('uncommitted\n')
+    expect(await git(stops.local, ['stash', 'list'])).toBe('')
+    expect(existsSync(path.join(stops.local, '.git', 'rebase-merge'))).toBe(false)
+  })
+
+  test('fetch --tags brings tags the default fetch skips, and fetch --prune drops deleted remote branches', async () => {
+    const { local, other } = await fixture()
+    await git(local, ['config', 'fetch.prune', 'false'])
+    await git(other, ['tag', 'v1'])
+    await git(other, ['push', '-q', 'origin', 'v1', 'HEAD:refs/heads/gone'])
+    await fetchAll(local)
+    expect(await git(local, ['tag', '--list'])).toBe('')
+    await fetchAll(local, 'tags')
+    expect((await git(local, ['tag', '--list'])).trim()).toBe('v1')
+    await fetchAll(local, 'fetch')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(true)
+    await git(other, ['push', '-q', 'origin', ':gone'])
+    await fetchAll(local, 'fetch')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(true)
+    await fetchAll(local, 'prune')
+    expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(false)
+  })
+
+  test('force with lease refuses an upstream that moved since the fetch, and force replaces it', async () => {
+    const { local, other } = await fixture()
+    await commitFile(local, 'c.txt', 'c\n')
+    await git(local, ['commit', '-q', '--amend', '-m', 'rewritten'])
+    const theirs = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await expect(push(local, true, 'main')).rejects.toThrow()
+    await expect(push(local, true, 'main', 'force-with-lease')).rejects.toThrow()
+    expect(await sha(other, 'origin/main')).toBe(theirs)
+    await push(local, true, 'main', 'force')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(await sha(local))
+    // After a fetch the lease holds, so a rewrite of the now-known upstream goes through.
+    await git(local, ['fetch', '-q'])
+    await git(local, ['commit', '-q', '--amend', '-m', 'again'])
+    await push(local, true, 'main', 'force-with-lease')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(await sha(local))
+  })
+
+  test('push --no-verify skips a failing pre-push hook, and a force push needs an upstream', async () => {
+    const { dir, local } = await fixture()
+    const hooks = path.join(dir, 'push-hooks')
+    mkdirSync(hooks)
+    writeFileSync(path.join(hooks, 'pre-push'), '#!/bin/sh\nexit 1\n')
+    chmodSync(path.join(hooks, 'pre-push'), 0o755)
+    await git(local, ['config', 'core.hooksPath', hooks])
+    const mine = await commitFile(local, 'c.txt', 'c\n')
+    await expect(push(local, true, 'main')).rejects.toThrow()
+    await push(local, true, 'main', 'no-verify')
+    expect(await git(local, ['ls-remote', 'origin', 'refs/heads/main'])).toStartWith(mine)
+    await expect(push(local, false, 'main', 'force')).rejects.toThrow(/no upstream/)
+  })
+
+  test('unknown sync modes are refused before Git runs', async () => {
+    const { local, other } = await fixture()
+    const head = await sha(local)
+    await publish(other, { 'b.txt': 'b\n' }, 'b')
+    await expect(pull(local, '--autostash' as never)).rejects.toThrow('Unknown pull mode')
+    await expect(fetchAll(local, '--upload-pack=x' as never)).rejects.toThrow('Unknown fetch mode')
+    await expect(push(local, true, 'main', '--mirror' as never)).rejects.toThrow('Unknown push mode')
+    expect(await sha(local)).toBe(head)
+    expect(await git(local, ['rev-parse', 'origin/main'])).toStartWith(head)
+  })
+})
+
+describe('hunk staging', () => {
+  const base = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+  const edited = base.map((line, index) => (index === 1 ? 'first change' : index === 17 ? 'second change' : line))
+  const text = (lines: string[]) => lines.join('\n') + '\n'
+
+  const dirs: string[] = []
+  afterAll(() => dirs.forEach(cleanup))
+  async function hunkRepo(committed: string | Buffer, working: string | Buffer, file = 'a.txt') {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-hunks-'))
+    dirs.push(dir)
+    await git(dir, ['init', '-q', '-b', 'main'])
+    await git(dir, ['config', 'user.email', 't@example.com'])
+    await git(dir, ['config', 'user.name', 'T'])
+    writeFileSync(path.join(dir, file), committed)
+    await git(dir, ['add', '--', file])
+    await git(dir, ['commit', '-qm', 'base'])
+    writeFileSync(path.join(dir, file), working)
+    return dir
+  }
+  const shownHunks = async (dir: string, staged: boolean, ignoreWhitespace = false, context = 3) =>
+    (await workingDiff(dir, staged, context, undefined, ignoreWhitespace))[0]?.hunks ?? []
+  const requestOf = (hunk: { header: string; lines: { type: 'context' | 'add' | 'del' | 'note'; text: string }[]; id?: string }, staged: boolean, file = 'a.txt', context = 3): HunkRequest =>
+    ({ path: file, staged, context, header: hunk.header, lines: hunk.lines.map(({ type, text }) => ({ type, text })), id: hunk.id ?? '' })
+  const indexBytes = async (dir: string, file = 'a.txt') => (await gitRaw(dir, ['show', `:${file}`])).stdout
+
+  test('stages only the chosen hunk of two, and unstages it again', async () => {
+    const dir = await hunkRepo(text(base), text(edited))
+    const hunks = await shownHunks(dir, false)
+    expect(hunks).toHaveLength(2)
+    await applyHunk(dir, 'stage', requestOf(hunks[0], false))
+    expect((await indexBytes(dir)).toString()).toBe(text(base.map((line, index) => (index === 1 ? 'first change' : line))))
+    expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe(text(edited))
+    expect((await shownHunks(dir, false)).map((hunk) => hunk.lines.filter((line) => line.type === 'add').map((line) => line.text))).toEqual([['second change']])
+    const staged = await shownHunks(dir, true)
+    await applyHunk(dir, 'unstage', requestOf(staged[0], true))
+    expect((await indexBytes(dir)).toString()).toBe(text(base))
+    expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe(text(edited))
+  })
+
+  test('discards only the chosen hunk from the working file', async () => {
+    const dir = await hunkRepo(text(base), text(edited))
+    await applyHunk(dir, 'discard', requestOf((await shownHunks(dir, false))[1], false))
+    expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe(text(base.map((line, index) => (index === 1 ? 'first change' : line))))
+    expect((await indexBytes(dir)).toString()).toBe(text(base))
+  })
+
+  test('a hunk changed since it was shown, or shown with whitespace hidden, is refused and changes nothing', async () => {
+    const dir = await hunkRepo(text(base), text(edited))
+    const shown = (await shownHunks(dir, false))[0]
+    const later = text(edited.map((line, index) => (index === 2 ? 'typed since' : line)))
+    writeFileSync(path.join(dir, 'a.txt'), later)
+    await expect(applyHunk(dir, 'stage', requestOf(shown, false))).rejects.toThrow('changed since it was shown')
+    await expect(applyHunk(dir, 'discard', requestOf(shown, false))).rejects.toThrow('changed since it was shown')
+    expect(readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe(later)
+    expect((await indexBytes(dir)).toString()).toBe(text(base))
+
+    const spaced = await hunkRepo(text(base), text(edited.map((line, index) => (index === 2 ? 'line  3' : line))))
+    const hidden = (await shownHunks(spaced, false, true))[0]
+    await expect(applyHunk(spaced, 'stage', requestOf(hidden, false))).rejects.toThrow('changed since it was shown')
+    expect((await indexBytes(spaced)).toString()).toBe(text(base))
+  })
+
+  test('refuses untracked, added, binary and conflicted files, and malformed requests', async () => {
+    const dir = await hunkRepo(text(base), text(edited))
+    writeFileSync(path.join(dir, 'new.txt'), 'fresh\n')
+    const added = { path: 'new.txt', staged: false, context: 3, header: '@@ -0,0 +1 @@', lines: [{ type: 'add' as const, text: 'fresh' }], id: '' }
+    await expect(applyHunk(dir, 'stage', added)).rejects.toThrow('changed since it was shown')
+    await git(dir, ['add', 'new.txt'])
+    await expect(applyHunk(dir, 'unstage', { ...added, staged: true })).rejects.toThrow('not a modified text file')
+    const binary = await hunkRepo(Buffer.from([0, 1, 2, 10]), Buffer.from([0, 1, 3, 10]), 'b.bin')
+    await expect(applyHunk(binary, 'stage', { ...added, path: 'b.bin' })).rejects.toThrow('not a modified text file')
+    const conflicted = await hunkRepo('base\n', 'base\n')
+    await git(conflicted, ['checkout', '-qb', 'side'])
+    writeFileSync(path.join(conflicted, 'a.txt'), 'side\n')
+    await git(conflicted, ['commit', '-qam', 'side'])
+    await git(conflicted, ['checkout', '-q', 'main'])
+    writeFileSync(path.join(conflicted, 'a.txt'), 'main\n')
+    await git(conflicted, ['commit', '-qam', 'main'])
+    await expect(git(conflicted, ['merge', '-q', 'side'])).rejects.toThrow()
+    await expect(applyHunk(conflicted, 'stage', { ...added, path: 'a.txt' })).rejects.toThrow('merge conflict')
+
+    const request = requestOf((await shownHunks(dir, false))[0], false)
+    expect(() => parseHunk('stage', { ...request, staged: true })).toThrow('cannot be staged')
+    expect(() => parseHunk('unstage', request)).toThrow('cannot be unstaged')
+    expect(() => parseHunk('reset', request)).toThrow('Unknown hunk action')
+    for (const bad of ['../a.txt', '/etc/passwd', 'a//b', '', 'a\0b']) expect(() => parseHunk('stage', { ...request, path: bad })).toThrow('Invalid file path')
+    for (const bad of [-1, 1.5, 100001, '3']) expect(() => parseHunk('stage', { ...request, context: bad })).toThrow('Invalid context')
+    expect(() => parseHunk('stage', { ...request, lines: [{ type: 'weird', text: '' }] })).toThrow('Invalid hunk lines')
+    expect(() => parseHunk('stage', { ...request, id: undefined })).toThrow('Invalid hunk id')
+    expect(parseHunk('discard', request)).toEqual(['discard', request])
+  })
+
+  // 0xe9 and 0xf1 are invalid UTF-8 alone, so both show as U+FFFD and the shown hunk reads the same before and after.
+  for (const [ending, end] of [['a final newline', '\n'], ['no final newline', '']] as const) {
+    test(`a hunk whose raw bytes changed to text that reads the same is refused for every action, with ${ending}`, async () => {
+      const bytes = (byte: number) => Buffer.concat([Buffer.from(text(base.slice(0, 19))), Buffer.from([byte]), Buffer.from(end)])
+      const dir = await hunkRepo(bytes(0x61), bytes(0xe9))
+      const shown = (await shownHunks(dir, false))[0]
+      writeFileSync(path.join(dir, 'a.txt'), bytes(0xf1))
+      const fresh = (await shownHunks(dir, false))[0]
+      expect({ header: fresh.header, lines: fresh.lines }).toEqual({ header: shown.header, lines: shown.lines })
+      for (const action of ['stage', 'discard'] as const) {
+        await expect(applyHunk(dir, action, requestOf(shown, false))).rejects.toThrow('changed since it was shown')
+      }
+      expect(readFileSync(path.join(dir, 'a.txt')).equals(bytes(0xf1))).toBe(true)
+      expect((await indexBytes(dir)).equals(bytes(0x61))).toBe(true)
+
+      writeFileSync(path.join(dir, 'a.txt'), bytes(0xe9))
+      await git(dir, ['add', 'a.txt'])
+      const staged = (await shownHunks(dir, true))[0]
+      writeFileSync(path.join(dir, 'a.txt'), bytes(0xf1))
+      await git(dir, ['add', 'a.txt'])
+      await expect(applyHunk(dir, 'unstage', requestOf(staged, true))).rejects.toThrow('changed since it was shown')
+      expect((await indexBytes(dir)).equals(bytes(0xf1))).toBe(true)
+      // The current hunk still applies, byte for byte.
+      await applyHunk(dir, 'unstage', requestOf((await shownHunks(dir, true))[0], true))
+      expect((await indexBytes(dir)).equals(bytes(0x61))).toBe(true)
+      expect(readFileSync(path.join(dir, 'a.txt')).equals(bytes(0xf1))).toBe(true)
+    })
+  }
+
+  test('keeps Latin-1 bytes and a missing final newline exact', async () => {
+    const latin = (words: string[]) => Buffer.concat(words.map((word, index) => Buffer.concat([Buffer.from(word, 'latin1'), index < words.length - 1 ? Buffer.from('\n') : Buffer.alloc(0)])))
+    const before = [...base.slice(0, 19), 'café']
+    const after = [...base.slice(0, 19), 'naïve']
+    after[1] = 'résumé'
+    const dir = await hunkRepo(latin(before), latin(after))
+    const hunks = await shownHunks(dir, false)
+    const last = hunks[hunks.length - 1]
+    expect(last.lines.some((line) => line.type === 'note')).toBe(true)
+    await applyHunk(dir, 'stage', requestOf(last, false))
+    expect((await indexBytes(dir)).equals(latin([...base.slice(0, 19), 'naïve']))).toBe(true)
+    expect(readFileSync(path.join(dir, 'a.txt')).equals(latin(after))).toBe(true)
+  })
 })

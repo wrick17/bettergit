@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
-import type { Marks, Mounted, Preview } from './cm-editor'
+import type { Marks, Mounted, Preview, Stretch } from './cm-editor'
+import { hunkStarts } from './hunk-rows'
 import { confirmOverBlur } from './confirm'
 import { Code } from './DiffView'
 import { cachedTokens, tokenize, type Segment } from './highlight'
@@ -51,6 +52,12 @@ function useDraft(key: string) {
     draftListeners.add(listener)
     return () => { draftListeners.delete(listener) }
   }, () => drafts.get(key))
+}
+
+// Whether a working file has unsaved edits. False without an edit bridge.
+export function useUnsaved(edit: EditBridge | undefined, path: string) {
+  const draft = useDraft(edit ? keyOf(edit.repo, path) : '')
+  return !!edit && dirty(draft)
 }
 
 // Drafts outlive their editors, so selecting, scrolling or switching views keeps them. Staging or discarding a file takes
@@ -192,7 +199,7 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
 // the editable text; removed lines and the old side are read-only. Until the file loads, or when it cannot be edited,
 // `fallback` (the read-only diff) shows instead. A clean editor goes back to static rows once it loses focus and leaves
 // the screen; one with unsaved text stays.
-export function EditableDiff({ edit, path, hunks, layout, language, fallback, fileIndex, onExtent }: {
+export function EditableDiff({ edit, path, hunks, layout, language, fallback, fileIndex, onExtent, hunkActions }: {
   edit: EditBridge
   path: string
   hunks: DiffHunk[]
@@ -201,6 +208,9 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   fallback: ReactNode
   fileIndex: number
   onExtent: (pixels: number) => void
+  // Each Git hunk's stage and discard controls. The static rows show them above the hunk's first change; the editor
+  // does not, so typing never races a hunk write.
+  hunkActions?: (hunk: DiffHunk) => ReactNode
 }) {
   const key = keyOf(edit.repo, path)
   const wrap = useWordWrap()
@@ -479,7 +489,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   if (active) return <div className="diff-editor" ref={host} />
   return (
     <EditorPreview model={preview!} tokens={tokens} layout={layout} opened={opened} onOpen={openFold} fileIndex={fileIndex} hunks={hunks} path={path}
-      onActivate={activate} />
+      onActivate={activate} hunkActions={hunkActions} />
   )
 }
 
@@ -521,12 +531,17 @@ type Row =
   | { kind: 'fold'; a: number; b: number; count: number }
   // Split only: a stretch of a change, each side's lines stacked, so the shorter side ends in blank space like the editor.
   | { kind: 'block'; a: number; countA: number; b: number; countB: number; marksA: Marks[]; marksB: Marks[] }
+  // A Git hunk's actions, above the change it starts with. `a` and `b` are that change's, so find can address the row.
+  | { kind: 'hunk'; a: number; b: number; hunk: number }
 
 const BLOCK_LINES = 50
+const HUNK_ROW = 28
 
-function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<number>): Row[] {
+function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<number>, starts: Map<Stretch, number>): Row[] {
   const rows: Row[] = []
   for (const stretch of model.stretches) {
+    const hunk = starts.get(stretch)
+    if (hunk !== undefined) rows.push({ kind: 'hunk', a: stretch.a, b: stretch.b, hunk })
     if (stretch.kind === 'same' || (stretch.kind === 'fold' && opened.has(stretch.b))) {
       for (let index = 0; index < stretch.count; index++) rows.push({ kind: 'same', a: stretch.a + index, b: stretch.b + index })
     } else if (stretch.kind === 'fold') {
@@ -547,12 +562,12 @@ function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<nu
   return rows
 }
 
-const rowLines = (row: Row) => (row.kind === 'block' ? Math.max(row.countA, row.countB) : 1)
-const rowHeight = (row: Row, line: number) => (row.kind === 'fold' ? 28 : rowLines(row) * line)
+const rowLines = (row: Row) => (row.kind === 'block' ? Math.max(row.countA, row.countB) : row.kind === 'hunk' ? 0 : 1)
+const rowHeight = (row: Row, line: number) => (row.kind === 'fold' ? 28 : row.kind === 'hunk' ? HUNK_ROW : rowLines(row) * line)
 
 // The editor's look as plain rows: its gutter, change bar, tints, changed text, folds, font and wrapping, so the editor
 // can replace it without anything moving. Rows mount in chunks near the screen, like the read-only diff.
-function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, fileIndex, hunks, path }: {
+function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, fileIndex, hunks, path, hunkActions }: {
   model: Preview
   tokens: { old: Segment[][] | null; new: Segment[][] | null } | null
   layout: 'unified' | 'split'
@@ -562,9 +577,12 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
   fileIndex: number
   hunks: DiffHunk[]
   path: string
+  hunkActions?: (hunk: DiffHunk) => ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const rows = useMemo(() => previewRows(model, layout, opened), [model, layout, opened])
+  const actions = !!hunkActions
+  const starts = useMemo(() => (actions ? hunkStarts(model, hunks) : new Map<Stretch, number>()), [model, hunks, actions])
+  const rows = useMemo(() => previewRows(model, layout, opened, starts), [model, layout, opened, starts])
   // The diff's own row for each file line, so find and the layout switch can address these rows like the read-only diff.
   const sources = useMemo(() => {
     const map = new Map<string, string>()
@@ -641,6 +659,7 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     </div>
   )
   const render = (row: Row, index: number): ReactNode => {
+    if (row.kind === 'hunk') return <div key={index} className="ed-hunk-actions">{hunkActions?.(hunks[row.hunk])}</div>
     if (layout === 'unified') {
       if (row.kind === 'fold') return <Fragment key={index}>{fold(row, 'b')}</Fragment>
       if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks, false), false)}</Fragment>
@@ -679,7 +698,7 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
       aria-label={`Contents of ${path}. Click a line or press Enter to edit it.`}
       onMouseDown={rememberDown}
       onMouseUp={(event) => {
-        if (dragged(event) || (event.target as Element).closest('.ed-fold')) return
+        if (dragged(event) || (event.target as Element).closest('.ed-fold, .ed-hunk-actions')) return
         const caret = caretAt(event.clientX, event.clientY)
         const at = caret && lineColumnAt(caret.node, caret.offset)
         if (at) onActivate(at, (caret!.node instanceof Element ? caret!.node : caret!.node.parentElement)?.closest('.ed-line') ?? null)

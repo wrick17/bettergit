@@ -276,6 +276,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .row-icon svg { width: 14px; height: 14px; }
 .tree-row .icon-button { width: 20px; height: 20px; color: var(--muted-on); }
 .tree-row .icon-button svg { width: 14px; height: 14px; }
+/* Reorder drop marker: a line on the edge of the sibling row the dragged row will land beside. */
+.tree-row:is(.drop-before, .drop-after)::after {
+  content: ''; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.tree-row.drop-before::after { top: -1px; }
+.tree-row.drop-after::after { bottom: -2px; }
 
 /* Sits in the tab row, between the toolbar and the diff toolbar, so it covers neither. */
 .banner {
@@ -363,7 +370,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Changes and history: a list column, a divider, and a reading surface. Column widths are set inline. */
 .changes, .history { position: relative; display: grid; flex: 1; min-height: 0; }
 .file-list, .history-list { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--list); overflow: hidden; }
-.history-list { overflow: auto; }
+/* The commit list scrolls under a fixed search band, so no row shows through the translucent list background. */
+.history-scroll { flex: 1; min-height: 0; overflow: auto; }
+.history-list.folded:not(.held) > .history-scroll { flex: none; height: 0; }
 .diff-pane, .commit-detail { min-width: 0; min-height: 0; overflow: auto; background: var(--content); }
 /* Diff panes keep their place with their own anchoring (scroll-anchor.ts), so the browser's must not adjust as well. */
 .diff-pane { overflow-anchor: none; }
@@ -398,9 +407,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 /* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
 .group > .tree { padding-left: 8px; }
-.group li .check { display: inline-flex; }
-/* Tree file rows: checkbox, icon, and name share one centre line. */
-.tree-row .check { display: inline-flex; flex: none; align-items: center; }
+/* Staging: each file row starts with a compact + (stage) or − (unstage) button on the row's centre line. */
+.icon-button.stage-toggle { flex: none; width: 20px; height: 20px; color: var(--muted-on); }
+.icon-button.stage-toggle svg { width: 14px; height: 14px; }
 .tree-row .file { flex: 1; min-width: 0; align-items: center; }
 .file-with-action { display: flex; flex: 1; min-width: 0; }
 /* The action overlays the 14px leading icon; only its hit area extends 3px around it. */
@@ -504,11 +513,14 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-file > header .path-name { font-weight: 600; }
-/* Header controls: a chevron that collapses the file, and a checkbox wrapper. The icon swaps between right and down, so it does not rotate. */
+/* Header controls: a chevron that collapses the file. The icon swaps between right and down, so it does not rotate. */
 .diff-file-toggle { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
 .diff-file-toggle svg { width: 10px; height: 10px; }
-.diff-file-stage { display: inline-grid; flex: none; place-items: center; }
-.diff-file-stage input:disabled { opacity: 0.4; cursor: default; }
+/* Staging: named actions (Discard, Stage, Unstage) in file headers and hunk rows. They keep their size as paths truncate. */
+.icon-button.with-text { width: auto; height: 24px; grid-auto-flow: column; gap: 5px; padding: 0 8px; font: 500 calc(12.5px + var(--ui-delta))/1 var(--font-ui); white-space: nowrap; }
+.icon-button.with-text svg { width: 13px; height: 13px; }
+.diff-file-actions, .hunk-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.hunk-actions .icon-button.with-text { height: 22px; font-size: calc(12px + var(--ui-delta)); }
 /* Open in editor keeps its size when the path truncates, so the header's file counts stay visible. */
 .diff-file-open { flex: none; display: inline-grid; place-items: center; }
 /* Stands in for a collapsed file's hunks. */
@@ -518,6 +530,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .stat .add { color: var(--add); }
 .stat .del { color: var(--del); }
 .hunk-header { padding: 0 20px; line-height: 28px; color: var(--text-3); background: var(--sunken); font-size: calc(12px + var(--ui-delta)); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* Staging: a hunk header with actions keeps its 28px row; the header text truncates first. */
+.hunk-header.with-actions { display: flex; align-items: center; gap: 8px; height: 28px; padding-right: 8px; }
+.hunk-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The editable view's hunk row, above the change a Git hunk starts with. Same height and tint as a hunk header. */
+.ed-hunk-actions { display: flex; align-items: center; justify-content: flex-end; height: 28px; padding: 0 8px; background: var(--sunken); }
 /* Expand rows sit above and below a hunk. */
 .hunk-expand { display: flex; justify-content: center; align-items: center; gap: 4px; height: 20px; padding: 0 20px; font: calc(12px + var(--ui-delta))/1 var(--font-ui); }
 .hunk-expand-btn { height: 20px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
@@ -557,7 +574,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .split-cell .gutter { width: 44px; }
 
 /* History: a graph-first list with a search field, and a detail header above the diff. */
-.search { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; margin: 0; padding: 12px 12px 10px; background: var(--list); }
+.search { position: relative; flex: none; display: flex; align-items: center; gap: 6px; margin: 0; padding: 12px 12px 10px; background: var(--list); }
 .search > svg { position: absolute; top: 28px; left: 24px; width: 14px; height: 14px; transform: translateY(-50%); fill: none; stroke: var(--text-3); stroke-width: 2.2; stroke-linecap: round; pointer-events: none; }
 .search > input { flex: 1; width: 100%; min-width: 0; padding-left: 30px; height: 32px; border-radius: 999px; background: var(--sunken); }
 .commits { list-style: none; margin: 0; padding: 0 6px; outline: none; }
