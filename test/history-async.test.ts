@@ -355,6 +355,44 @@ console.log('first commit and author filter cases passed')
 }
 console.log('head focus cases passed')
 
+// A page that fails while History looks for an older HEAD reports once and stops; it does not ask again on its own.
+// Load more retries on purpose, and a new HEAD starts a new search.
+{
+  const asked = []
+  const errors = []
+  const history = window.bettergit.history
+  let failing = true
+  window.bettergit.history = (...args) => {
+    asked.push(args[1])
+    return failing && args[1] >= 300 ? Promise.reject(new Error('page failed')) : history(...args)
+  }
+  pages = (skip, limit = 300) => (skip >= 900 ? [] : Array.from({ length: Math.min(limit, 900 - skip) }, (_, index) => 'P' + (skip + index)))
+  const settle = async () => { for (let i = 0; i < 8; i++) await flush() }
+  const list = () => find(tree, (p) => p.rows && p.onSelect)
+  props.onError = (error) => errors.push(error.message)
+  props.head = 'P5'; props.branch = 'main'
+  await mount({ places: {} })
+  props.head = 'P750'; props.branch = 'feature'; render(); await settle(); await settle()
+  assert.deepEqual(asked, [0, 300], 'a failed page was asked for again without a new action')
+  assert.deepEqual(errors, ['page failed'])
+  assert.equal(list().selected, 'P5', 'a failed HEAD search moved the selection')
+  // Load more is the user's retry. It pages without restarting the abandoned HEAD search.
+  failing = false
+  find(tree, (p) => p.className === 'more').onClick(); await settle()
+  assert.deepEqual(asked, [0, 300, 300])
+  assert.equal(list().selected, 'P5')
+  // A new HEAD searches again.
+  props.head = 'P700'; props.branch = 'other'; render(); await settle()
+  assert.equal(list().selected, 'P700')
+  assert.deepEqual(errors, ['page failed'])
+  unmount()
+  window.bettergit.history = history
+  pages = twoCommits
+  props.head = 'H'; props.branch = null
+  props.onError = (error) => { throw error }
+}
+console.log('head search failure cases passed')
+
 // The code diff hides on its own: the commit's details and files stay, and picking a file asks for the diff back.
 {
   let shows = 0
@@ -367,6 +405,17 @@ console.log('head focus cases passed')
   assert.deepEqual(files.files.map((file) => file.path), ['A.ts'])
   files.onSelect('A.ts')
   assert.equal(shows, 1, 'a file click did not show the code diff')
+  // A comparison keeps its label and exit with the code diff hidden, so its files are not read as the commit's own.
+  const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist).files.map((file) => file.path)
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await answer(calls.compare, 'A', () => ({ files: [{ path: 'vs-base.ts', hunks: [] }], moves: [] }))
+  assert.deepEqual(stat(), ['vs-base.ts'])
+  assert.equal(shown().bar, 'compare', 'a hidden code diff hid the comparison it lists')
+  find(tree, (p) => p.children === 'Exit comparison').onClick()
+  render(); await flush()
+  assert.equal(shown().bar, null)
+  assert.deepEqual(stat(), ['A.ts'], 'exiting the comparison did not return to the commit files')
   // The file is scrolled to once the shown diff lays out, two frames on.
   const frames = []
   globalThis.requestAnimationFrame = (callback) => frames.push(callback)
@@ -727,6 +776,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('refresh layout cases passed')
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('head focus cases passed')
+  expect(child.stdout.toString()).toContain('head search failure cases passed')
   expect(child.stdout.toString()).toContain('code diff visibility cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')

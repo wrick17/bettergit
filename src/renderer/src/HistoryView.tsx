@@ -182,7 +182,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       setCommits((shown) => !fresh && JSON.stringify(shown) === JSON.stringify(rows) ? shown : rows)
       setExhausted(rows.length < limit)
     }).catch((failure: unknown) => {
-      if (gen === generation.current) errorRef.current(failure)
+      if (gen !== generation.current) return
+      // A failed read ends a HEAD search, so it reports once instead of retrying on its own. A new HEAD, or the user, starts another.
+      headTarget.current = null
+      errorRef.current(failure)
     }).finally(() => {
       if (gen !== generation.current) return
       pageBusy.current = false
@@ -455,6 +458,17 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     if (diffOpen && path) requestAnimationFrame(() => requestAnimationFrame(() => scrollToFile(path)))
   }, [diffOpen])
 
+  // The comparison on screen and its exit. It heads the code diff, or the file list while the code diff is hidden, so the
+  // files are never read as the selected commit's own.
+  const compareBar = compare && totals && selected ? (
+    <div className="compare-bar">
+      <span>
+        Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. {diffOpen ? 'Stats at left are' : 'Files below are'} for this comparison.
+      </span>
+      <button className="ghost" onClick={() => setTarget(null)}>Exit comparison</button>
+    </div>
+  ) : null
+
   // One page request at a time per generation. A reply for a replaced list is dropped, and rows already shown are skipped.
   const loadMore = () => {
     if (pageBusy.current) return
@@ -468,7 +482,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       })
       setExhausted(more.length < PAGE)
     }).catch((failure: unknown) => {
-      if (gen === generation.current) errorRef.current(failure)
+      if (gen !== generation.current) return
+      // As for the list: a failed page ends a HEAD search rather than asking for the same page again. Load more retries.
+      headTarget.current = null
+      errorRef.current(failure)
     }).finally(() => {
       if (gen !== generation.current) return
       pageBusy.current = false
@@ -596,18 +613,12 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   )}
                   {body && <pre className="commit-body">{body}</pre>}
                 </header>
+                {!diffOpen && compareBar}
                 <CommitStat files={patch?.files ?? []} onSelect={showFile} />
               </div>
               {diffOpen && <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />}
               {diffOpen && <div className="diff-pane" ref={diffRef} onScroll={onDiffPaneScroll}>
-                {compare && totals && (
-                  <div className="compare-bar">
-                    <span>
-                      Comparing <code className="hash">{selected.slice(0, 7)}</code> with {compare.label}. Diff has {totals.files} files, +{totals.adds} −{totals.dels}. Stats at left are for this comparison.
-                    </span>
-                    <button className="ghost" onClick={() => setTarget(null)}>Exit comparison</button>
-                  </div>
-                )}
+                {compareBar}
                 <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
               </div>}
             </>
