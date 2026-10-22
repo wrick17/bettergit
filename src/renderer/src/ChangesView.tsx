@@ -4,6 +4,7 @@ import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, DiffHunk, MovedBlock } from '../../main/git/diff'
 import type { HunkAction, HunkRequest } from '../../main/git/hunks'
 import { DiffView, fileKey, hunkKey } from './DiffView'
+import { DiffRail } from './DiffRail'
 import { confirmOverBlur } from './confirm'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
 import { adoptView, mountNear, suspendHold } from './scroll-anchor'
@@ -13,7 +14,7 @@ import { EmptyState } from './EmptyState'
 import { splitPath } from './paths'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
-import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savePlace, useScrollMemory } from './session'
 import { orderFiles, shareFiles, swapFile } from './widen'
@@ -28,7 +29,7 @@ interface Props {
   revision: number
   listOpen: boolean
   detailOpen: boolean
-  // The code diff beside the file list. Hidden, the list keeps its place and fills the pane. A picked file asks to show it.
+  // The code diff beside the file list. Collapsed, its rail can be previewed or expanded by picking a file.
   diffOpen?: boolean
   onShowDiff?: () => void
   onChanged: () => void
@@ -112,10 +113,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const allFor = useRef<string | null>(null)
   // The status on screen: the one the shown diffs were loaded for. A refresh changes rows and diffs together once its diffs land.
   const shownStatus = all && allFor.current === allKey ? all.status : status
-  // The file list folds beside the diff. A held list grows in flow, so the diff shifts. A clean tree stays open, so its empty space stays in use.
+  // App resolves responsive folding and explicit pins. A held rail expands in flow beside its neighbour.
   // Unfiltered status, not the whitespace-filtered diff: a whitespace-only change is still a change.
   const clean = shownStatus.changes.length === 0
-  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen && !clean, '.changes-view-toggle button')
+  const list = useFoldHold<HTMLDivElement>(!listOpen, '.changes-view-toggle button')
+  const code = useFoldHold<HTMLDivElement>(!detailOpen, '.diff-toolbar button:not(:disabled)')
   const onListScroll = useScrollMemory(listRef, `${repo}|changes-list`, 'list', true)
   // The selected view shows the selection's whole section, so its load and scroll memory depend on the section, not the
   // file. Picking another file in the same section only scrolls to it.
@@ -473,7 +475,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const choose = (change: FileChange, isStaged: boolean) => {
     revealRef.current = { path: change.path, from: scrollKey }
     setSelection({ path: change.path, staged: isStaged })
-    if (!diffOpen) onShowDiff?.()
+    if (!detailOpen) onShowDiff?.()
   }
 
   const discardPath = async (path: string) => {
@@ -581,9 +583,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }
 
   return (
-    <div className="changes" style={{ gridTemplateColumns: listOpen && detailOpen ? `${list.collapsed ? STRIP_WIDTH : listWidth}px ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)' }}>
+    <div className="changes" style={{ gridTemplateColumns: `${list.collapsed ? `${STRIP_WIDTH}px` : code.collapsed ? 'minmax(0, 1fr)' : `${listWidth}px`} ${list.collapsed ? 0 : GUTTER}px ${code.collapsed ? `${STRIP_WIDTH}px` : 'minmax(0, 1fr)'}` }}>
       {/* Clicking empty space in the list clears the file selection, so the right pane shows every change again. */}
-      {listOpen && (
         <div
           className={`file-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
           ref={list.pane}
@@ -594,7 +595,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           }}
         >
           {list.folded && (
-            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show file list" onClick={list.activate}>
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show file list" aria-expanded={!list.collapsed} onClick={list.activate}>
               <Icon name="chevron" />
               <span className="fold-label">{selection ? splitPath(selection.path).name : `${changes.length} changed · ${staged.length} staged`}</span>
             </button>
@@ -678,10 +679,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
             </button>
           </div>
         </div>
-      )}
-      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />}
-      {detailOpen && (
-        <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll}>
+      <div className={`splitter${list.collapsed || code.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />
+      <DiffRail fold={code} label={selection ? splitPath(selection.path).name : 'Changes and staged diffs'}>
+        <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll} tabIndex={-1}>
           {!selection && shownStatus.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
           {/* Every conflicted file, each in its own section, in the list's order. Picking one scrolls to it. */}
           {(!selection || conflictSelected) && order.conflicts.length > 0 && <h2 className="diff-section">Conflicts <span className="count">{order.conflicts.length}</span></h2>}
@@ -743,7 +743,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
             />
           )}
         </div>
-      )}
+      </DiffRail>
     </div>
   )
 }

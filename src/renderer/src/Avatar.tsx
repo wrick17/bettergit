@@ -23,17 +23,22 @@ function pictureOf(email: string): Promise<string | null> {
 
 // The author's picture once it loads, else the first letter of the name. Decorative: the name is always shown beside it.
 export function Avatar({ name, email, className = 'avatar' }: { name: string; email?: string; className?: string }) {
-  const [url, setUrl] = useState(() => (email ? pictures.get(email) ?? null : null))
+  const address = email?.trim().toLowerCase() ?? ''
+  const [picture, setPicture] = useState(() => ({ email: address, url: pictures.get(address) ?? null }))
+  const url = picture.email === address ? picture.url : pictures.get(address) ?? null
   useEffect(() => {
-    if (!email) return setUrl(null)
+    if (!address) return setPicture({ email: address, url: null })
     let stale = false
-    setUrl(pictures.get(email) ?? null)
-    void pictureOf(email).then((next) => { if (!stale) setUrl(next) })
+    setPicture({ email: address, url: pictures.get(address) ?? null })
+    void pictureOf(address).then((next) => { if (!stale) setPicture({ email: address, url: next }) })
     return () => { stale = true }
-  }, [email])
+  }, [address])
   return (
     <span className={className} aria-hidden="true">
-      {url ? <img src={url} alt="" draggable={false} /> : name.charAt(0).toUpperCase()}
+      {url ? <img key={address} src={url} alt="" draggable={false} onError={() => {
+        pictures.delete(address)
+        setPicture({ email: address, url: null })
+      }} /> : name.charAt(0).toUpperCase()}
     </span>
   )
 }

@@ -1,10 +1,8 @@
 import { createHash } from 'node:crypto'
 import { fetchOk, readBody } from './extensions'
 
-// Author pictures from Gravatar, by the SHA-256 of the trimmed, lowercased email. d=404 makes an author without one a
-// 404, so the renderer keeps its initial. Main fetches from this one host only, never a URL from the renderer, sends no
-// cookies, caps the size, and hands back the picture re-encoded by `decode` as a data URL, which the renderer's CSP allows.
-const HOST = 'gravatar.com'
+// GitHub noreply addresses identify an author directly; other emails keep the hashed Gravatar lookup.
+// Main constructs every URL, restricts redirect hosts, and returns only decoded image data to the renderer.
 const SIZE = 64
 const MAX_BYTES = 512 * 1024
 const MAX_EMAIL = 320
@@ -13,8 +11,8 @@ const CACHE = 500
 const RETRY_MS = 15 * 60_000
 const LOADS = 4
 
-const allowed = async (url: URL) => url.protocol === 'https:' && url.hostname === HOST && !url.port && !url.username && !url.password
 const IMAGE = /^image\/(?:png|jpeg|gif|webp)$/
+const GITHUB_EMAIL = /^(?:([1-9][0-9]*)\+)?([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)@users\.noreply\.github\.com$/
 
 export function avatars(decode: (data: Buffer) => string | null) {
   const cache = new Map<string, { url: string | null; at: number }>()
@@ -31,9 +29,12 @@ export function avatars(decode: (data: Buffer) => string | null) {
       queue.shift()?.()
     }
   }
-  const load = async (hash: string): Promise<string | null> => {
+  const load = async (url: string): Promise<string | null> => {
     try {
-      const response = await fetchOk(`https://${HOST}/avatar/${hash}?s=${SIZE}&d=404`, allowed)
+      const host = new URL(url).hostname
+      const allowed = async (next: URL) => next.protocol === 'https:' && !next.port && !next.username && !next.password
+        && (next.hostname === host || (host === 'github.com' && next.hostname === 'avatars.githubusercontent.com'))
+      const response = await fetchOk(url, allowed)
       if (!IMAGE.test(response.headers.get('content-type')?.split(';')[0].trim() ?? '')) {
         await response.body?.cancel()
         return null
@@ -52,7 +53,12 @@ export function avatars(decode: (data: Buffer) => string | null) {
     if (hit && (hit.url || Date.now() - hit.at < RETRY_MS)) return Promise.resolve(hit.url)
     let request = pending.get(hash)
     if (!request) {
-      request = slot(() => load(hash)).then((url) => {
+      const github = address.match(GITHUB_EMAIL)
+      // The numeric ID stays with the author after a GitHub username change.
+      const source = github
+        ? github[1] ? `https://avatars.githubusercontent.com/u/${github[1]}?s=${SIZE}` : `https://github.com/${github[2]}.png?size=${SIZE}`
+        : `https://gravatar.com/avatar/${hash}?s=${SIZE}&d=404`
+      request = slot(() => load(source)).then((url) => {
         pending.delete(hash)
         cache.delete(hash)
         cache.set(hash, { url, at: Date.now() })

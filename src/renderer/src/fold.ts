@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type KeyboardEvent } from 'react'
 
 // Window widths below which a pane folds into a strip. The order is strict: the sidebar folds first, then the list,
 // then the commit details. The stops are suggested values (1600, 1280, 1040), so every stage sits above the 900px
@@ -85,6 +85,14 @@ export function useFoldHold<T extends HTMLElement>(folded: boolean, focusTarget:
       },
       onBlur: (event: FocusEvent<HTMLElement>) => {
         if (!pane.current?.contains(event.relatedTarget as Node | null)) setKeyboard(false)
+      },
+      onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+        if (!folded || event.key !== 'Escape' || event.defaultPrevented) return
+        event.preventDefault()
+        window.clearTimeout(leave.current)
+        setPointer(false)
+        setKeyboard(false)
+        strip.current?.focus()
       },
     },
     // A divider beside a folded pane keeps the pane held while the pointer crosses it, so a divider drag is not cut off.

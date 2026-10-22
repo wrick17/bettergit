@@ -61,6 +61,9 @@ export interface ConflictDecor {
 
 export type DiffLayout = 'unified' | 'split'
 
+// Two code columns need room for their 44px gutters, signs, padding and the 36px move-arrow channel.
+const MIN_SPLIT_WIDTH = 900
+
 // One layout choice shared by every diff on screen. Kept in the renderer, so it needs no restart.
 const LAYOUT_KEY = 'bettergit.diffLayout'
 const listeners = new Set<() => void>()
@@ -106,6 +109,27 @@ export function useDiffLayout(): DiffLayout {
 // left one place and landed in another can be followed by reading the labels.
 export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, persist, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
   const layoutNow = useDiffLayout()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [limited, setLimited] = useState(false)
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') return
+    let previous = false
+    const measure = (width: number) => {
+      const next = width < MIN_SPLIT_WIDTH
+      if (next === previous) return
+      if (layout === 'split') captureSourceAnchors()
+      previous = next
+      setLimited(next)
+    }
+    measure(container.getBoundingClientRect().width)
+    const observer = new ResizeObserver(([entry]) => measure(entry.contentRect.width))
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
+  // The conflict resolver owns its layout controls and aligns its actions to the selected mode.
+  const autoUnified = limited && layoutNow === 'split' && !conflict
+  const effectiveLayout = autoUnified ? 'unified' : layoutNow
   const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   const formatNow = useFormatMarkdown()
@@ -114,7 +138,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   const { files, moves } = useColouredFirst(nextFiles, nextMoves, refreshOf, overrides, edit)
   // The toolbar shows a toggle at once. The diff under it re-renders from these deferred copies, in the background and
   // interruptibly, so a click, scroll or second toggle never waits for a large diff to rebuild.
-  const shown = useDeferredValue(useMemo(() => ({ files, moves, layout: layoutNow, format: formatNow }), [files, moves, layoutNow, formatNow]))
+  const shown = useDeferredValue(useMemo(() => ({ files, moves, layout: effectiveLayout, format: formatNow }), [files, moves, effectiveLayout, formatNow]))
   const onShownRef = useRef(onShown)
   onShownRef.current = onShown
   useLayoutEffect(() => {
@@ -122,13 +146,12 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   }, [shown.files, nextFiles])
   const current = shown.layout
   const formatMarkdown = shown.format
-  const { labels, anchors } = useMemo(() => indexMoves(shown.files, shown.moves), [shown])
-  const stats = useMemo(() => shown.files.map(countLines), [shown])
+  const { labels, anchors } = useMemo(() => indexMoves(shown.files, shown.moves), [shown.files, shown.moves])
+  const stats = useMemo(() => shown.files.map(countLines), [shown.files])
   // Conflict markers are source, so a conflicted file is never formatted.
   const formatted = formatMarkdown && !conflict
   useTokens(shown.files, overrides)
   usePreparedMarkdown(shown.files, labels, formatted || !!conflict)
-  const containerRef = useRef<HTMLDivElement>(null)
   const headId = `move-head-${useId().replace(/\W/g, '')}`
   const [arrows, setArrows] = useState<Arrow[]>([])
   const [height, setHeight] = useState(0)
@@ -264,6 +287,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
       {toolbar && <div className="diff-toolbar">
         <span className="moves">
           {moves.length > 0 ? `${moves.length} moved block${moves.length === 1 ? '' : 's'} detected` : ''}
+          {autoUnified && `${moves.length > 0 ? ' · ' : ''}Unified for narrow pane`}
         </span>
         <div className="diff-toolbar-controls">
           {shown.files.length > 0 && (
@@ -305,7 +329,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
               />
             </div>
           )}
-          <LayoutToggles />
+          <LayoutToggles autoUnified={autoUnified} />
           {/* Last in the row. It stays visible when the filtered patch is empty, so the user can turn the option off in place. */}
           <div className="diff-layout-toggle" role="group" aria-label="Whitespace">
             <IconButton
@@ -351,15 +375,15 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   )
 })
 
-// The layout and word wrap toggles. Both are app-wide, so every diff on screen follows them.
-export function LayoutToggles() {
+// The layout preference and word wrap toggles are app-wide. Narrow panes can temporarily show unified.
+export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }) {
   const layoutNow = useDiffLayout()
   const wrap = useWordWrap()
   return (
     <>
       <div className="diff-layout-toggle" role="group" aria-label="Diff layout">
-        <IconButton icon="rows" label={layoutNow === 'unified' ? 'Unified layout: on' : toggleLabel('Unified layout: off', 'show one column')} active={layoutNow === 'unified'} onClick={() => setDiffLayout('unified')} />
-        <IconButton icon="columns" label={layoutNow === 'split' ? 'Split layout: on' : toggleLabel('Split layout: off', 'show side by side')} active={layoutNow === 'split'} onClick={() => setDiffLayout('split')} />
+        <IconButton icon="rows" label={autoUnified ? toggleLabel('Unified layout: automatic for this narrow pane', 'keep one column') : layoutNow === 'unified' ? 'Unified layout: on' : toggleLabel('Unified layout: off', 'show one column')} active={layoutNow === 'unified'} onClick={() => setDiffLayout('unified')} />
+        <IconButton icon="columns" label={autoUnified ? 'Split layout: selected; unified while this pane is narrow' : layoutNow === 'split' ? 'Split layout: on' : toggleLabel('Split layout: off', 'show side by side')} active={layoutNow === 'split'} onClick={() => setDiffLayout('split')} />
       </div>
       {/* Long lines wrap, or scroll sideways per file. Formatted Markdown is prose, so it always wraps. */}
       <div className="diff-layout-toggle" role="group" aria-label="Word wrap">
