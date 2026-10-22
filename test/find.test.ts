@@ -37,3 +37,37 @@ test('find matches rows that are not mounted, and the placeholder holding them i
   // Reveal scrolls to the placeholder whose range holds the line, so its rows mount.
   expect(html).toContain('data-lines="0:0:2400:2449"')
 })
+
+// A collapsed file shows only its header, with no row standing in for its hunks. Find reads the header's toggle to open it.
+const COLLAPSED = `
+Object.assign(globalThis, {
+  localStorage: { getItem: () => null, setItem: () => undefined },
+  window: { addEventListener: () => undefined, setTimeout, clearTimeout, innerHeight: 900 },
+  requestAnimationFrame: (callback) => setTimeout(callback, 0),
+})
+const react = require('react')
+react.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { DiffView } = await import('./src/renderer/src/DiffView')
+const { revealMatch } = await import('./src/renderer/src/find')
+const files = [{ oldPath: 'package-lock.json', newPath: 'package-lock.json', status: 'modified', binary: false,
+  hunks: [{ header: '@@ -1 +1 @@', lines: [{ type: 'del', text: 'old needle', oldNo: 1 }, { type: 'add', text: 'new needle', newNo: 1 }] }] }]
+const html = renderToStaticMarkup(react.createElement(DiffView, { files, moves: [] }))
+const collapsed = /<header><button class="diff-file-toggle" aria-expanded="false"/.test(html)
+const opened = []
+const section = { closest: () => null, scrollIntoView: () => undefined, querySelector: (selector) => (selector === ':scope > header > .diff-file-toggle[aria-expanded="false"]' && collapsed ? {} : null), querySelectorAll: () => [] }
+const container = { querySelector: (selector) => (selector === '[data-file-index="0"]' ? section : null), querySelectorAll: () => [], closest: () => null }
+await revealMatch({ container: { current: container }, files, openFile: (path) => opened.push(path) }, { file: 0, hunk: 0, line: 1, start: 4, end: 10 })
+console.log(JSON.stringify({ html, collapsed, opened }))
+`
+
+test('a collapsed file shows only its header, and find opens it to reveal a match', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', COLLAPSED], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.exitCode, child.stderr.toString()).toBe(0)
+  const { html, collapsed, opened } = JSON.parse(child.stdout.toString()) as { html: string; collapsed: boolean; opened: string[] }
+  expect(collapsed).toBe(true)
+  expect(html).not.toContain('changed line')
+  expect(html).not.toContain('Show diff')
+  expect(html).not.toContain('needle')
+  expect(opened).toEqual(['package-lock.json'])
+})

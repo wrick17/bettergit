@@ -8,7 +8,7 @@ import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
 import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
-import { readHistory, fileHistory, readAuthors, searchHistory } from '../src/main/git/history'
+import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
 import { discardPaths, fetchAll, push } from '../src/main/git/ops'
@@ -1745,5 +1745,87 @@ describe('hunk staging', () => {
     await applyHunk(dir, 'stage', requestOf(last, false))
     expect((await indexBytes(dir)).equals(latin([...base.slice(0, 19), 'naïve']))).toBe(true)
     expect(readFileSync(path.join(dir, 'a.txt')).equals(latin(after))).toBe(true)
+  })
+})
+
+describe('commit details', () => {
+  test('reads identity, parents, unfiltered first-parent stats, exact message, signature state and current refs', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-details-'))
+    try {
+      await git(dir, ['init', '-q', '-b', 'main'])
+      await git(dir, ['config', 'user.email', 'ann@example.com'])
+      await git(dir, ['config', 'user.name', 'Ann'])
+      await git(dir, ['config', 'commit.gpgsign', 'false'])
+      writeFileSync(path.join(dir, 'a.txt'), 'one\ntwo\n')
+      await git(dir, ['add', '-A'])
+      await git(dir, ['commit', '-qm', 'root'])
+      writeFileSync(path.join(dir, 'a.txt'), 'one\nTWO\nthree\n')
+      writeFileSync(path.join(dir, 'b.bin'), Buffer.from([0, 1, 2, 0, 255]))
+      await git(dir, ['add', '-A'])
+      // A field separator in the message must not shift the fields before it.
+      const message = 'second\n\nbody with \x1f inside\nand more'
+      await git(dir, ['-c', 'user.name=Cy', '-c', 'user.email=cy@example.com', 'commit', '-q', '--author=Bo <bo@example.com>', '-m', message])
+      const head = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      const rootHash = (await git(dir, ['rev-parse', 'HEAD~1'])).trim()
+      const details = await commitDetails(dir, head)
+      expect(details.hash).toBe(head)
+      expect(details.tree).toBe((await git(dir, ['rev-parse', 'HEAD^{tree}'])).trim())
+      expect(details.parents).toEqual([rootHash])
+      expect(details.author).toEqual({ name: 'Bo', email: 'bo@example.com' })
+      expect(details.committer).toEqual({ name: 'Cy', email: 'cy@example.com' })
+      expect(Number.isNaN(Date.parse(details.authorDate))).toBe(false)
+      expect(details.body).toBe(message)
+      expect(details.signature).toEqual({ code: 'N', signer: '' })
+      expect(details.stats).toEqual({ files: 2, additions: 2, deletions: 1 })
+      // A root commit counts against the empty tree.
+      expect((await commitDetails(dir, rootHash)).stats).toEqual({ files: 1, additions: 2, deletions: 0 })
+      expect(parseNumstat('-\t-\tb.bin\n3\t1\ta.txt\n')).toEqual({ files: 2, additions: 3, deletions: 1 })
+
+      await git(dir, ['branch', 'topic'])
+      await git(dir, ['tag', '-a', 'v1', '-m', 'v1'])
+      await git(dir, ['update-ref', 'refs/remotes/origin/main', head])
+      await git(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+      expect(await commitRefs(dir, head)).toEqual({ branches: ['main', 'topic'], remotes: ['origin/main'], tags: ['v1'] })
+      // The same hash after a branch moves away reads its refs again.
+      await git(dir, ['branch', '-f', 'topic', rootHash])
+      expect((await commitRefs(dir, head)).branches).toEqual(['main'])
+      await expect(commitRefs(dir, '--all')).rejects.toThrow('Invalid commit hash.')
+      await expect(commitDetails(dir, 'HEAD')).rejects.toThrow('Invalid commit hash.')
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test('a bounded read fails on time even when a helper keeps git\'s output open', async () => {
+    const started = Date.now()
+    await expect(git(tmpdir(), ['-c', 'alias.stall=!sleep 5 & sleep 5', 'stall'], { timeoutMs: 200 })).rejects.toThrow('timed out')
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  test('tells a good SSH signature apart from one git cannot check', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-signed-'))
+    try {
+      const key = path.join(dir, 'key')
+      const made = Bun.spawnSync(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'ann', '-f', key])
+      if (made.exitCode !== 0) return
+      await git(dir, ['init', '-q', '-b', 'main', 'repo'])
+      const work = path.join(dir, 'repo')
+      await git(work, ['config', 'user.email', 'ann@example.com'])
+      await git(work, ['config', 'user.name', 'Ann'])
+      await git(work, ['config', 'gpg.format', 'ssh'])
+      await git(work, ['config', 'user.signingkey', `${key}.pub`])
+      await git(work, ['commit', '-q', '-S', '--allow-empty', '-m', 'signed'])
+      const head = (await git(work, ['rev-parse', 'HEAD'])).trim()
+      const signers = path.join(dir, 'allowed')
+      writeFileSync(signers, `ann@example.com ${readFileSync(`${key}.pub`, 'utf8')}`)
+      await git(work, ['config', 'gpg.ssh.allowedSignersFile', signers])
+      expect((await commitDetails(work, head)).signature?.code).toBe('G')
+      // No signer list: the signature cannot be checked, which is not the same as a bad one.
+      await git(work, ['config', '--unset', 'gpg.ssh.allowedSignersFile'])
+      const unchecked = (await commitDetails(work, head)).signature
+      expect(unchecked?.code === 'B').toBe(false)
+    } finally {
+      cleanup(dir)
+    }
   })
 })

@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
 import type { Marks, Mounted, Preview, Stretch } from './cm-editor'
+import { wholeLine } from './intraline'
 import { hunkStarts } from './hunk-rows'
 import { confirmOverBlur } from './confirm'
 import { Code } from './DiffView'
@@ -526,11 +527,11 @@ function usePreviewTokens(preview: Preview | null, language: string | null, layo
 
 type Row =
   | { kind: 'same'; a: number; b: number }
-  | { kind: 'add'; b: number; marks: Marks }
-  | { kind: 'del'; a: number; marks: Marks }
+  | { kind: 'add'; b: number; marks: Marks; whole: boolean }
+  | { kind: 'del'; a: number; marks: Marks; whole: boolean }
   | { kind: 'fold'; a: number; b: number; count: number }
   // Split only: a stretch of a change, each side's lines stacked, so the shorter side ends in blank space like the editor.
-  | { kind: 'block'; a: number; countA: number; b: number; countB: number; marksA: Marks[]; marksB: Marks[] }
+  | { kind: 'block'; a: number; countA: number; b: number; countB: number; marksA: Marks[]; marksB: Marks[]; wholeA: boolean[]; wholeB: boolean[] }
   // A Git hunk's actions, above the change it starts with. `a` and `b` are that change's, so find can address the row.
   | { kind: 'hunk'; a: number; b: number; hunk: number }
 
@@ -546,16 +547,21 @@ function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<nu
       for (let index = 0; index < stretch.count; index++) rows.push({ kind: 'same', a: stretch.a + index, b: stretch.b + index })
     } else if (stretch.kind === 'fold') {
       rows.push(stretch)
-    } else if (layout === 'unified') {
-      for (let index = 0; index < stretch.countA; index++) rows.push({ kind: 'del', a: stretch.a + index, marks: stretch.marksA[index] })
-      for (let index = 0; index < stretch.countB; index++) rows.push({ kind: 'add', b: stretch.b + index, marks: stretch.marksB[index] })
+    }
+    if (stretch.kind !== 'chunk') continue
+    const wholeA = stretch.marksA.map((marks, index) => wholeLine((model.old[stretch.a + index - 1] ?? '').length, marks, stretch.countB))
+    const wholeB = stretch.marksB.map((marks, index) => wholeLine((model.lines[stretch.b + index - 1] ?? '').length, marks, stretch.countA))
+    if (layout === 'unified') {
+      for (let index = 0; index < stretch.countA; index++) rows.push({ kind: 'del', a: stretch.a + index, marks: stretch.marksA[index], whole: wholeA[index] })
+      for (let index = 0; index < stretch.countB; index++) rows.push({ kind: 'add', b: stretch.b + index, marks: stretch.marksB[index], whole: wholeB[index] })
     } else {
       // shortcut: a change longer than BLOCK_LINES lines lines its sides up again every BLOCK_LINES lines, where the editor
       // aligns only at the change's end; they differ only when long lines wrap differently, upgrade if that shows.
       for (let at = 0; at < Math.max(stretch.countA, stretch.countB); at += BLOCK_LINES) {
         const countA = Math.max(0, Math.min(BLOCK_LINES, stretch.countA - at))
         const countB = Math.max(0, Math.min(BLOCK_LINES, stretch.countB - at))
-        rows.push({ kind: 'block', a: stretch.a + at, countA, b: stretch.b + at, countB, marksA: stretch.marksA.slice(at, at + countA), marksB: stretch.marksB.slice(at, at + countB) })
+        rows.push({ kind: 'block', a: stretch.a + at, countA, b: stretch.b + at, countB, marksA: stretch.marksA.slice(at, at + countA), marksB: stretch.marksB.slice(at, at + countB),
+          wholeA: wholeA.slice(at, at + countA), wholeB: wholeB.slice(at, at + countB) })
       }
     }
   }
@@ -649,8 +655,8 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
       <button type="button" className="ed-fold-bar" onClick={() => onOpen(row.b)}>{row.count} unchanged lines</button>
     </div>
   )
-  const line = (side: 'a' | 'b', kind: string, number: number, body: ReactNode, editable: boolean) => (
-    <div className={`ed-line ${kind} side-${side}`} data-new={editable ? number : undefined} data-old={side === 'a' ? number : undefined}
+  const line = (side: 'a' | 'b', kind: string, number: number, body: ReactNode, editable: boolean, whole = false) => (
+    <div className={`ed-line ${kind} side-${side}${whole ? ' full' : ''}`} data-new={editable ? number : undefined} data-old={side === 'a' ? number : undefined}
       data-source-row={sources.get(`${side === 'a' ? 'o' : 'n'}${number}`) ?? (side === 'a' ? sources.get(`n${number}`) : undefined)}
       data-source-side={layout === 'split' ? (side === 'a' ? 'old' : 'new') : undefined}>
       <span className="ed-num">{kind === 'del' ? '' : number}</span>
@@ -662,8 +668,8 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     if (row.kind === 'hunk') return <div key={index} className="ed-hunk-actions">{hunkActions?.(hunks[row.hunk])}</div>
     if (layout === 'unified') {
       if (row.kind === 'fold') return <Fragment key={index}>{fold(row, 'b')}</Fragment>
-      if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks, false), false)}</Fragment>
-      if (row.kind === 'add') return <Fragment key={index}>{line('b', 'add', row.b, code('new', row.b, row.marks), true)}</Fragment>
+      if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks, false), false, row.whole)}</Fragment>
+      if (row.kind === 'add') return <Fragment key={index}>{line('b', 'add', row.b, code('new', row.b, row.marks), true, row.whole)}</Fragment>
       if (row.kind === 'same') {
         return (
           <div key={index} className="ed-line same side-b" data-new={row.b} data-old={row.a} data-source-row={sources.get(`n${row.b}`)}>
@@ -682,8 +688,8 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     if (row.kind !== 'block') return null
     return (
       <div key={index} className="ed-pair">
-        <div className="ed-side">{Array.from({ length: row.countA }, (_, offset) => <Fragment key={offset}>{line('a', 'old', row.a + offset, code('old', row.a + offset, row.marksA[offset]), false)}</Fragment>)}</div>
-        <div className="ed-side">{Array.from({ length: row.countB }, (_, offset) => <Fragment key={offset}>{line('b', 'add', row.b + offset, code('new', row.b + offset, row.marksB[offset]), true)}</Fragment>)}</div>
+        <div className="ed-side">{Array.from({ length: row.countA }, (_, offset) => <Fragment key={offset}>{line('a', 'old', row.a + offset, code('old', row.a + offset, row.marksA[offset]), false, row.wholeA[offset])}</Fragment>)}</div>
+        <div className="ed-side">{Array.from({ length: row.countB }, (_, offset) => <Fragment key={offset}>{line('b', 'add', row.b + offset, code('new', row.b + offset, row.marksB[offset]), true, row.wholeB[offset])}</Fragment>)}</div>
       </div>
     )
   }

@@ -88,6 +88,7 @@ const twoCommits = () => ['A', 'B']
 let pages = twoCommits
 const stored = new Map()
 const calls = { commit: [], compare: [], mergeBase: [] }
+const refReads = []
 const later = (list, args) => new Promise((resolve, reject) => list.push({ args, resolve, reject }))
 Object.assign(globalThis, {
   localStorage: { getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
@@ -101,6 +102,7 @@ Object.assign(globalThis, {
       commit: (...args) => later(calls.commit, args),
       mergeBase: (...args) => later(calls.mergeBase, args),
       compare: (...args) => later(calls.compare, args),
+      commitRefs: (_repo, hash) => { refReads.push(hash); return Promise.resolve({ branches: ['moved' + refReads.length], remotes: [], tags: [] }) },
     },
   },
   document: { activeElement: null, querySelector: () => null },
@@ -218,6 +220,22 @@ const compareBase = () => commitItems(find(tree, (p) => p.input?.onCompare).inpu
   unmount()
 }
 console.log('paging cases passed')
+
+// Refs move while a hash stays: the selected commit's branches and tags are read again on each refresh, and the
+// facts show the newest read.
+{
+  refReads.length = 0
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await detail('A')
+  const reads = refReads.length
+  assert.ok(reads >= 1 && refReads.every((hash) => hash === 'A'))
+  props.revision = 2; render(); await flush()
+  assert.equal(refReads.length, reads + 1, 'a refresh did not read the refs again')
+  assert.deepEqual(find(tree, (p) => p.details && 'refs' in p).refs.branches, ['moved' + refReads.length])
+  props.revision = 1
+  unmount()
+}
+console.log('commit ref refresh cases passed')
 
 // A background refresh keeps the lanes on screen; an explicit refresh lays the graph out afresh, even when a background
 // refresh starts before its reply. The reply it replaced is dropped and does not use up the fresh layout.
@@ -773,6 +791,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.exitCode, child.stderr.toString()).toBe(0)
   expect(child.stdout.toString()).toContain('compare selection and restore cases passed')
   expect(child.stdout.toString()).toContain('paging cases passed')
+  expect(child.stdout.toString()).toContain('commit ref refresh cases passed')
   expect(child.stdout.toString()).toContain('refresh layout cases passed')
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('head focus cases passed')

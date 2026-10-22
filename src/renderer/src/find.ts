@@ -221,7 +221,7 @@ export async function revealMatch(source: FindSource, match: Match) {
   if (!container || !line) return
   const path = file.newPath ?? file.oldPath ?? ''
   const section = () => container.querySelector<HTMLElement>(`[data-file-index="${match.file}"]`)
-  if (section()?.querySelector(':scope > .collapsed-note')) source.openFile(path)
+  if (section()?.querySelector(':scope > header > .diff-file-toggle[aria-expanded="false"]')) source.openFile(path)
   for (let frame = 0; frame < 90; frame++) {
     if (frame) await nextFrame()
     if (stale()) return

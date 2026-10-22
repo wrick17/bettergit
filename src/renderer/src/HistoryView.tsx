@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type RefObject, type UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { layoutGraph, startGraph, type GraphRow, type GraphState } from '../../main/git/graph'
-import type { Commit } from '../../main/git/history'
+import type { Commit, CommitDetails } from '../../main/git/history'
+import { Avatar } from './Avatar'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
 import { CommitStat } from './CommitStat'
@@ -21,7 +22,8 @@ const PAGE = 300
 // A HEAD older than the loaded rows is paged in up to this many commits, then left unselected.
 const HEAD_REACH = 10_000
 const COMMIT_CACHE = 24
-type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: { body: string } }
+type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: CommitDetails }
+type CommitRefs = { branches: string[]; remotes: string[]; tags: string[] }
 // Colors match better-source-control's graph. Like Sublime Merge, lanes sit closer together further right (graph-x.ts),
 // and each row's graph is as wide as the lanes in that row, with its text starting after them. A laid-out row never
 // changes, so loading another page or any other reply never moves a row on screen, and every commit's marker is drawn on
@@ -75,7 +77,9 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   // Author names the list is limited to. Empty shows every author.
   const [authors, setAuthors] = useState<string[]>([])
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
-  const [detail, setDetail] = useState<{ hash: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[]; details: { body: string } } | null>(null)
+  const [detail, setDetail] = useState<{ hash: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[]; details: CommitDetails } | null>(null)
+  // The branches and tags at the selected commit, read again on each refresh, since refs move while a hash stays.
+  const [refs, setRefs] = useState<{ hash: string; refs: CommitRefs } | null>(null)
   // The load key of a failed reload of the commit on screen. Its diff shows the failure until a load succeeds.
   const [failed, setFailed] = useState<string | null>(null)
   // The compare the user asked for: the commit, and the ref it compares with. Its diff is fetched with the whitespace option on screen.
@@ -222,6 +226,15 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     })
     return () => { stale = true }
   }, [repo, selected, context, ignoreWhitespace])
+
+  // The list's decorations change when a ref moves, so they and every refresh ask again. A failed read only hides the refs.
+  const listedRefs = commits.find((commit) => commit.hash === selected)?.refs.join('\0')
+  useEffect(() => {
+    if (!selected) return
+    let stale = false
+    api.commitRefs(repo, selected).then((next) => { if (!stale) setRefs({ hash: selected, refs: next }) }, () => { if (!stale) setRefs(null) })
+    return () => { stale = true }
+  }, [repo, selected, revision, refreshes, listedRefs])
 
   // Remembers the open commit and the search per repo, so a reload returns to them.
   useEffect(() => {
@@ -601,16 +614,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                       {commitInput && <CommitDialogs input={commitInput} prompt={prompt} onClose={() => setPrompt(null)} />}
                     </div>
                   )}
-                  {picked && (
-                    <div className="commit-meta-line">
-                      <span className="avatar" aria-hidden="true">{picked.author.charAt(0).toUpperCase()}</span>
-                      <span>{picked.author}</span>
-                      <span className="dot-sep" aria-hidden="true" />
-                      <span>{new Date(picked.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
-                      <span className="dot-sep" aria-hidden="true" />
-                      <code className="hash">{picked.hash.slice(0, 7)}</code>
-                    </div>
-                  )}
+                  {picked && <CommitFacts details={current.details} refs={refs?.hash === selected ? refs.refs : null} />}
                   {body && <pre className="commit-body">{body}</pre>}
                 </header>
                 {!diffOpen && compareBar}
@@ -679,6 +683,58 @@ function elbow(x1: number, y1: number, x2: number, y2: number, mid: number) {
   const enter = y1 < mid ? `V${mid - radius}Q${x1} ${mid} ${x1 + sign * radius} ${mid}` : ''
   const leave = y2 > mid ? `Q${x2} ${mid} ${x2} ${mid + radius}V${y2}` : ''
   return `M${x1} ${y1}${enter}H${y2 > mid ? x2 - sign * radius : x2}${leave}`
+}
+
+// The signature as git checked it. Only a bad signature reads as a failure; one git could not check is not called invalid.
+const SIGNATURES: Record<NonNullable<CommitDetails['signature']>['code'], { text: string; className?: string }> = {
+  G: { text: 'Good', className: 'sig-good' },
+  B: { text: 'Bad', className: 'sig-bad' },
+  U: { text: 'Good, from a key of unknown validity' },
+  X: { text: 'Good, but the signature has expired' },
+  Y: { text: 'Good, from an expired key' },
+  R: { text: 'Good, from a revoked key' },
+  E: { text: 'Cannot be checked, the key may be missing' },
+  N: { text: 'Not signed' },
+}
+
+const FULL_DATE = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+
+// The selected commit's identity, from its own detail: a compare or a whitespace filter never changes these.
+function CommitFacts({ details, refs }: { details: CommitDetails; refs: CommitRefs | null }) {
+  const person = (who: { name: string; email: string }) => `${who.name} <${who.email}>`
+  const signature = details.signature && SIGNATURES[details.signature.code]
+  const { stats } = details
+  return (
+    <dl className="commit-facts">
+      <dt>Commit</dt><dd><code>{details.hash}</code></dd>
+      <dt>Tree</dt><dd><code>{details.tree}</code></dd>
+      <dt>Author</dt><dd><Avatar name={details.author.name} email={details.author.email} />{person(details.author)}</dd>
+      <dt>Committer</dt><dd>{person(details.committer)}</dd>
+      <dt>Date</dt><dd title={details.authorDate}>{Number.isNaN(Date.parse(details.authorDate)) ? details.authorDate : FULL_DATE.format(new Date(details.authorDate))}</dd>
+      <dt>Parents</dt><dd>{details.parents.length ? details.parents.map((parent) => <code key={parent} title={parent}>{parent.slice(0, 8)}</code>) : 'None (root commit)'}</dd>
+      <dt>Signature</dt>
+      <dd className={signature?.className} title={details.signature?.signer || undefined}>
+        {signature ? signature.text : 'Could not be checked'}{details.signature?.signer ? ` (${details.signature.signer})` : ''}
+      </dd>
+      {refs && refs.branches.length + refs.remotes.length > 0 && (
+        <><dt>Branches</dt><dd>
+          {refs.branches.map((name) => <span key={name} className="ref local">{name}</span>)}
+          {refs.remotes.map((name) => <span key={name} className="ref remote">{name}</span>)}
+        </dd></>
+      )}
+      {refs && refs.tags.length > 0 && <><dt>Tags</dt><dd>{refs.tags.map((name) => <span key={name} className="ref tag">{name}</span>)}</dd></>}
+      <dt>Stats</dt>
+      <dd>
+        {stats ? (
+          <>
+            {stats.files} file{stats.files === 1 ? '' : 's'} changed
+            <span className="stat-chip del" aria-label={`${stats.deletions} removed`}>−{stats.deletions}</span>
+            <span className="stat-chip add" aria-label={`${stats.additions} added`}>+{stats.additions}</span>
+          </>
+        ) : 'Could not be read'}
+      </dd>
+    </dl>
+  )
 }
 
 // The DOM id of a commit row. The list points aria-activedescendant at the selected one.
@@ -828,6 +884,7 @@ const CommitRow = memo(function CommitRow({ row, rowHeight, active, isHead, onSe
           <code className="commit-meta hash">{commit.hash.slice(0, 7)}</code>
         </span>
         <span className="commit-line">
+          <Avatar name={commit.author} email={commit.email} />
           <span className="author">{commit.author}</span>
           {isHead && <span className="ref head">HEAD</span>}
           {refs.length > 0 && <span className="ref" title={refs.join(', ')} style={{ borderLeftColor: nodeColor }}>{refs[0]}</span>}

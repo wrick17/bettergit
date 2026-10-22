@@ -29,6 +29,8 @@ interface Props {
     onToggle: (path: string, stage: boolean) => void
     onDiscard?: (path: string) => void
     onHunk?: (path: string, hunk: DiffHunk, action: HunkAction) => void
+    // Files in an unstaged view that have only staged changes. They show the staged diff with Unstage, never edit or discard.
+    stagedPaths?: ReadonlySet<string>
   }
   // Set in the Changes view. Each hunk gets an expand row above and below to show more context for that file.
   onExpand?: (file: DiffFile) => void
@@ -64,6 +66,16 @@ const LAYOUT_KEY = 'bettergit.diffLayout'
 const listeners = new Set<() => void>()
 const sourceAnchors = new Set<() => { pane: HTMLElement; top: number; select: () => void } | undefined>()
 let layout: DiffLayout = localStorage.getItem(LAYOUT_KEY) === 'split' ? 'split' : 'unified'
+// Every diff on screen, so collapse and expand all reach each section of the pane the click came from.
+const fileOpeners = new Set<{ container: () => HTMLElement | null; setAll: (open: boolean) => void }>()
+
+function openAllFiles(from: HTMLElement | null, open: boolean) {
+  const pane = from?.closest('.diff-pane') ?? from
+  for (const entry of fileOpeners) {
+    const container = entry.container()
+    if (container && pane?.contains(container)) entry.setAll(open)
+  }
+}
 
 function captureSourceAnchors() {
   const panes = new Map<HTMLElement, { top: number; select: () => void }>()
@@ -128,6 +140,21 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
     if (persistId !== undefined && persistKey !== undefined) saveView(persistId, persistKey, choices)
   }, [persistId, persistKey, choices])
   const toggleFile = useCallback((path: string, open: boolean) => setChoices((prev) => ({ ...prev, [path]: !open })), [])
+  // Collapse and expand all set a choice for every file shown, so each stays saved like a choice made by hand.
+  const shownFiles = useRef(shown.files)
+  shownFiles.current = shown.files
+  useEffect(() => {
+    const entry = {
+      container: () => containerRef.current,
+      setAll: (open: boolean) => setChoices((prev) => {
+        const next = { ...prev }
+        for (const file of shownFiles.current) next[pathOf(file)] = open
+        return next
+      }),
+    }
+    fileOpeners.add(entry)
+    return () => { fileOpeners.delete(entry) }
+  }, [])
   // File sections are memoised, so the callbacks they get stay the same object and always call the caller's latest one.
   const latest = useRef({ stage, onExpand, edit })
   latest.current = { stage, onExpand, edit }
@@ -239,6 +266,12 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
           {moves.length > 0 ? `${moves.length} moved block${moves.length === 1 ? '' : 's'} detected` : ''}
         </span>
         <div className="diff-toolbar-controls">
+          {shown.files.length > 0 && (
+            <div className="diff-layout-toggle" role="group" aria-label="Files">
+              <IconButton icon="collapseAll" label="Collapse all files" onClick={() => openAllFiles(containerRef.current, false)} />
+              <IconButton icon="expandAll" label="Expand all files" onClick={() => openAllFiles(containerRef.current, true)} />
+            </div>
+          )}
           {!onExpand && (
             // Each option's tooltip names the group, since the options are what the pointer rests on.
             <div className="context-toggle" role="group" aria-label="Lines of unchanged context around each change">
@@ -299,6 +332,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             fileIndex={fileIndex}
             stat={stat}
             open={open}
+            stagedOnly={!!stage?.stagedPaths?.has(path)}
             onToggle={toggleFile}
             layout={current}
             formatted={formatted}
@@ -345,11 +379,12 @@ export function LayoutToggles() {
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, stagedOnly, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage: viewStage, edit, onExpand }: {
   file: DiffFile
   fileIndex: number
   stat: { adds: number; dels: number }
   open: boolean
+  stagedOnly: boolean
   onToggle: (path: string, open: boolean) => void
   layout: DiffLayout
   formatted: boolean
@@ -363,9 +398,9 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
   onExpand?: (file: DiffFile) => void
 }) {
   const path = pathOf(file)
-  const changed = stat.adds + stat.dels
+  const stage = useMemo(() => (viewStage && stagedOnly ? { ...viewStage, staged: true, onDiscard: undefined } : viewStage), [viewStage, stagedOnly])
   const toggle = () => onToggle(path, open)
-  const text = edit && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
+  const text = edit && !stagedOnly && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
   const markdown = formatted && isMarkdownPath(path)
   // Hunks of a modified text file change one at a time. Not while the file has unsaved edits, which the write could lose.
   const unsaved = useUnsaved(text, path)
@@ -475,12 +510,6 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, onT
       <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage}
         actions={text && <DraftActions edit={text} path={path} />} />
       {file.binary && <p className="hint">Binary file.</p>}
-      {!open && file.hunks.length > 0 && (
-        <div className="collapsed-note">
-          <span>{changed} changed line{changed === 1 ? '' : 's'} hidden</span>
-          <button onClick={toggle}>Show diff</button>
-        </div>
-      )}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
         ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
@@ -666,7 +695,7 @@ export function UnifiedLine({ line, segments, changed, label, anchor, source, cl
   return (
     <>
       {label && <div className="move-note lane-note">{label}</div>}
-      <div className={`line ${line.type}${label ? ' moved' : ''}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
+      <div className={`line ${line.type}${label ? ' moved' : fullChange(line, changed)}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
         <span className="lane" aria-hidden="true" />
         <span className="gutter">{line.oldNo ?? ''}</span>
         <span className="gutter">{line.newNo ?? ''}</span>
@@ -675,6 +704,12 @@ export function UnifiedLine({ line, segments, changed, label, anchor, source, cl
       </div>
     </>
   )
+}
+
+// A removed or added line with no changed words marked, because it has no pair or was rewritten, is changed as a whole,
+// so it takes the changed-word strength.
+function fullChange(line: DiffLine, changed?: Span[]) {
+  return (line.type === 'add' || line.type === 'del') && !changed ? ' full' : ''
 }
 
 // The first and last line numbers of a hunk. The expand rows above and below name them.
@@ -744,7 +779,7 @@ export function SplitCell({ cell, side, segments, changed, label, anchor, source
   const { line } = cell
   const number = cell.number !== undefined ? cell.number : side === 'old' ? line.oldNo : line.newNo
   return (
-    <div className={`split-cell ${line.type}${label ? ' moved' : ''}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
+    <div className={`split-cell ${line.type}${label ? ' moved' : fullChange(line, changed)}${className ? ` ${className}` : ''}`} data-move-id={anchor} data-source-row={source}>
       <span className="gutter">{number ?? ''}</span>
       <Code text={line.text} segments={segments} changed={label ? undefined : changed} />
     </div>
@@ -1023,7 +1058,9 @@ function HScrollBar({ file, extra }: { file: DiffFile; extra: number }) {
 // A CSS length, so the browser follows a code size change without a render. Wrapped lines make the real one taller;
 // the browser keeps the real height once the file has been on screen.
 function estimateHeight(file: DiffFile, open: boolean, expandable: boolean) {
-  if (!open || !file.hunks.length) return '80px'
+  if (!file.hunks.length) return '80px'
+  // A collapsed file is its header alone.
+  if (!open) return '42px'
   const lines = file.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0)
   return `calc(${41 + file.hunks.length * (28 + (expandable ? 40 : 0))}px + ${lines} * var(--code-line))`
 }

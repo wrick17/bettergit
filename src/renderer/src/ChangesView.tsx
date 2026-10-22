@@ -163,16 +163,20 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const repoRef = useRef(repo)
   repoRef.current = repo
 
-  const staged = useMemo(() => shownStatus.changes.filter((change) => change.staged), [shownStatus])
-  const unstaged = useMemo(() => shownStatus.changes.filter((change) => change.unstaged && !change.conflicted), [shownStatus])
+  const sections = useMemo(() => sectionsOf(shownStatus), [shownStatus])
+  const { staged, unstaged, changes, stagedOnly } = sections
   // Each section's paths in the order its file list shows them, so the diffs list their files the same way.
   const order = useMemo(() => {
-    const paths = (changes: FileChange[]) => (view === 'tree' ? treeOrder(buildTree(changes)) : changes).map((change) => change.path)
-    return { staged: paths(staged), unstaged: paths(unstaged), conflicts: paths(conflicted) }
-  }, [staged, unstaged, conflicted, view])
+    const paths = (list: FileChange[]) => (view === 'tree' ? treeOrder(buildTree(list)) : list).map((change) => change.path)
+    return { staged: paths(staged), changes: paths(changes), conflicts: paths(conflicted) }
+  }, [staged, changes, conflicted, view])
+  // The Changes section is the working diff with the staged diff of each file that has only staged changes.
+  const stagedSource = allShown?.staged ?? loaded(true)
   const stagedShown = useMemo(() => allShown?.staged && orderFiles(allShown.staged, order.staged), [allShown?.staged, order])
-  const unstagedShown = useMemo(() => allShown?.unstaged && orderFiles(allShown.unstaged, order.unstaged), [allShown?.unstaged, order])
-  const selectedShown = useMemo(() => diffShown && orderFiles(diffShown, selection?.staged ? order.staged : order.unstaged), [diffShown, selection?.staged, order])
+  const unstagedShown = useMemo(() => allShown?.unstaged && orderFiles(withStaged(allShown.unstaged, allShown.staged, stagedOnly), order.changes), [allShown?.unstaged, allShown?.staged, stagedOnly, order])
+  const selectedShown = useMemo(() => diffShown && (selection?.staged
+    ? orderFiles(diffShown, order.staged)
+    : orderFiles(withStaged(diffShown, stagedSource, stagedOnly), order.changes)), [diffShown, stagedSource, stagedOnly, selection?.staged, order])
   // What each diff on the pane gets, and whether it mounts. The pane is placed once every one shows what it was given, so
   // a switch of view (the selected file moving to the other section, say) lands in one frame, not in steps.
   const stagedFiles = stagedShown?.files ?? NO_FILES.files
@@ -180,7 +184,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const selectedFiles = selectedShown?.files ?? NO_FILES.files
   const allView = !selection && shownStatus.changes.length > 0
   const showStaged = allView && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && staged.length > 0))
-  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && unstaged.length > 0))
+  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && changes.length > 0))
   const onScreenRef = useRef(new Map<string, DiffFile[]>())
   const [, setShownTick] = useState(0)
   const shownHandlers = useMemo(() => Object.fromEntries(['staged', 'unstaged', 'selection'].map((id) => [id, (files: DiffFile[]) => {
@@ -216,7 +220,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const listShown = useRef({ status: shownStatus, selection, stats })
   if (!detailOpen || !diffReady || onScreen) listShown.current = { status: shownStatus, selection, stats }
   const listed = listShown.current
-  const listChanges = useMemo(() => (listed.status === shownStatus ? { staged, unstaged, conflicted } : sectionsOf(listed.status)), [listed.status, shownStatus, staged, unstaged, conflicted])
+  const listChanges = useMemo(() => (listed.status === shownStatus ? sections : sectionsOf(listed.status)), [listed.status, shownStatus, sections])
   const List = view === 'tree' ? Tree : Group
 
   // A widen belongs to this load and source file, even if the same path is selected again later.
@@ -240,12 +244,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }, [repo, collapsed, extra])
 
   // A selection survives a status change only while its file is still in the section it names. Otherwise it moves to the other section or clears.
+  // Every changed path is in Changes (or Conflicts), so only a staged selection moves.
   // It follows the status on screen, before paint, so the moved selection's diff is already loaded when it shows.
   useLayoutEffect(() => {
     setSelection((current) => {
       if (!current) return current
-      const inSection = (isStaged: boolean) => shownStatus.changes.some((change) => change.path === current.path
-        && (isStaged ? change.staged : change.unstaged || change.conflicted))
+      const inSection = (isStaged: boolean) => shownStatus.changes.some((change) => change.path === current.path && (!isStaged || change.staged))
       if (inSection(current.staged)) return current
       return inSection(!current.staged) ? { path: current.path, staged: !current.staged } : null
     })
@@ -490,6 +494,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     setView(next)
   }
 
+  // A file in Changes with only staged changes shows the staged load's file, so it widens there.
+  const expandChange = (file: DiffFile, inSelection = false) => (stagedOnly.has(pathOf(file)) ? expandFile('staged', file) : expandFile('unstaged', file, inSelection))
+
   // Widens one file a step. Only that file is swapped in, so the rest of the section keeps its loaded hunks.
   const expandFile = (section: Section, file: DiffFile, inSelection = false) => {
     const path = pathOf(file)
@@ -589,7 +596,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           {list.folded && (
             <button ref={list.strip} type="button" className="fold-strip" aria-label="Show file list" onClick={list.activate}>
               <Icon name="chevron" />
-              <span className="fold-label">{selection ? splitPath(selection.path).name : `${staged.length} staged · ${unstaged.length} unstaged`}</span>
+              <span className="fold-label">{selection ? splitPath(selection.path).name : `${changes.length} changed · ${staged.length} staged`}</span>
             </button>
           )}
           <div className="file-list-head">
@@ -601,19 +608,6 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           </div>
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
             {clean && <p className="file-list-empty">No changed files</p>}
-            <List
-              title="Staged"
-              changes={listChanges.staged}
-              staged
-              selection={listed.selection}
-              stats={listed.stats}
-              collapsed={collapsed}
-              onToggleFolder={toggleFolder}
-              onSelect={(change) => choose(change, true)}
-              onToggle={(change) => toggle(change, false)}
-              onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
-              busy={busy}
-            />
             {listChanges.conflicted.length > 0 && (
               <List
                 title="Conflicts"
@@ -628,18 +622,32 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 busy={busy}
               />
             )}
+            {/* Every changed path once, a file with unstaged changes by its unstaged entry. Stage all takes only unstaged paths. */}
             <List
-              title="Unstaged"
-              changes={listChanges.unstaged}
+              title="Changes"
+              changes={listChanges.changes}
               staged={false}
               selection={listed.selection}
               stats={listed.stats}
               collapsed={collapsed}
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, false)}
-              onToggle={(change) => toggle(change, true)}
+              onToggle={(change) => toggle(change, change.unstaged)}
               onDiscard={discard}
-              onToggleAll={() => togglePaths(unstaged.map((change) => change.path), true)}
+              onToggleAll={unstaged.length ? () => togglePaths(unstaged.map((change) => change.path), true) : undefined}
+              busy={busy}
+            />
+            <List
+              title="Staged"
+              changes={listChanges.staged}
+              staged
+              selection={listed.selection}
+              stats={listed.stats}
+              collapsed={collapsed}
+              onToggleFolder={toggleFolder}
+              onSelect={(change) => choose(change, true)}
+              onToggle={(change) => toggle(change, false)}
+              onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
               busy={busy}
             />
           </div>
@@ -675,8 +683,35 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       {detailOpen && (
         <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll}>
           {!selection && shownStatus.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
+          {/* Every conflicted file, each in its own section, in the list's order. Picking one scrolls to it. */}
+          {(!selection || conflictSelected) && order.conflicts.length > 0 && <h2 className="diff-section">Conflicts <span className="count">{order.conflicts.length}</span></h2>}
+          {(!selection || conflictSelected) && order.conflicts.map((path) => {
+            const file = conflictOf(conflictFiles, path)
+            return file
+              ? <ConflictFile key={path} path={path} model={file.model} choices={file.choices} {...handlersFor(path)} busy={fileBusy(busy, path)} />
+              : (
+                <section key={path} className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
+                  <header className="conflict-bar"><span className="conflict-path" title={path}>{path}</span></header>
+                  <p className="hint">Loading conflict…</p>
+                </section>
+              )
+          })}
           {!selection && shownStatus.changes.length > 0 && (
             <>
+              <h2 className="diff-section">Changes {unstagedShown && unstagedShown !== LOAD_FAILED && <span className="count">{unstagedShown.files.length}</span>}</h2>
+              {showUnstaged && (
+                <DiffView
+                  files={unstagedFiles}
+                  moves={unstagedShown?.moves ?? NO_FILES.moves}
+                  stage={{ staged: false, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: stagedOnly }}
+                  edit={edit}
+                  onExpand={(file) => expandChange(file)}
+                  persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
+                  refreshOf={`${repo} unstaged`}
+                  onShown={shownHandlers.unstaged}
+                  emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
+                />
+              )}
               <h2 className="diff-section">Staged {stagedShown && stagedShown !== LOAD_FAILED && <span className="count">{stagedShown.files.length}</span>}</h2>
               {/* While it loads, with the whitespace option on, or after a failed load, a section with changes still mounts its DiffView, so the toolbar stays usable. */}
               {showStaged && (
@@ -691,42 +726,16 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   emptyHint={stagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : stagedShown ? undefined : LOADING_HINT}
                 />
               )}
-              <h2 className="diff-section">Unstaged {unstagedShown && unstagedShown !== LOAD_FAILED && <span className="count">{unstagedShown.files.length}</span>}</h2>
-              {showUnstaged && (
-                <DiffView
-                  files={unstagedFiles}
-                  moves={unstagedShown?.moves ?? NO_FILES.moves}
-                  stage={{ staged: false, busy, onToggle: togglePath, onDiscard: discardPath, onHunk }}
-                  edit={edit}
-                  onExpand={(file) => expandFile('unstaged', file)}
-                  persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
-                  refreshOf={`${repo} unstaged`}
-                  onShown={shownHandlers.unstaged}
-                  emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
-                />
-              )}
             </>
           )}
-          {/* Every conflicted file, each in its own section, in the list's order. Picking one scrolls to it. */}
-          {conflictSelected && order.conflicts.map((path) => {
-            const file = conflictOf(conflictFiles, path)
-            return file
-              ? <ConflictFile key={path} path={path} model={file.model} choices={file.choices} {...handlersFor(path)} busy={fileBusy(busy, path)} />
-              : (
-                <section key={path} className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
-                  <header className="conflict-bar"><span className="conflict-path" title={path}>{path}</span></header>
-                  <p className="hint">Loading conflict…</p>
-                </section>
-              )
-          })}
           {/* Staging and editing follow the section on screen, so the files there keep their rows until the other section's show. */}
           {selection && !conflictSelected && (
             <DiffView
               files={selectedFiles}
               moves={selectedShown?.moves ?? NO_FILES.moves}
-              stage={{ staged: listed.selection?.staged ?? selection.staged, busy, onToggle: togglePath, onDiscard: discardPath, onHunk }}
+              stage={{ staged: listed.selection?.staged ?? selection.staged, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: (listed.selection?.staged ?? selection.staged) ? undefined : stagedOnly }}
               edit={(listed.selection?.staged ?? selection.staged) ? undefined : edit}
-              onExpand={(file) => expandFile(selection.staged ? 'staged' : 'unstaged', file, true)}
+              onExpand={(file) => (selection.staged ? expandFile('staged', file, true) : expandChange(file, true))}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
               onShown={shownHandlers.selection}
@@ -767,13 +776,27 @@ function sameFingerprint(a: ConflictFingerprint, b: ConflictFingerprint): boolea
   return a.working === b.working && a.stages === b.stages
 }
 
-// The file list's sections of a status. Conflicted files have their own section.
+// The file list's sections of a status. Conflicted files have their own section. Changes lists every other path once:
+// its unstaged entry when it has one, else its staged entry. `unstaged` is what Stage all takes.
 function sectionsOf(status: RepoStatus) {
+  const unstaged = status.changes.filter((change) => change.unstaged && !change.conflicted)
+  const unstagedPaths = new Set(unstaged.map((change) => change.path))
+  const changes = status.changes.filter((change) => !change.conflicted && (change.unstaged || !unstagedPaths.has(change.path)))
   return {
     staged: status.changes.filter((change) => change.staged),
-    unstaged: status.changes.filter((change) => change.unstaged && !change.conflicted),
+    unstaged,
+    changes,
+    stagedOnly: new Set(changes.filter((change) => !change.unstaged).map((change) => change.path)) as ReadonlySet<string>,
     conflicted: status.changes.filter((change) => change.conflicted),
   }
+}
+
+// The working diff with the staged diff's files for paths that have only staged changes. Moves name working files by
+// index, and those come first, so they stay valid.
+function withStaged(working: Working, staged: Working | undefined, paths: ReadonlySet<string>): Working {
+  if (working === LOAD_FAILED || !staged || !paths.size) return working
+  const extra = staged.files.filter((file) => paths.has(pathOf(file)))
+  return extra.length ? { files: [...working.files, ...extra], moves: working.moves } : working
 }
 
 // The file open last time, if it is still in the changes. A file that is gone opens with no selection.
@@ -886,7 +909,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
           const active = selection?.path === change.path && selection.staged === staged
           return (
             <li key={`${staged}-${change.path}`} className={active ? 'active' : ''}>
-              <FileRow change={change} staged={staged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+              <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
             </li>
           )
         })}
@@ -904,7 +927,7 @@ function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFol
     return (
       <div key={change.path} role="treeitem" aria-selected={active}>
         <div className={`tree-row${active ? ' selected' : ''}`}>
-          <FileRow change={change} staged={staged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+          <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
         </div>
       </div>
     )

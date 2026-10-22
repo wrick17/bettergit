@@ -174,7 +174,7 @@ async function loadEntry(file: string, imports: Record<string, unknown>, after =
   const module = { exports: {} }
   runInNewContext(await compiled.outputs[0].text() + after, {
     ...globals, module, exports: module.exports,
-    require: (id: string) => imports[id] ?? {},
+    require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : {}),
   })
   return module.exports
 }

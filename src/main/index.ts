@@ -10,7 +10,8 @@ import { buildMenu } from './menu'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withRepoLock } from './repo-lock'
 import { commitDiff, compare, detectMoves, workingDiff } from './git/diff'
-import { readHistory, commitDetails, searchHistory, readAuthors } from './git/history'
+import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors } from './git/history'
+import { avatars } from './avatar'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
@@ -197,6 +198,13 @@ function registerIpc() {
   ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number, authors?: unknown) =>
     readHistory(assertKnownRepo(repoPath), skip, limit, authorList(authors)))
   ipcMain.handle('repo:authors', (_event, repoPath: string) => readAuthors(assertKnownRepo(repoPath)))
+  // The picture is decoded and re-encoded here, so only an image that macOS can read ever reaches the renderer.
+  const avatarFor = avatars((data) => {
+    const image = nativeImage.createFromBuffer(data)
+    return image.isEmpty() ? null : image.resize({ width: 64, height: 64, quality: 'best' }).toDataURL()
+  })
+  ipcMain.handle('avatar:get', (_event, email: unknown) => avatarFor(email))
+  ipcMain.handle('repo:commit-refs', (_event, repoPath: string, hash: string) => commitRefs(assertKnownRepo(repoPath), hash))
   // The whitespace flag is strict: only a literal true turns it on, so a malformed IPC argument cannot change the diff.
   ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)

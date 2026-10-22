@@ -304,18 +304,24 @@ async function downloadFromOpenVsx(namespace: unknown, name: unknown): Promise<B
   const meta = await (await fetchOk(`${OPEN_VSX}/${namespace}/${name}`)).json() as { files?: { download?: unknown } }
   const download = text(meta.files?.download)
   if (!download.startsWith(`${OPEN_VSX}/`)) throw new Error('Open VSX has no download for this extension.')
-  const response = await fetchOk(download)
-  if (Number(response.headers.get('content-length')) > MAX_DOWNLOAD) throw new Error('The .vsix file is too large.')
-  // Counted as it arrives, so a server that lies about the length still cannot send more than the cap. Redirect hops
-  // carry no body (fetchOk discards them), so this one count covers the whole download.
+  // Redirect hops carry no body (fetchOk discards them), so one count covers the whole download.
+  return readBody(await fetchOk(download), MAX_DOWNLOAD, 'The .vsix file is too large.')
+}
+
+// Counted as it arrives, so a server that lies about the length still cannot send more than the cap.
+export async function readBody(response: Response, max: number, tooLarge: string): Promise<Buffer> {
+  if (Number(response.headers.get('content-length')) > max) {
+    await response.body?.cancel()
+    throw new Error(tooLarge)
+  }
   const chunks: Uint8Array[] = []
   let size = 0
   const reader = response.body!.getReader()
   for (let read = await reader.read(); !read.done; read = await reader.read()) {
     size += read.value.length
-    if (size > MAX_DOWNLOAD) {
+    if (size > max) {
       await reader.cancel()
-      throw new Error('The .vsix file is too large.')
+      throw new Error(tooLarge)
     }
     chunks.push(read.value)
   }

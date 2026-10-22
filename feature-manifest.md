@@ -64,6 +64,19 @@ Status key: **done** (implementation found in code), **partial** (some parts fou
 
 Feature rows describe source coverage unless they explicitly cite bounded native verification. `done` does not mean accepted on current unpublished source. Older code-read and command evidence is dated baseline evidence; it is not a fresh full-source audit. The tracker takes precedence for current acceptance. Planned and unsupported rows retain absences or limits; performance remains unmeasured. Command results are recorded separately below.
 
+## 0.0.6 feedback release (2026-10-22)
+
+`package.json` version 0.0.6. Source checks on the feature branch (Bun 1.4.3): typecheck and the focused diff, Changes, History, Git and avatar suites passed. Full suite, build and native app acceptance are release checks owned by delivery and are not recorded here. The release build is unsigned and not notarized.
+
+| Area | Feature | Status |
+|---|---|---|
+| Diff | Collapse all and Expand all in the diff toolbar, across every section of the pane; each file keeps its chevron and its saved choice | done |
+| Diff | A collapsed file is its header alone (the "changed lines hidden / Show diff" row is gone); Find opens a collapsed file by its header toggle | done |
+| Diff | Whole added or removed lines with no changed words marked take the changed-word strength, in read-only unified and split, the editor-look rows and the CodeMirror editor; moved lines keep their tint | done |
+| Changes | Sections ordered Conflicts, Changes, Staged. Changes lists every changed path once (a file with unstaged changes by its unstaged entry); Staged lists the staged subset. A staged-only file in Changes shows its staged diff with Unstage only. Stage all takes only unstaged paths | done |
+| History | Author pictures in the list and details from Gravatar (SHA-256 of the email, d=404), fetched and re-encoded in main with a size cap, per-email dedupe and a bounded cache; the initial stays on a miss or failure. The renderer CSP is unchanged | done |
+| History | Commit facts: full hash, tree, author and committer with email, date, parents, signature state (good, bad, unknown validity, expired, revoked, cannot check, unsigned), branches, tags and the commit's own first-parent stats, then the full message. Branches and tags are read again on every refresh | done |
+
 ## 0.0.5 workflow release (2026-10-20)
 
 `package.json` version 0.0.5. Source validation on the integrated branch (Bun 1.4.3): 403 tests passed, plus typecheck, build and `git diff --check`; an independent review's findings were fixed and covered by focused Git and History tests. Native app acceptance is a required release check and is not recorded here. The release build is unsigned and not notarized.

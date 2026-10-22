@@ -21,6 +21,8 @@ export interface GitOptions {
   optionalLocks?: boolean
   // Prompts (credentials, host keys) must never block the app; they fail instead.
   interactive?: boolean
+  // Fails the read after this long and stops git. For reads that run helpers which can stall, such as GPG.
+  timeoutMs?: number
 }
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024
@@ -49,7 +51,15 @@ export function git(cwd: string, args: string[], options: GitOptions = {}): Prom
     })
     child.stderr.on('data', (chunk: Buffer) => err.push(chunk))
     child.on('error', (error) => reject(new GitError(error.message, args, null, '')))
+    const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+      // A helper git started can hold the output open after git exits, so the streams are let go too.
+      child.kill()
+      child.stdout.destroy()
+      child.stderr.destroy()
+      reject(new GitError(`git ${args[0]} timed out`, args, null, ''))
+    }, options.timeoutMs)
     child.on('close', (code) => {
+      clearTimeout(timer)
       const stdout = Buffer.concat(out).toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8').trim()
       if (code === 0) return resolve(stdout)
