@@ -94,3 +94,101 @@ test('Open in VS Code stays available for deletions in history and in the workin
   expect(commit).not.toContain('aria-disabled')
   expect(commit).not.toContain('blocked')
 })
+
+// Exercise DiffView's real observer and render decisions without a browser or Git reads.
+const RESPONSIVE_CHECK = `
+const react = require('react')
+const stored = { 'bettergit.diffLayout': 'split' }
+const writes = [], observers = [], effects = [], hooks = []
+let cursor = 0, width = 1000, widthUpdates = 0
+Object.assign(globalThis, {
+  localStorage: { getItem: key => stored[key] ?? null, setItem: (key, value) => { stored[key] = value; writes.push([key, value]) } },
+  window: { innerWidth: 2000, addEventListener() {}, setTimeout, clearTimeout },
+  ResizeObserver: class {
+    constructor(callback) { this.callback = callback; observers.push(this) }
+    observe(target) { this.target = target }
+    disconnect() { this.disconnected = true }
+  },
+})
+const slot = initial => { const at = cursor++; return hooks[at] ?? (hooks[at] = initial()) }
+const same = (left, right) => left && left.length === right.length && right.every((value, index) => Object.is(value, left[index]))
+react.useRef = value => slot(() => ({ current: value }))
+react.useState = initial => {
+  const state = slot(() => ({ value: typeof initial === 'function' ? initial() : initial }))
+  return [state.value, next => { if (typeof next === 'boolean') widthUpdates++; state.value = typeof next === 'function' ? next(state.value) : next }]
+}
+react.useMemo = (compute, deps) => {
+  const state = slot(() => ({}))
+  if (!same(state.deps, deps)) { state.value = compute(); state.deps = deps }
+  return state.value
+}
+react.useLayoutEffect = (effect, deps) => {
+  const state = slot(() => ({}))
+  if (!same(state.deps, deps)) effects.push(() => { state.cleanup?.(); state.cleanup = effect(); state.deps = deps })
+}
+react.useEffect = () => undefined
+react.useCallback = callback => callback
+react.useDeferredValue = value => value
+react.useId = () => 'responsive-diff'
+react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
+const { DiffView, LayoutToggles } = await import('./src/renderer/src/DiffView')
+const { renderToStaticMarkup } = await import('react-dom/server')
+const container = { closest: () => null, getBoundingClientRect: () => ({ width }) }
+const file = { oldPath: 'readme.txt', newPath: 'readme.txt', status: 'modified', binary: false, hunks: [] }
+const props = { files: [file], moves: [] }
+const find = (node, match) => {
+  if (!node || typeof node !== 'object') return
+  if (match(node)) return node
+  for (const child of [node.props?.children].flat(Infinity)) { const found = find(child, match); if (found) return found }
+}
+let tree
+const render = () => {
+  cursor = 0; tree = DiffView.type(props); tree.props.ref.current = container
+  for (const effect of effects.splice(0)) effect()
+  return find(tree, node => node.props?.file === file).props
+}
+const resize = next => {
+  width = next
+  observers[0].callback([{ target: container, contentRect: { width, height: 500 } }])
+  return render()
+}
+const snapshot = section => {
+  const toggles = find(tree, node => node.type === LayoutToggles)
+  const html = renderToStaticMarkup(react.createElement(LayoutToggles, toggles.props))
+  return { mode: section.layout, saved: stored['bettergit.diffLayout'], html,
+    notice: JSON.stringify(tree).includes('Unified for narrow pane') }
+}
+const initial = render()
+const wide = snapshot(initial)
+const narrowSection = resize(899)
+const narrow = snapshot(narrowSection)
+resize(700); resize(700)
+const restoredSection = resize(900)
+const restored = snapshot(restoredSection)
+// A click on Unified during the fallback makes it an explicit preference, even after widening.
+resize(899)
+find(LayoutToggles({ autoUnified: true }), node => node.props?.icon === 'rows').props.onClick()
+const explicit = snapshot(resize(1000))
+console.log(JSON.stringify({ wide, narrow, restored, explicit, widthUpdates,
+  stableData: initial.labels === narrowSection.labels && initial.anchors === restoredSection.anchors && initial.stat === narrowSection.stat,
+  observerCount: observers.length, observedContainer: observers[0].target === container, writes }))
+for (const state of hooks) state.cleanup?.()
+`
+
+test('split falls back at the diff container width, restores at 900px, and keeps the selected preference', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', RESPONSIVE_CHECK], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(child.exitCode, child.stderr.toString()).toBe(0)
+  const result = JSON.parse(child.stdout.toString())
+  expect([result.wide.mode, result.narrow.mode, result.restored.mode, result.explicit.mode]).toEqual(['split', 'unified', 'split', 'unified'])
+  expect([result.wide.saved, result.narrow.saved, result.restored.saved, result.explicit.saved]).toEqual(['split', 'split', 'split', 'unified'])
+  expect(result.narrow.notice).toBe(true)
+  expect(result.restored.notice).toBe(false)
+  expect(result.narrow.html).toMatch(/aria-label="Split layout: selected; unified while this pane is narrow"[^>]*aria-pressed="true"/)
+  expect(result.narrow.html).toMatch(/aria-label="Unified layout: automatic for this narrow pane[^"]*"[^>]*aria-pressed="false"/)
+  expect(result.explicit.html).toMatch(/aria-label="Unified layout: on"[^>]*aria-pressed="true"/)
+  expect(result.writes).toEqual([['bettergit.diffLayout', 'unified']])
+  expect(result.widthUpdates).toBe(4)
+  expect(result.stableData).toBe(true)
+  expect(result.observerCount).toBe(1)
+  expect(result.observedContainer).toBe(true)
+})

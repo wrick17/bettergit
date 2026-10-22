@@ -21,11 +21,13 @@ export interface Session {
   selected: string | null
   tab: 'changes' | 'history'
   sidebarOpen: boolean
-  // The file or commit list, and the diff or commit detail. Either can be hidden on its own.
+  // Expanded panes collapse to rails when false.
   listOpen: boolean
   detailOpen: boolean
-  // The code diff inside the detail pane. Hidden, the commit's details (or the change list's surface) keep the pane.
+  // The code diff inside the detail pane.
   diffOpen: boolean
+  // Explicit toolbar choices override responsive folding; older sessions keep their automatic fold stops.
+  panelPins?: Partial<Record<'sidebar' | 'list' | 'details', boolean>>
   // The file and commit open in each repository, keyed by repository path.
   places: Record<string, Place>
   // The state of each view, keyed by view id. It belongs to one key, such as a commit or a file, and comes back only for that key.

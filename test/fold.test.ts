@@ -50,6 +50,58 @@ test('opening commit details from the strip with no control focuses the header a
   expect(released).toEqual([])
 })
 
+test('a rail previews on hover, cancels a pending leave, and returns keyboard focus on Escape', async () => {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/fold.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  const slots: any[] = []
+  let slot = 0
+  const keep = (create: () => unknown) => {
+    const at = slot++
+    if (!(at in slots)) slots[at] = create()
+    return at
+  }
+  const document = { activeElement: null as unknown }
+  const target = { focus: () => { document.activeElement = target } }
+  const strip = { focus: () => { document.activeElement = strip } }
+  const pane = { querySelector: () => target, contains: (element: unknown) => element === target }
+  const refs = [pane, strip, 0]
+  const timers = new Map<number, () => void>()
+  let nextTimer = 0
+  const react = {
+    useEffect() {}, useLayoutEffect: (effect: () => void) => effect(),
+    useRef: () => slots[keep(() => ({ current: refs.shift() }))],
+    useState: (initial: unknown) => {
+      const at = keep(() => initial)
+      return [slots[at], (value: unknown) => { slots[at] = value }]
+    },
+  }
+  const module = { exports: {} as { useFoldHold: (...args: any[]) => any } }
+  runInNewContext(await compiled.outputs[0].text(), {
+    module, exports: module.exports, require: () => react, document,
+    window: {
+      setTimeout: (callback: () => void, delay: number) => { expect(delay).toBe(120); timers.set(++nextTimer, callback); return nextTimer },
+      clearTimeout: (id: number) => timers.delete(id),
+    },
+  })
+  const render = () => { slot = 0; return module.exports.useFoldHold(true, 'button') }
+  expect(render().collapsed).toBe(true)
+  render().paneHandlers.onPointerEnter()
+  expect(render().collapsed).toBe(false)
+  render().paneHandlers.onPointerLeave()
+  expect(render().collapsed).toBe(false)
+  render().paneHandlers.onPointerEnter()
+  expect(timers.size).toBe(0)
+  render().paneHandlers.onPointerLeave()
+  for (const callback of timers.values()) callback()
+  expect(render().collapsed).toBe(true)
+  strip.focus()
+  render().activate()
+  expect(render().collapsed).toBe(false)
+  expect(document.activeElement).toBe(target)
+  render().paneHandlers.onKeyDown({ key: 'Escape', defaultPrevented: false, preventDefault() {} })
+  expect(render().collapsed).toBe(true)
+  expect(document.activeElement).toBe(strip)
+})
+
 // Runs the real divider hook in memory on a stub grid. getComputedStyle reports the tracks as laid out on screen;
 // with no tracks it throws, so an uncapped divider shows it never measures. State survives between renders, as in React.
 async function loadDivider(stored: number, shown: string | null, args: number[]) {

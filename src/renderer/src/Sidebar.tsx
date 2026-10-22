@@ -112,7 +112,7 @@ export function Sidebar(props: SidebarProps) {
       onDrop={(event) => { setDragging(false); if (!isReorder(event)) props.onDrop(event) }}
     >
       {props.fold.folded && (
-        <button ref={props.fold.strip} type="button" className="fold-strip" aria-label="Show repositories" onClick={props.fold.activate}>
+        <button ref={props.fold.strip} type="button" className="fold-strip" aria-label="Show repositories" aria-expanded={!props.fold.collapsed} onClick={props.fold.activate}>
           <Icon name="chevron" />
           <span className="fold-label">{props.stripLabel}</span>
         </button>

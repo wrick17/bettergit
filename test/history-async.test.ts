@@ -17,6 +17,7 @@ Object.assign(globalThis, {
     },
   },
   document: { querySelector: () => null },
+  getComputedStyle: () => ({ getPropertyValue: () => '28' }),
 })
 const react = require('react')
 let captured = [], active = []
@@ -411,13 +412,17 @@ console.log('head focus cases passed')
 }
 console.log('head search failure cases passed')
 
-// The code diff hides on its own: the commit's details and files stay, and picking a file asks for the diff back.
+// A collapsed diff stays mounted behind its rail. Metadata shares its scroller; files stay in the middle column.
 {
   let shows = 0
   props.diffOpen = false; props.onShowDiff = () => { shows++ }
   await mount({ places: { '/repo': { commit: 'A' } } })
   await detail('A')
-  assert.equal(find(tree, (p) => p.className === 'diff-pane'), undefined, 'the hidden code diff rendered')
+  const scroller = find(tree, (p) => p.className === 'diff-pane')
+  assert.ok(scroller, 'collapsing the diff unmounted its scroll container')
+  assert.equal(find(tree, (p) => p.fold && p.label)?.fold.collapsed, true, 'the code diff did not become a rail')
+  assert.ok(find(scroller.children, (p) => p.className === 'commit-head'), 'commit metadata does not share the diff scroller')
+  assert.equal(find(find(tree, (p) => p.className?.startsWith('commit-info')).children, (p) => p.className === 'commit-head'), undefined, 'metadata remained in the file column')
   assert.equal(find(tree, (p) => p.className === 'commit-subject')?.children, 'subject A')
   const files = find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)
   assert.deepEqual(files.files.map((file) => file.path), ['A.ts'])
@@ -438,9 +443,15 @@ console.log('head search failure cases passed')
   const frames = []
   globalThis.requestAnimationFrame = (callback) => frames.push(callback)
   props.diffOpen = true; render(); await flush()
+  assert.equal(find(tree, (p) => p.className === 'diff-pane').ref, scroller.ref, 'expanding the code diff replaced its scroll container')
   assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
   assert.equal(frames.length, 1)
   delete globalThis.requestAnimationFrame
+  props.listOpen = false; props.detailOpen = false; render(); await flush()
+  assert.ok(find(tree, (p) => p.className?.startsWith('history-list folded')), 'collapsed commit list was unmounted')
+  assert.ok(find(tree, (p) => p.className?.startsWith('commit-info folded')), 'collapsed commit files were unmounted')
+  assert.equal(find(tree, (p) => p.className === 'diff-pane').ref, scroller.ref)
+  props.listOpen = true; props.detailOpen = true
   unmount()
   props.onShowDiff = () => {}
 }

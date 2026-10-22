@@ -7,6 +7,7 @@ import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
 import { CommitStat } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
+import { DiffRail } from './DiffRail'
 import { Icon } from './Icons'
 import { EmptyState } from './EmptyState'
 import { ActionMenu } from './OverflowBar'
@@ -14,7 +15,7 @@ import { useContextLines, useIgnoreWhitespace } from './prefs'
 import { useRepoBusy } from './repo-busy'
 import { useResizable } from './Splitter'
 import { graphWidth, laneX, LANE_STEP } from './graph-x'
-import { GUTTER, STRIP_WIDTH, useFolded, useFoldHold } from './fold'
+import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
 import { loadSession, rememberScroll, savePlace, savedView, saveView, useScrollMemory } from './session'
 
 const api = window.bettergit
@@ -64,7 +65,7 @@ interface Props {
   refreshes: number
   listOpen: boolean
   detailOpen: boolean
-  // Whether the commit's code diff shows beside its details. Hidden, the details take the pane; a file click shows it again.
+  // Whether the commit's code diff is pinned open. A file click expands its rail.
   diffOpen: boolean
   onShowDiff: () => void
   onError: (error: unknown) => void
@@ -109,12 +110,11 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   const compare = loaded && target && target.hash === selected && loaded.hash === target.hash && loaded.ref === target.ref && loaded.ignoreWhitespace === ignoreWhitespace ? loaded : null
   const { track: historyWidth, handle: historyHandle } = useResizable('bettergit.historyListWidth', 400, 280, 1100, 35)
   const { track: detailWidth, handle: detailHandle } = useResizable('bettergit.commitDetailsWidth', 320, 240, 640, 40)
-  // A pane folds only beside its neighbour. A held pane grows in flow, so the layout beside it shifts.
-  const list = useFoldHold<HTMLDivElement>(useFolded('list') && detailOpen, 'ul.commits')
-  // The details fold only beside the code diff. Without it they are the whole pane.
-  const details = useFoldHold<HTMLDivElement>(useFolded('details') && listOpen && diffOpen, '.commit-info button:not(.fold-strip)')
+  const list = useFoldHold<HTMLDivElement>(!listOpen, 'ul.commits')
+  const details = useFoldHold<HTMLDivElement>(!detailOpen, '.commit-stat-row')
+  const code = useFoldHold<HTMLDivElement>(!diffOpen, '.diff-toolbar button:not(:disabled)')
   const listTrack = list.collapsed ? `${STRIP_WIDTH}px` : historyWidth
-  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : detailWidth
+  const detailTrack = details.collapsed ? `${STRIP_WIDTH}px` : code.collapsed ? 'minmax(0, 1fr)' : detailWidth
   const diffRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const listScroll = useRef<HTMLDivElement>(null)
@@ -471,8 +471,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     if (diffOpen && path) requestAnimationFrame(() => requestAnimationFrame(() => scrollToFile(path)))
   }, [diffOpen])
 
-  // The comparison on screen and its exit. It heads the code diff, or the file list while the code diff is hidden, so the
-  // files are never read as the selected commit's own.
+  // The file list also names the comparison, so its stats stay unambiguous while the diff is collapsed.
   const compareBar = compare && totals && selected ? (
     <div className="compare-bar">
       <span>
@@ -538,17 +537,16 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     <div
       className="history"
       style={{
-        gridTemplateColumns: listOpen && detailOpen ? `${listTrack} ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)',
+        gridTemplateColumns: `${listTrack} ${list.collapsed ? 0 : GUTTER}px minmax(0, 1fr)`,
       } as CSSProperties}
     >
-      {listOpen && (
         <div
           className={`history-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
           ref={list.pane}
           {...list.paneHandlers}
         >
           {list.folded && (
-            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" onClick={list.activate}>
+            <button ref={list.strip} type="button" className="fold-strip" aria-label="Show commit list" aria-expanded={!list.collapsed} onClick={list.activate}>
               <Icon name="chevron" />
               <span className="fold-label">{picked ? <><code>{picked.hash.slice(0, 7)}</code> {picked.subject}</> : 'Commits'}</span>
             </button>
@@ -582,31 +580,35 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
             )}
           </div>
         </div>
-      )}
-      {listOpen && detailOpen && <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />}
-      {detailOpen && (
+      <div className={`splitter${list.collapsed ? ' off' : ''}`} {...historyHandle} {...list.splitterHandlers} />
         <div
-          className={`commit-detail${selected && current ? ' has-commit' : ''}`}
-          style={selected && current ? { gridTemplateColumns: diffOpen ? `${detailTrack} ${details.collapsed ? 0 : GUTTER}px minmax(0, 1fr)` : 'minmax(0, 1fr)' } as CSSProperties : undefined}
+          className="commit-detail has-commit"
+          style={{ gridTemplateColumns: `${detailTrack} ${details.collapsed ? 0 : GUTTER}px ${code.collapsed ? `${STRIP_WIDTH}px` : 'minmax(0, 1fr)'}` } as CSSProperties}
         >
-          {!selected && (empty
-            ? <EmptyState icon="commit" title="No commits yet" hint="Make the first commit from the Changes tab and it shows up here." />
-            : <EmptyState icon="pick" title="No commit selected" hint="Pick a commit from the list. The up and down arrows move between commits." />)}
-          {selected && !current && <p className="hint">Loading…</p>}
-          {selected && current && (
-            <>
               <div
                 className={`commit-info${details.folded ? ' folded' : ''}${details.held ? ' held' : ''}`}
                 ref={details.pane}
                 {...details.paneHandlers}
               >
                 {details.folded && (
-                  <button ref={details.strip} type="button" className="fold-strip" aria-label="Show commit details" onClick={details.activate}>
+                  <button ref={details.strip} type="button" className="fold-strip" aria-label="Show commit files" aria-expanded={!details.collapsed} onClick={details.activate}>
                     <Icon name="chevron" />
-                    <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {current.files.length} files</span>
+                    <span className="fold-label"><code>{picked?.hash.slice(0, 7)}</code> {patch?.files.length ?? 0} files</span>
                   </button>
                 )}
-                <header className="commit-head" tabIndex={-1}>
+                {!diffOpen && compareBar}
+                <CommitStat files={patch?.files ?? []} onSelect={showFile} />
+                {!patch?.files.length && <p className="hint" tabIndex={-1}>{!selected ? 'Pick a commit to see its files.' : emptyHint ?? 'No changed files.'}</p>}
+              </div>
+              <div className={`splitter${details.collapsed || code.collapsed ? ' off' : ''}`} aria-label="Commit files width" {...detailHandle} {...details.splitterHandlers} />
+              <DiffRail fold={code} label={picked?.subject ?? 'Commit details and code diff'}>
+                <div className="diff-pane" ref={diffRef} onScroll={onDiffPaneScroll} tabIndex={-1}>
+                  {!selected && (empty
+                    ? <EmptyState icon="commit" title="No commits yet" hint="Make the first commit from the Changes tab and it shows up here." />
+                    : <EmptyState icon="pick" title="No commit selected" hint="Pick a commit from the list. The up and down arrows move between commits." />)}
+                  {selected && !current && <p className="hint">Loading…</p>}
+                  {selected && current && <>
+                    <header className="commit-head" tabIndex={-1}>
                   {picked && (
                     <div className="commit-title">
                       <h2 className="commit-subject">{picked.subject}</h2>
@@ -616,19 +618,13 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   )}
                   {picked && <CommitFacts details={current.details} refs={refs?.hash === selected ? refs.refs : null} />}
                   {body && <pre className="commit-body">{body}</pre>}
-                </header>
-                {!diffOpen && compareBar}
-                <CommitStat files={patch?.files ?? []} onSelect={showFile} />
-              </div>
-              {diffOpen && <div className={`splitter${details.collapsed ? ' off' : ''}`} aria-label="Commit details width" {...detailHandle} {...details.splitterHandlers} />}
-              {diffOpen && <div className="diff-pane" ref={diffRef} onScroll={onDiffPaneScroll}>
-                {compareBar}
-                <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
-              </div>}
-            </>
-          )}
+                  </header>
+                  {compareBar}
+                  <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
+                  </>}
+                </div>
+              </DiffRail>
         </div>
-      )}
       {menu && commitInput && menu.hash === selected && createPortal(
         <ActionMenu
           className="context-menu commit-menu"

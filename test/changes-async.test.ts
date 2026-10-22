@@ -120,7 +120,34 @@ function expand() {
   return request
 }
 
-if (process.env.CHECK_MODE === 'toggle-cache') {
+if (process.env.CHECK_MODE === 'rails') {
+  await start(true)
+  find(tree, (p) => p['aria-label'] === 'Commit message').onChange({ target: { value: 'unfinished draft' } })
+  render()
+  const files = diff().files
+  const scroller = find(tree, (p) => p.className === 'diff-pane').ref
+  const before = requests.length
+  let shows = 0
+  props = { ...props, listOpen: false, detailOpen: false, diffOpen: false, onShowDiff: () => { shows++ } }
+  render(); await flush()
+  assert.ok(find(tree, (p) => p.className?.startsWith('file-list folded')), 'collapsed file list was unmounted')
+  assert.equal(find(tree, (p) => p.className === 'diff-pane').ref, scroller)
+  assert.equal(diff().files, files, 'collapse replaced the selected diff')
+  assert.equal(find(tree, (p) => p['aria-label'] === 'Commit message').value, 'unfinished draft')
+  assert.equal(find(tree, (p) => p.fold && p.label).fold.collapsed, true)
+  find(tree, (p) => p.fold && p.label).fold.paneHandlers.onPointerEnter()
+  render()
+  assert.equal(find(tree, (p) => p.fold && p.label).fold.collapsed, false, 'hover did not preview the collapsed diff')
+  assert.equal(props.diffOpen, false, 'hover changed the saved expansion choice')
+  assert.equal(requests.length, before, 'collapsing or previewing reloaded the diff')
+  find(tree, (p) => p.title === 'Changes' && typeof p.onSelect === 'function').onSelect(change('a.ts'))
+  assert.equal(shows, 1, 'picking a file did not expand a collapsed diff')
+  props = { ...props, listOpen: true, detailOpen: true, diffOpen: true }
+  render(); await flush()
+  assert.equal(find(tree, (p) => p.className === 'diff-pane').ref, scroller)
+  assert.equal(find(tree, (p) => p['aria-label'] === 'Commit message').value, 'unfinished draft')
+  unmount()
+} else if (process.env.CHECK_MODE === 'toggle-cache') {
   // A whitespace option loaded under the same status shows again at once, without a reload or a loading frame, and
   // picking a file reuses its section's load. A refresh drops the loads, so the next toggle loads again.
   for (const selected of [false, true]) {
@@ -756,5 +783,6 @@ test('a failed first load shows the failure with the toolbar, and a later load r
 test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
+test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
 test('Changes lists every path once with staged-only files routed as staged, and Stage all takes only unstaged paths', () => check('membership'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

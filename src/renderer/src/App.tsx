@@ -44,6 +44,7 @@ export function App() {
   const [listOpen, setListOpen] = useState(initial.listOpen)
   const [detailOpen, setDetailOpen] = useState(initial.detailOpen)
   const [diffOpen, setDiffOpen] = useState(initial.diffOpen)
+  const [panelPins, setPanelPins] = useState(initial.panelPins ?? {})
   const [cloneOpen, setCloneOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // The find bar, and a counter bumped by each ⌘F so an open bar takes focus again.
@@ -56,7 +57,24 @@ export function App() {
   // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
   const [repoClean, setRepoClean] = useState(false)
   const { size: sidebarWidth, handle: sidebarHandle } = useResizable('bettergit.sidebarWidth', 264, 200, 420)
-  const sidebarFold = useFoldHold<HTMLElement>(useFolded('sidebar') && !repoClean, '[role="treeitem"][tabindex="0"]')
+  const autoSidebar = useFolded('sidebar')
+  const autoList = useFolded('list')
+  const autoDetails = useFolded('details')
+  const sidebarExpanded = sidebarOpen && (!autoSidebar || repoClean || !!panelPins.sidebar)
+  const listExpanded = listOpen && (!autoList || repoClean || !!panelPins.list)
+  const detailExpanded = detailOpen && (tab === 'changes' || !autoDetails || !!panelPins.details)
+  const toggleDetail = () => {
+    const expanded = tab === 'changes' ? detailExpanded && diffOpen : detailExpanded
+    setDetailOpen(!expanded)
+    setPanelPins((pins) => ({ ...pins, details: true }))
+    if (tab === 'changes') setDiffOpen(!expanded)
+  }
+  const sidebarFold = useFoldHold<HTMLElement>(!sidebarExpanded, '[role="treeitem"][tabindex="0"]')
+  const toggleSidebar = useRef(() => {})
+  toggleSidebar.current = () => {
+    setSidebarOpen(!sidebarExpanded)
+    setPanelPins((pins) => ({ ...pins, sidebar: true }))
+  }
 
   const refreshTree = useCallback(async () => setTree(await api.getTree()), [])
   const reportError = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))
@@ -71,8 +89,8 @@ export function App() {
   }, [error])
 
   useEffect(() => {
-    saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen })
-  }, [selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen])
+    saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen, panelPins })
+  }, [selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen, panelPins])
 
   useEffect(() => connectRepoLocks({
     snapshot: () => api.repoLocks(),
@@ -127,7 +145,7 @@ export function App() {
         case 'show-history': return setTab('history')
         case 'find': return openFindRef.current()
         case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
-        case 'toggle-sidebar': return setSidebarOpen((open) => !open)
+        case 'toggle-sidebar': return toggleSidebar.current()
         case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
         case 'fetch-all': return void (async () => {
           // Each repo is fetched on its own. A busy repo is skipped and named, and every failure is reported with its repo.
@@ -232,15 +250,12 @@ export function App() {
     <div
       className="shell"
       style={{
-        gridTemplateColumns: sidebarOpen
-          ? `${sidebarFold.collapsed ? SIDEBAR_STRIP_WIDTH : sidebarWidth}px ${sidebarFold.collapsed ? 0 : GUTTER}px minmax(0, 1fr)`
-          : 'minmax(0, 1fr)',
+        gridTemplateColumns: `${sidebarFold.collapsed ? SIDEBAR_STRIP_WIDTH : sidebarWidth}px ${sidebarFold.collapsed ? 0 : GUTTER}px minmax(0, 1fr)`,
         '--sidebar-width': `${sidebarWidth}px`,
       } as CSSProperties}
     >
       <header className="titlebar" ref={setTitlebar} />
       <FindBar open={find.open} focusKey={find.focus} onClose={() => setFind((prev) => ({ ...prev, open: false }))} />
-      {sidebarOpen && (
         <Sidebar
           fold={sidebarFold}
           tree={tree}
@@ -270,10 +285,7 @@ export function App() {
           onSettings={() => setSettingsOpen(true)}
           stripLabel={repo?.name ?? 'Repositories'}
         />
-      )}
-      {sidebarOpen && (
         <div className={`splitter gap${sidebarFold.collapsed ? ' off' : ''}`} {...sidebarHandle} {...sidebarFold.splitterHandlers} />
-      )}
       <main className="pane">
         {error && (
           <div className="banner" role="alert">
@@ -299,15 +311,24 @@ export function App() {
             terminalApp={config.settings.terminalApp}
             tab={tab}
             onTab={setTab}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((open) => !open)}
-            listOpen={listOpen}
-            onToggleList={() => setListOpen((open) => !open)}
-            detailOpen={detailOpen}
-            onToggleDetail={() => setDetailOpen((open) => !open)}
+            sidebarOpen={sidebarExpanded}
+            onToggleSidebar={() => toggleSidebar.current()}
+            listOpen={listExpanded}
+            onToggleList={() => {
+              setListOpen(!listExpanded)
+              setPanelPins((pins) => ({ ...pins, list: true }))
+            }}
+            detailOpen={detailExpanded}
+            onToggleDetail={toggleDetail}
             diffOpen={diffOpen}
-            onToggleDiff={() => setDiffOpen((open) => !open)}
-            onShowDiff={() => setDiffOpen(true)}
+            onToggleDiff={() => tab === 'changes' ? toggleDetail() : setDiffOpen((open) => !open)}
+            onShowDiff={() => {
+              setDiffOpen(true)
+              if (tab === 'changes') {
+                setDetailOpen(true)
+                setPanelPins((pins) => ({ ...pins, details: true }))
+              }
+            }}
             revision={revision}
             refreshes={refreshes}
             onChanged={() => setRevision((value) => value + 1)}
@@ -510,8 +531,8 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         <div className="pane-toggles">
           <IconButton icon="panelLeft" label={paneLabel('Sidebar', sidebarOpen)} active={sidebarOpen} onClick={onToggleSidebar} />
           <IconButton icon="paneList" label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
-          <IconButton icon="panelRight" label={paneLabel(tab === 'changes' ? 'Diff' : 'Commit details', detailOpen)} active={detailOpen} onClick={onToggleDetail} />
-          <IconButton icon="diff" label={paneLabel('Code diff', diffOpen)} active={diffOpen} onClick={onToggleDiff} />
+          <IconButton icon="panelRight" label={paneLabel(tab === 'changes' ? 'Diff' : 'Commit files', tab === 'changes' ? detailOpen && diffOpen : detailOpen)} active={tab === 'changes' ? detailOpen && diffOpen : detailOpen} onClick={onToggleDetail} />
+          <IconButton icon="diff" label={paneLabel('Code diff', tab === 'changes' ? detailOpen && diffOpen : diffOpen)} active={tab === 'changes' ? detailOpen && diffOpen : diffOpen} onClick={onToggleDiff} />
         </div>
       </div>
       {tab === 'changes' && (
@@ -531,7 +552,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
 
 // A pane toggle's label: whether the pane shows now, and what a click does.
 function paneLabel(pane: string, shown: boolean) {
-  return toggleLabel(`${pane}: ${shown ? 'shown' : 'hidden'}`, shown ? 'hide it' : 'show it')
+  return toggleLabel(`${pane}: ${shown ? 'expanded' : 'collapsed'}`, shown ? 'collapse to a rail' : 'pin open')
 }
 
 function flatten(nodes: TreeNode[]): RepoNode[] {
