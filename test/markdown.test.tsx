@@ -511,7 +511,7 @@ test('formatting keeps collapse persistence and restores raw content across both
     'bettergit.session': JSON.stringify({ views: { 'markdown-files': { key: 'commit', value: { 'remembered.md': false } } } }),
   })
   expect(html).toContain('<h1')
-  expect(html).toContain('401 changed lines hidden')
+  expect(html).toContain('aria-label="closed.md: collapsed — click to expand it"')
   expect(html).not.toContain('Hidden 400')
   expect(html).not.toContain('Saved closed')
   expect(html).toContain('aria-label="remembered.md: collapsed — click to expand it"')
@@ -527,7 +527,7 @@ test('formatting parses only open Markdown files; expanding builds the plan, raw
   const files = [file('read.md', [line('# Visible')]), file('closed.md', hidden), file('remembered.md', [line('# Saved closed')])]
   const session = (value: Record<string, boolean>) => ({ 'bettergit.session': JSON.stringify({ views: { 'markdown-files': { key: 'commit', value } } }) })
   const collapsed = render(files, 'unified', true, [], session({ 'remembered.md': false }))
-  expect(collapsed.html).toContain('401 changed lines hidden')
+  expect(collapsed.html).toContain('aria-label="closed.md: collapsed — click to expand it"')
   expect(collapsed.parsed).toEqual([['# Visible']])
   const opened = session({ 'closed.md': true, 'remembered.md': true })
   const expanded = render(files, 'unified', true, [], opened)

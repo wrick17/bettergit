@@ -15,6 +15,10 @@
 .diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 70px; }
 .diff-editor .cm-editor .cm-changedText, .diff-editor .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .diff-editor .cm-editor .cm-deletedChunk .cm-deletedText, .diff-editor .cm-merge-a .cm-changedText { background: color-mix(in srgb, var(--del) 30%, transparent); }
+/* A whole changed line takes the changed-word strength, as in the read-only diff. Its changed-text marks add nothing on top. */
+.diff-editor .cm-editor .cm-changedLine.cm-fullChange, .diff-editor .cm-merge-b .cm-changedLine.cm-fullChange { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.diff-editor .cm-editor .cm-deletedChunk > .cm-deletedLine.cm-fullChange, .diff-editor .cm-merge-a .cm-changedLine.cm-fullChange { background: color-mix(in srgb, var(--del) 30%, transparent); }
+.diff-editor .cm-editor .cm-fullChange :is(.cm-changedText, .cm-deletedText) { background: none; }
 .diff-editor .cm-editor ins.cm-insertedLine, .diff-editor .cm-editor del.cm-deletedLine, .diff-editor .cm-editor .cm-deletedLine del { text-decoration: none; }
 .diff-editor .cm-editor .cm-changeGutter { width: 2px; padding: 0; }
 .diff-editor .cm-editor .cm-changedLineGutter { background: var(--add); }
@@ -50,8 +54,11 @@
 .ed-line:is(.del, .old) > .ed-bar { background: var(--del); }
 /* The unified editor's removed block (.cm-deletedChunk) indents its text. */
 .ed-line.del > code { padding-left: 70px; }
+.ed-line.add.full > code { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.ed-line:is(.del, .old).full > code { background: color-mix(in srgb, var(--del) 30%, transparent); }
 .ed-line.add .ed-changed { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .ed-line:is(.del, .old) .ed-changed { background: color-mix(in srgb, var(--del) 30%, transparent); }
+.ed-line.full .ed-changed { background: none; }
 .ed-fold-bar { flex: 1; min-width: 0; height: 28px; margin: 0; padding: 0 20px; border: 0; border-radius: 0; box-shadow: none; background: var(--sunken); color: var(--text-3); font: 12px/28px var(--font-code); text-align: left; cursor: pointer; }
 /* Split: two equal columns like the merge view; a change's shorter side ends in blank space, as the editor's spacer does. */
 .ed-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }

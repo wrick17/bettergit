@@ -131,7 +131,7 @@ if (process.env.CHECK_MODE === 'toggle-cache') {
     setIgnoreWhitespace(false); render()
     assert.equal(requests.length, before, 'a loaded option was fetched again')
     assert.equal(diff().files[0].hunks[0].lines.at(-1).text, 'initial', 'the loaded option did not show at once')
-    find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+    find(tree, (p) => p.title === 'Changes' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
     await flush()
     assert.equal(requests.length, before, 'picking a file reloaded its section')
     props = { ...props, revision: 2 }; render()
@@ -322,7 +322,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   assert.equal(pane.scrollTop, 400)
   // Picking another file in the same section scrolls the diff already on screen to it. Nothing reloads.
   const loads = requests.length
-  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  find(tree, (p) => p.title === 'Changes' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
   tick(); tick()
   assert.deepEqual(revealed, ['a.ts', 'b.ts'])
   assert.equal(requests.length, loads, 'picking a file in the section on screen reloaded its diff')
@@ -423,7 +423,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     walk(tree)
     return out.length
   }
-  const rowStats = () => find(tree, (p) => p.title === 'Unstaged' && p.stats instanceof Map).stats.size
+  const rowStats = () => find(tree, (p) => p.title === 'Changes' && p.stats instanceof Map).stats.size
   const settle = async (option, outcome) => {
     for (const request of requests.filter((r) => !r.done && r.args[3] === undefined && r.args[4] === option)) {
       request.done = true
@@ -513,7 +513,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   // not loaded yet reloads; the whitespace option loaded before would show at once.
   setContextLines(10); render()
   frame()
-  find(tree, (p) => p.title === 'Unstaged' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
+  find(tree, (p) => p.title === 'Changes' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
   await load('picked')
   frame(); frame(); frame()
   assert.notEqual(pane.scrollTop, 900, 'old view position restored into a picked file')
@@ -523,7 +523,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   for (const mode of ['all', 'selected-working', 'selected-staged']) for (const reject of [false, true]) {
     await start(false)
     if (mode !== 'all') {
-      const title = mode === 'selected-staged' ? 'Staged' : 'Unstaged'
+      const title = mode === 'selected-staged' ? 'Staged' : 'Changes'
       find(tree, (p) => p.title === title && typeof p.onSelect === 'function').onSelect(change('b.ts'))
       render(); await load('initial')
     }
@@ -654,7 +654,7 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     // Picking another file in the section on screen keeps that diff, so its widen still applies. Not a target change.
     if (transition === 'file' && selected) { unmount(); continue }
     if (transition === 'file' || transition === 'section') {
-      const section = transition === 'section' ? 'Staged' : 'Unstaged'
+      const section = transition === 'section' ? 'Staged' : 'Changes'
       find(tree, (p) => p.title === section && typeof p.onSelect === 'function').onSelect(change(transition === 'file' ? 'b.ts' : 'a.ts'))
     }
     if (transition === 'clear') {
@@ -676,6 +676,60 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     assert.equal(place?.widened?.['u:a.ts'], undefined, transition + ': old widen persisted its level')
     if (mounted) unmount()
   }
+}
+
+if (process.env.CHECK_MODE === 'membership') {
+  // Status gives one entry per side: a.ts is only unstaged, b.ts only staged, c.ts both. Changes lists every path once,
+  // c.ts by its unstaged entry, b.ts by its staged one; Staged lists b.ts and c.ts. Stage all takes only unstaged paths.
+  const side = (path, staged) => ({ path, staged, unstaged: !staged, conflicted: false, kind: 'modified' })
+  const patch = (paths, label) => ({ files: paths.flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + ' ' + path + '\n')), moves: [] })
+  const respond = async () => {
+    for (const request of requests.filter((r) => !r.done)) {
+      request.done = true
+      request.resolve(request.args[1] ? patch(['b.ts', 'c.ts'], 'staged') : patch(['a.ts', 'c.ts'], 'working'))
+    }
+    await flush()
+  }
+  const writes = []
+  window.bettergit.stage = (_repo, paths) => { writes.push(['stage', paths]); return Promise.resolve() }
+  window.bettergit.unstage = (_repo, paths) => { writes.push(['unstage', paths]); return Promise.resolve() }
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  props = {
+    repo: '/repo', revision: 1, status: { changes: [side('a.ts', false), side('b.ts', true), side('c.ts', true), side('c.ts', false)] },
+    listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+  }
+  render(); await respond()
+  const lists = findAll(tree, (p) => typeof p.title === 'string' && Array.isArray(p.changes))
+  assert.deepEqual(lists.map((list) => list.title), ['Changes', 'Staged'])
+  assert.deepEqual(lists[0].changes.map((c) => [c.path, c.staged]), [['a.ts', false], ['b.ts', true], ['c.ts', false]])
+  assert.deepEqual(lists[1].changes.map((c) => c.path), ['b.ts', 'c.ts'])
+  const text = (file) => file.hunks[0].lines.at(-1).text
+  const changesView = find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === false)
+  assert.deepEqual(changesView.files.map(text), ['working a.ts', 'staged b.ts', 'working c.ts'])
+  assert.deepEqual([...changesView.stage.stagedPaths], ['b.ts'])
+  lists[0].onToggleAll(); await flush()
+  assert.deepEqual(writes, [['stage', ['a.ts', 'c.ts']]])
+  // The staged-only row unstages; picking it shows its staged content in the Changes view, routed as staged.
+  lists[0].onToggle(lists[0].changes[1]); await flush()
+  assert.deepEqual(writes.at(-1), ['unstage', ['b.ts']])
+  lists[0].onSelect(lists[0].changes[1]); render(); await respond()
+  const selected = find(tree, (p) => Array.isArray(p.files) && p.stage && p.persist?.key === 'selection')
+  assert.equal(selected.stage.staged, false)
+  assert.ok(selected.edit, 'working files in Changes stay editable')
+  assert.ok(selected.stage.stagedPaths.has('b.ts') && !selected.stage.stagedPaths.has('c.ts'))
+  assert.equal(text(selected.files.find((file) => file.newPath === 'b.ts')), 'staged b.ts')
+  // Clearing the selection shows conflicts before both diff sections in the continuous all-files pane.
+  window.bettergit.conflictLoad = () => new Promise(() => {})
+  props = { ...props, status: { changes: [...props.status.changes, { path: 'd.ts', staged: false, unstaged: false, conflicted: true, kind: 'modified' }] } }
+  find(tree, (p) => p.className?.startsWith('file-list')).onClick({ target: { closest: () => null } })
+  render(); await respond()
+  assert.deepEqual(findAll(tree, (p) => typeof p.title === 'string' && Array.isArray(p.changes)).map((p) => p.title), ['Conflicts', 'Changes', 'Staged'])
+  const headings = findAll(tree, (p) => p.className === 'diff-section')
+  assert.deepEqual(headings.map((p) => p.children[0].trim()), ['Conflicts', 'Changes', 'Staged'])
+  assert.ok(find(tree, (p) => p['aria-label'] === 'Conflict in d.ts'))
+  assert.deepEqual(errors, [])
+  unmount()
 }
 `
 
@@ -702,4 +756,5 @@ test('a failed first load shows the failure with the toolbar, and a later load r
 test('while new options load, old hunks, counts and stats are hidden behind a loading toolbar, and only the current reply shows', () => check('option-pending'))
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
+test('Changes lists every path once with staged-only files routed as staged, and Stage all takes only unstaged paths', () => check('membership'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))

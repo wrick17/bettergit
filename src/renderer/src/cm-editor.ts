@@ -4,6 +4,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndI
 import { Chunk, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { onRecolour } from './prefs'
+import { wholeLine } from './intraline'
 
 // One mounted diff editor. `replace` is an undoable edit; `sync` brings in a reload without touching the undo history.
 // `reveal` marks a find match: on the old side (split) or the current text, by 1-based line and offsets in that line.
@@ -228,7 +229,60 @@ export function mountEditor({ parent, layout, language, path, text, original, se
 
 // Shared by both sides: line numbers, wrapped lines (or sideways scrolling), and Shiki colours like the rest of the diff.
 function common(language: string | null, wrapping: Compartment, wrap: boolean): Extension {
-  return [lineNumbers(), wrapping.of(wrap ? EditorView.lineWrapping : []), shikiColours(language), findField]
+  return [lineNumbers(), wrapping.of(wrap ? EditorView.lineWrapping : []), shikiColours(language), findField, wholeChanges]
+}
+
+// Whole changed lines take the changed-text strength, by the same rule as the static rows (wholeLine). The unified
+// editor's removed lines are drawn by the merge widget, so they are tagged once drawn: a removed line is whole when all
+// of its text is changed text.
+const wholeChange = Decoration.line({ class: 'cm-fullChange' })
+const wholeChanges = ViewPlugin.fromClass(class {
+  decorations: DecorationSet
+  constructor(readonly view: EditorView) {
+    this.decorations = wholeLines(view.state)
+    this.tagRemoved()
+  }
+  update(update: ViewUpdate) {
+    if (update.docChanged || getChunks(update.state)?.chunks !== getChunks(update.startState)?.chunks) this.decorations = wholeLines(update.state)
+    this.tagRemoved()
+  }
+  tagRemoved() {
+    this.view.requestMeasure({
+      key: this,
+      read: () => undefined,
+      write: () => {
+        for (const line of this.view.contentDOM.querySelectorAll('.cm-deletedChunk > .cm-deletedLine')) {
+          const text = line.firstElementChild
+          line.classList.toggle('cm-fullChange', !!text && [...text.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || !node.textContent))
+        }
+      },
+    })
+  }
+}, { decorations: (plugin) => plugin.decorations })
+
+function wholeLines(state: EditorState): DecorationSet {
+  const found = getChunks(state)
+  if (!found) return Decoration.none
+  const isA = found.side === 'a'
+  const { doc } = state
+  const builder = new RangeSetBuilder<Decoration>()
+  for (const chunk of found.chunks) {
+    const from = isA ? chunk.fromA : chunk.fromB
+    const to = isA ? chunk.toA : chunk.toB
+    if (from >= to) continue
+    const other = isA ? chunk.toB - chunk.fromB : chunk.toA - chunk.fromA
+    for (let number = doc.lineAt(from).number, last = doc.lineAt(isA ? chunk.endA : chunk.endB).number; number <= last; number++) {
+      const line = doc.line(number)
+      const marks: Array<[number, number]> = []
+      for (const change of chunk.changes) {
+        const start = Math.max(from + (isA ? change.fromA : change.fromB), line.from)
+        const end = Math.min(from + (isA ? change.toA : change.toB), line.to)
+        if (start < end) marks.push([start, end])
+      }
+      if (wholeLine(line.length, marks, other)) builder.add(line.from, line.from, wholeChange)
+    }
+  }
+  return builder.finish()
 }
 
 // Colours the whole text with Shiki, after a pause in typing. Until fresh colours arrive, the old ones move with the text.

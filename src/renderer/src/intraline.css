@@ -2,3 +2,6 @@
 .line.add .intra, .split-cell.add .intra { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .line.del .intra, .split-cell.del .intra { background: color-mix(in srgb, var(--del) 30%, transparent); }
 .intra { border-radius: 3px; }
+/* A whole changed line (no pair, or rewritten) has no words to single out, so all of it takes the changed-word strength. */
+.line.add.full, .split-cell.add.full { background: color-mix(in srgb, var(--add) 30%, transparent); }
+.line.del.full, .split-cell.del.full { background: color-mix(in srgb, var(--del) 30%, transparent); }

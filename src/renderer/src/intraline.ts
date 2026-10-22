@@ -81,6 +81,15 @@ export function intralineSpans(lines: DiffLine[]): Map<number, Span[]> {
   return spans
 }
 
+// A line of a change is changed as a whole when the change has nothing on the other side, the line is empty, or its
+// changed text covers all of it. Such a line takes the changed-text strength over its full width.
+export function wholeLine(length: number, marks: Span[], otherSide: number): boolean {
+  if (otherSide === 0 || length === 0) return true
+  let covered = 0
+  for (const [from, to] of marks) covered += to - from
+  return covered >= length
+}
+
 export type Piece = Segment & { changed: boolean }
 
 // Cuts coloured segments wherever a changed span starts or ends, so every piece is wholly changed or wholly unchanged.

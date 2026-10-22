@@ -1,7 +1,7 @@
 // Read-only stand-in for the main process: serves the renderer API over HTTP so a headless page can run the real App.
 // Usage: bun scripts/perf/server.ts <repo>...   (port 5792)
 import { commitDiff, compare, detectMoves, workingDiff } from '../../src/main/git/diff'
-import { commitDetails, readAuthors, readHistory, searchHistory } from '../../src/main/git/history'
+import { commitDetails, commitRefs, readAuthors, readHistory, searchHistory } from '../../src/main/git/history'
 import { readStatus } from '../../src/main/git/status'
 import * as ops from '../../src/main/git/ops'
 import { repoNode } from '../../src/main/scan'
@@ -17,10 +17,13 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   history: (repo: string, skip: number, limit: number, authors: string[] = []) => readHistory(repo, skip, limit, authors),
   searchHistory: (repo: string, query: string, authors: string[] = []) => searchHistory(repo, query, authors),
   authors: (repo: string) => readAuthors(repo),
+  // No network in the harness: every author shows the initial.
+  avatar: () => null,
   commit: async (repo: string, hash: string, context: number, ignoreWhitespace = false) => {
     const files = await commitDiff(repo, hash, context, ignoreWhitespace === true)
     return { files, moves: detectMoves(files), details: await commitDetails(repo, hash) }
   },
+  commitRefs: (repo: string, hash: string) => commitRefs(repo, hash),
   working: async (repo: string, staged: boolean, context: number, path?: string, ignoreWhitespace = false) => {
     const files = await workingDiff(repo, staged, context, path ?? undefined, ignoreWhitespace === true)
     return { files, moves: detectMoves(files) }

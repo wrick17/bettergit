@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, Columns2, Columns3,
+  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2, Columns3,
   CircleAlert, CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
   Minus, MousePointerClick, Palette, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
@@ -57,6 +57,8 @@ const ICONS = {
   chevron: ChevronRight,
   chevronDown: ChevronDown,
   chevronUp: ChevronUp,
+  collapseAll: ChevronsDownUp,
+  expandAll: ChevronsUpDown,
   branch: GitBranch,
   search: Search,
   settings: Settings,

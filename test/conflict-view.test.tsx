@@ -286,9 +286,9 @@ press(all(host, (node) => hasClass(node, 'hunk-expand-btn'))[0])
 const splitWidened = { hunks: hunks(), view: splitView() }
 await React.act(async () => root.render(React.createElement(Parent, { key: 'lock', model })))
 React.act(() => setPath('package-lock.json'))
-const lockOpen = { rows: splitView().length, note: all(host, (node) => hasClass(node, 'collapsed-note')).length }
+const lockOpen = { rows: splitView().length, expanded: all(host, (node) => hasClass(node, 'diff-file-toggle'))[0].attributes['aria-expanded'] }
 press(all(host, (node) => hasClass(node, 'diff-file-toggle'))[0])
-const lockCollapsed = { rows: splitView().length, note: all(host, (node) => hasClass(node, 'collapsed-note')).length }
+const lockCollapsed = { rows: splitView().length, expanded: all(host, (node) => hasClass(node, 'diff-file-toggle'))[0].attributes['aria-expanded'] }
 await React.act(async () => root.unmount())
 console.log(JSON.stringify({
   unresolvedText: applyChoices(model.parts, [], []).text,
@@ -433,14 +433,14 @@ describe('ConflictView', () => {
       expect(markup).not.toContain('changed lines hidden')
     }
     expect(lockSplit).toContain('conflict-split-controls')
-    expect(ordinaryLock).toContain('2 changed lines hidden')
+    expect(ordinaryLock).toContain('aria-expanded="false"')
   })
 
   test('collapsing a conflicted lock file by hand keeps it collapsed', () => {
     const { lockOpen, lockCollapsed, errors } = clientRun()
     expect(lockOpen.rows).toBeGreaterThan(0)
-    expect(lockOpen.note).toBe(0)
-    expect(lockCollapsed).toEqual({ rows: 0, note: 1 })
+    expect(lockOpen.expanded).toBe('true')
+    expect(lockCollapsed).toEqual({ rows: 0, expanded: 'false' })
     expect(errors).toEqual([])
   })
 

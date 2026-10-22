@@ -24,7 +24,11 @@ const api = {
   history: (repo: string, skip: number, limit: number, authors: string[] = []) => invoke('repo:history', repo, skip, limit, authors),
   searchHistory: (repo: string, query: string, authors: string[] = []) => invoke('repo:search', repo, query, authors),
   authors: (repo: string) => invoke('repo:authors', repo) as Promise<{ name: string; count: number }[]>,
+  // An author's picture as a PNG data URL, or null when there is none or it could not be loaded.
+  avatar: (email: string) => invoke('avatar:get', email) as Promise<string | null>,
   commit: (repo: string, hash: string, context: number, ignoreWhitespace = false) => invoke('repo:commit', repo, hash, context, ignoreWhitespace),
+  // The branches and tags at a commit now. Read on each refresh, since refs move while the hash stays.
+  commitRefs: (repo: string, hash: string) => invoke('repo:commit-refs', repo, hash) as Promise<{ branches: string[]; remotes: string[]; tags: string[] }>,
   working: (repo: string, staged: boolean, context: number, path?: string, ignoreWhitespace = false) =>
     invoke('repo:working', repo, staged, context, path, ignoreWhitespace),
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
