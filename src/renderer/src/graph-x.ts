@@ -1,8 +1,8 @@
 // Lane positions for the commit graph. The first lane sits one full step in, and each lane to its right sits closer to
 // the one before, down to MIN_GAP, like Sublime Merge: a history with many branches stays narrow, and the first lanes,
 // where most commits are, keep their room.
-export const LANE_STEP = 11
-const MIN_GAP = 4
+export const LANE_STEP = 13
+const MIN_GAP = 6
 const SHRINK = 0.85
 // How far a marker reaches past its lane's centre (HEAD's ring is 7px), plus a pixel, so the graph never clips it.
 const MARKER_REACH = 8

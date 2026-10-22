@@ -124,11 +124,11 @@ describe('rollbackTargets', () => {
 })
 
 describe('lane geometry', () => {
-  test('lanes sit closer together further right, never closer than 4px, and the graph fits the last marker', () => {
+  test('lanes sit closer together further right, never closer than 6px, and the graph fits the last marker', () => {
     const xs = Array.from({ length: 40 }, (_, slot) => laneX(slot))
     const gaps = xs.slice(1).map((x, index) => x - xs[index])
-    expect(xs.slice(0, 7)).toEqual([11, 20, 28, 35, 41, 46, 50])
-    expect(gaps.every((gap, index) => gap >= 4 && (index === 0 || gap <= gaps[index - 1]))).toBe(true)
+    expect(xs.slice(0, 7)).toEqual([13, 24, 33, 41, 48, 54, 60])
+    expect(gaps.every((gap, index) => gap >= 6 && (index === 0 || gap <= gaps[index - 1]))).toBe(true)
     // HEAD's ring reaches 7px past its lane's centre.
     for (const count of [1, 2, 9, 40]) expect(graphWidth(count)).toBeGreaterThanOrEqual(laneX(count - 1) + 7)
   })

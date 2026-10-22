@@ -133,7 +133,7 @@ html, body, #root { height: 100%; margin: 0; background: transparent; }
 body {
   font: calc(14px + var(--ui-delta))/1.45 var(--font-ui);
   color: var(--text);
-  /* Transparent so the window's native material shows through the glass panels. An extension theme paints --window. */
+  /* Transparent so the desktop shows through the glass panels. An extension theme paints --window. */
   background: var(--window, transparent);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -207,7 +207,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   mask-composite: exclude;
 }
 .sidebar { margin: var(--gutter) 0 var(--gutter) var(--gutter); padding: 8px 8px 8px; }
-/* The main area is a frame, not a surface. Its cards float on the native material, so the rails and cards share one look.
+/* The main area is a frame, not a surface. Its cards float on the transparent window, so the rails and cards share one look.
    The frame insets only its top. Each card carries the right and bottom inset, so every card ends at the same gutter. */
 .pane { margin: var(--gutter) 0 0; padding: 0; }
 .titlebar + .pane { margin-left: var(--gutter); }
