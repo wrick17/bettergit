@@ -414,11 +414,9 @@ function createWindow() {
     title: 'BetterGit',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
-    // A transparent window lets the native vibrancy show through the translucent panels.
+    // Transparent, so the glass panels sit over the desktop. No native vibrancy: with the under-window material, swiping
+    // between Spaces lagged on an external display, and the user found it much smoother without it.
     transparent: true,
-    // Under-window material gives the glass panels a blurred desktop behind them.
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

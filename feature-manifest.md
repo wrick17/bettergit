@@ -313,7 +313,7 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 
 | Area | Feature | Status | Evidence |
 |---|---|---|---|
-| Platform | Mac-only window (hidden inset title bar, vibrancy) | done | `src/main/index.ts` (`titleBarStyle`, `vibrancy`) |
+| Platform | Mac-only window (hidden inset title bar, transparent, no native vibrancy) | done | `src/main/index.ts` (`titleBarStyle`, `transparent`). Vibrancy removed 2026-10-22: the user reported Spaces swipes as much smoother without it |
 | Build | electron-vite dev and build scripts | done | `package.json` (`dev`, `build`, `start`), `electron.vite.config.ts` |
 | Build | Bun for tests and sample generation | done | `package.json` (`test: bun test`, `sample`) |
 | Build | Typecheck script | done | `package.json` has `typecheck: tsc --noEmit -p tsconfig.json`. Historical baseline and later worker checkpoints passed. This documentation pass did not rerun typecheck; G needs a combined current-source result |
@@ -352,12 +352,12 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 
 The product decisions below retain the original baseline and the later overrides. Implementation notes are updated where later source or bounded native evidence supersedes the earlier status. Delivery and full acceptance remain open.
 
-- Keep Electron and a Mac-only scope for native vibrancy and the hidden inset title bar, as configured in `src/main/index.ts`.
+- Keep Electron and a Mac-only scope for the transparent window and the hidden inset title bar, as configured in `src/main/index.ts`.
 - Aim for a current VS Code / better-source-control feel with floating frosted-glass panels and no 2000s-era styling. This is the supplied design direction; code confirms panel blur and BSC graph/action grouping, not visual fidelity.
 - Use one solid blue accent fill per theme and colour for status, syntax, selection, and graph meaning. `styles.css` removes decorative glows and shares raised-shadow and glass-edge tokens.
 - Replace decorative background gradients with solid fills. Functional guide/hatch gradients, flat panel masks, and some upstream SVG gradients remain, so the no-gradient direction is only partly complete.
 - Use plain CSS and existing React controls to keep styling under project control, as shown by `styles.css` and `package.json`.
-- Combine Electron vibrancy with CSS backdrop blur for the desktop and panel backgrounds. No SVG refraction filter is implemented.
+- Use a transparent Electron window with CSS backdrop blur on the panels. Native vibrancy was removed on 2026-10-22 (Spaces swipe lag). No SVG refraction filter is implemented.
 - Write splitter gridTemplateColumns directly on the parent through requestAnimationFrame during drag, then commit React state and localStorage on pointerup to avoid per-move React renders. `Splitter.tsx` also supports reset and keyboard steps.
 - Use Shiki 4.5.0 with the JavaScript regex engine because the CSP forbids WASM evaluation. `highlight.ts`, `DiffView.tsx`, and `styles.css` pass theme colours through `--tok-light` and `--tok-dark`.
 - Embed MIT-licensed vscode-icons as data URIs for familiar file types without external image requests. `file-icons.ts` retains the license; `FolderIcon` now serves sidebar folder/repo rows.
