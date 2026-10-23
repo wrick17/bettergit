@@ -510,10 +510,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-file > header {
   position: sticky; top: var(--diff-toolbar-height); z-index: 2;
   display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px 0 20px;
-  background: color-mix(in srgb, var(--content) 75%, var(--glass-edge)); border-bottom: 1px solid var(--line-strong);
+  background: var(--list); border-bottom: 1px solid var(--line-strong);
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
-:root[data-theme='dark'] .diff-file > header { background: color-mix(in srgb, var(--content) 75%, var(--glass-outline)); }
 .diff-file > header .path-name { font-weight: 600; }
 /* Header controls: a chevron that collapses the file. The icon swaps between right and down, so it does not rotate. */
 .diff-file-toggle { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
