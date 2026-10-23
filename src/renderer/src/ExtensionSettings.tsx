@@ -2,10 +2,11 @@ import { Fragment, createElement, useEffect, useMemo, useState, type FormEvent, 
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import { gfmFromMarkdown } from 'mdast-util-gfm'
 import { gfm } from 'micromark-extension-gfm'
+import { Star } from 'lucide-react'
 import type { Definition, Nodes } from 'mdast'
 import type { ExtensionDetails, ExtensionMetadata, ExtensionResult, InstalledExtension } from '../../shared/themes'
 import { Code } from './DiffView'
-import { Icon } from './Icons'
+import { Icon, IconButton } from './Icons'
 import { languageFor, tokenize, type Segment } from './highlight'
 import { useLanguageOverrides } from './prefs'
 
@@ -49,7 +50,14 @@ function ExtensionImage({ source, alt, logo = false, inline = false, width }: { 
 }
 
 function ExtensionStats({ value }: { value: Pick<InstalledExtension, 'downloads' | 'averageRating' | 'reviewCount'> }) {
-  return <small className="extension-stats">Open VSX · {value.downloads == null ? 'Downloads unavailable' : `${value.downloads.toLocaleString()} downloads`} · {value.averageRating == null ? 'Unrated' : `${value.averageRating.toFixed(1)}/5${value.reviewCount == null ? '' : ` (${value.reviewCount.toLocaleString()} reviews)`}`}</small>
+  return <small className="extension-stats">
+    <span className="extension-stat-store">Open VSX</span>
+    <span className="extension-stat"><Icon name="pullFrom" />{value.downloads == null ? 'Downloads unavailable' : <span><strong>{value.downloads.toLocaleString()}</strong> downloads</span>}</span>
+    <span className={`extension-stat extension-stat-rating${value.averageRating == null ? ' unrated' : ''}`}>
+      <Star aria-hidden="true" focusable="false" />
+      {value.averageRating == null ? 'Unrated' : <span><strong>{value.averageRating.toFixed(1)}/5</strong>{value.reviewCount == null ? '' : ` (${value.reviewCount.toLocaleString()} ${value.reviewCount === 1 ? 'review' : 'reviews'})`}</span>}
+    </span>
+  </small>
 }
 
 const README_HTML_TAGS = new Set('a b blockquote br caption code dd del details div dl dt em h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre s samp small span strong sub summary sup table tbody td tfoot th thead tr ul'.split(' '))
@@ -271,10 +279,7 @@ export function ExtensionSettings({ extensions, onChanged, onDetails }: {
     onChanged(extension.id, true)
   })
   const detailsButton = (namespace: string, name: string, label: string) => (
-    <button type="button" disabled={!!busy} aria-label={`Details for ${label}`}
-      onClick={() => onDetails({ namespace, name, label })}>
-      Details
-    </button>
+    <IconButton icon="markdown" label={`Details for ${label}`} disabled={!!busy} onClick={() => onDetails({ namespace, name, label })} />
   )
   const installButton = (result: ExtensionResult) => {
     const key = `${result.namespace}.${result.name}`
@@ -303,9 +308,7 @@ export function ExtensionSettings({ extensions, onChanged, onDetails }: {
               <Item key={extension.id} title={extension.name} detail={summary(extension)} metadata={metadata[extension.id] ?? extension}>
                 <span className="settings-actions">
                   {detailsButton(namespace, name, extension.name)}
-                  <button type="button" disabled={!!busy} aria-label={`Remove ${extension.name}`} onClick={() => void remove(extension)}>
-                    {busy === `remove:${extension.id}` ? 'Removing…' : 'Remove'}
-                  </button>
+                  <IconButton icon="trash" label={`${busy === `remove:${extension.id}` ? 'Removing' : 'Remove'} ${extension.name}`} disabled={!!busy} busy={busy === `remove:${extension.id}`} onClick={() => void remove(extension)} />
                 </span>
               </Item>
             )

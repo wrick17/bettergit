@@ -940,7 +940,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .extension-logo { flex: none; width: 36px; height: 36px; object-fit: contain; border-radius: 6px; }
 .extension-logo-fallback { display: grid; place-items: center; color: var(--text-3); background: var(--sunken); }
 .extension-logo-fallback svg { width: 24px; height: 24px; }
-.extension-stats { color: var(--text-3); font-size: calc(11px + var(--ui-delta)); }
+.extension-stats, .setting .extension-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; color: var(--text-2); font-size: calc(12.5px + var(--ui-delta)); line-height: 1.5; font-variant-numeric: tabular-nums; }
+.extension-stat-store { font-weight: 600; }
+.extension-stat { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.extension-stat strong { color: var(--text); font-weight: 600; }
+.extension-stat svg { flex: none; width: 14px; height: 14px; color: var(--accent); }
+.extension-stat-rating svg { color: var(--mod); fill: currentColor; }
+.extension-stat-rating.unrated svg { color: var(--text-3); fill: none; }
 .extension-details-dialog { display: flex; flex-direction: column; width: min(850px, 92vw); max-height: 88vh; }
 .extension-details-dialog > .dialog-head, .extension-details-dialog > .dialog-foot { flex: none; }
 .extension-details-dialog > .dialog-body { flex: 1; min-height: 0; max-height: none; padding-top: 8px; }
