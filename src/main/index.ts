@@ -19,7 +19,7 @@ import { applyHunk, parseHunk } from './git/hunks'
 import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
 import { parseConflictReset, parseConflictSave } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
-import { installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
+import { extensionDetails, extensionImage, extensionMetadata, installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
@@ -27,6 +27,7 @@ app.setName('BetterGit')
 const configFile = () => path.join(app.getPath('userData'), 'config.json')
 let config: AppConfig
 let fetcher: BackgroundFetcher | null = null
+let mainWindow: BrowserWindow | null = null
 const dirty = new DirtyCounter((repo, count) => sendToRenderer('repos:dirty', { path: repo, count }))
 const watcher = new SourceWatcher((event) => {
   sendToRenderer('repos:changed', event)
@@ -151,6 +152,13 @@ function loadTheme(kind: 'color' | 'icons', ref: unknown) {
 }
 const changingExtensions = <T>(change: Promise<T>) => change.finally(() => themes.clear())
 
+function assertMainFrame(event: Electron.IpcMainInvokeEvent) {
+  const window = mainWindow
+  if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
+    throw new Error('Extension data must be requested from the BetterGit main window.')
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('repo:locks', () => repoLockSnapshot())
   const offLocks = subscribeRepoLocks((snapshot) => sendToRenderer('repo:locks', snapshot))
@@ -250,9 +258,9 @@ function registerIpc() {
     return compare(repo, await ops.resolveCommit(repo, from), await ops.resolveCommit(repo, to), ignoreWhitespace === true)
   })
   ipcMain.handle('system:open-url', (_event, url: string) => {
-    // Only https links leave the app; file:, javascript:, and custom schemes stay closed.
+    // Only web links leave the app; file:, javascript:, credentials and custom schemes stay closed.
     const parsed = new URL(url)
-    if (parsed.protocol !== 'https:') throw new Error(`Refusing to open non-https link: ${url}`)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('Refusing to open an unsafe web link.')
     return shell.openExternal(parsed.href)
   })
   handleWrite('repo:push', async (_event, repoPath: string, mode?: ops.PushMode, confirmed?: { branch?: unknown; upstream?: unknown }) => {
@@ -340,6 +348,18 @@ function registerIpc() {
   })
   ipcMain.handle('extensions:list', () => listExtensions(extensionsDir()))
   ipcMain.handle('extensions:search', (_event, query: unknown) => searchOpenVsx(query))
+  ipcMain.handle('extensions:metadata', (event, namespace: unknown, name: unknown) => {
+    assertMainFrame(event)
+    return extensionMetadata(namespace, name)
+  })
+  ipcMain.handle('extensions:details', (event, namespace: unknown, name: unknown) => {
+    assertMainFrame(event)
+    return extensionDetails(namespace, name)
+  })
+  ipcMain.handle('extensions:image', (event, url: unknown) => {
+    assertMainFrame(event)
+    return extensionImage(url)
+  })
   ipcMain.handle('extensions:install', (_event, namespace: unknown, name: unknown) =>
     changingExtensions(installFromOpenVsx(extensionsDir(), namespace, name)))
   // The file comes from the open panel here, never from the renderer, so the page cannot make main read a path it chose.
@@ -424,12 +444,14 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  mainWindow = window
   // Without a usable saved position, center on launch: the default position may be off-screen.
   if (!saved) window.center()
   if (saved?.maximized) window.maximize()
   const save = () => saveWindowState(window)
   window.on('move', save).on('resize', save).on('maximize', save).on('unmaximize', save)
   window.on('close', () => flushWindowState(window))
+  window.once('closed', () => { mainWindow = null })
   // Text size is a page zoom, so every row, gutter, and divider scales together and stays aligned.
   window.webContents.on('did-finish-load', () => window.webContents.setZoomFactor(config.settings.textZoom))
   if (process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL)

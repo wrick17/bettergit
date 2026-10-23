@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import type { DiffHunk } from '../../main/git/diff'
 import type { Marks, Mounted, Preview, Stretch } from './cm-editor'
 import { wholeLine } from './intraline'
@@ -200,23 +200,25 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
 // the editable text; removed lines and the old side are read-only. Until the file loads, or when it cannot be edited,
 // `fallback` (the read-only diff) shows instead. A clean editor goes back to static rows once it loses focus and leaves
 // the screen; one with unsaved text stays.
-export function EditableDiff({ edit, path, hunks, layout, language, fallback, fileIndex, onExtent, hunkActions }: {
+export function EditableDiff({ edit, path, hunks, layout, language, context = 3, fallback, fileIndex, onExtent, hunkActions }: {
   edit: EditBridge
   path: string
   hunks: DiffHunk[]
   layout: 'unified' | 'split'
   language: string | null
+  context?: number
   fallback: ReactNode
   fileIndex: number
   onExtent: (pixels: number) => void
-  // Each Git hunk's stage and discard controls. The static rows show them above the hunk's first change; the editor
-  // does not, so typing never races a hunk write.
+  // Each Git hunk's stage and discard controls, above its first change while the file has no unsaved edits.
   hunkActions?: (hunk: DiffHunk) => ReactNode
 }) {
   const key = keyOf(edit.repo, path)
   const wrap = useWordWrap()
   const wrapRef = useRef(wrap)
   wrapRef.current = wrap
+  const contextRef = useRef(context)
+  contextRef.current = context
   const editRef = useRef(edit)
   editRef.current = edit
   const [source, setSource] = useState<Source | null>(() => {
@@ -298,7 +300,14 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   const loaded = source && !('error' in source) ? source : null
   const loadedRef = useRef(loaded)
   loadedRef.current = loaded
-  const preview = loaded?.preview ?? null
+  const preview = useMemo(() => loaded?.preview?.context === context ? loaded.preview
+    : loaded && cm ? cm.previewOf(loaded.loaded, loaded.original, context) : loaded?.preview ?? null, [loaded, context])
+  const hunkWidgets = useMemo(() => active && preview && hunkActions && sourceFor.current === hunks
+    ? [...hunkStarts(preview, hunks)].map(([stretch, index]) => {
+      const dom = document.createElement('div')
+      dom.className = 'ed-hunk-actions'
+      return { line: stretch.b, dom, hunk: hunks[index] }
+    }) : [], [active, preview, hunks, !!hunkActions])
   const tokens = usePreviewTokens(preview, language, layout)
   const metrics = useCodeMetrics()
   // Layout effect: a font change repaints with the new extent, not a frame of the old one.
@@ -322,7 +331,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
     setDraft(key, { path, loaded: base, text: dirty(draft) ? draft!.text : base, revert })
     const parent = host.current
     const text = drafts.get(key)!.text
-    const model = start.preview && text === start.loaded ? start.preview : cm.previewOf(text, start.original)
+    const model = preview && text === start.loaded ? preview : cm.previewOf(text, start.original, contextRef.current)
     const at = startAt.current
     const place = anchor.current
     startAt.current = null
@@ -346,6 +355,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
         return true
       },
       wrap: wrapRef.current,
+      context: contextRef.current,
       folds: model.stretches.flatMap((stretch) => (stretch.kind === 'fold' ? [stretch] : [])),
       opened: openedRef.current,
       onFold: openFold,
@@ -378,6 +388,14 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
   }, [key, path, layout, language, !!loaded, active])
 
   useEffect(() => { mounted.current?.setWrap(wrap) }, [wrap])
+  const previousContext = useRef(context)
+  useLayoutEffect(() => {
+    if (previousContext.current === context) return
+    previousContext.current = context
+    openedFolds.delete(key)
+    setOpened(new Set())
+    mounted.current?.setContext(context)
+  }, [key, context])
 
   // A reload of a clean file brings the editor up to date: the old side always, and the text when it changed on disk.
   useEffect(() => {
@@ -386,6 +404,9 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
     if (entry) setDraft(key, { ...entry, loaded: loaded.loaded, text: loaded.loaded })
     mounted.current.sync(loaded.loaded, loaded.original)
   }, [key, loaded])
+
+  // Reuse the preview's hunk mapping and buttons without replacing the editor, its selection or undo history.
+  useEffect(() => { mounted.current?.setHunkActions(hunkWidgets) }, [hunkWidgets, layout, language])
 
   // A clean editor that has lost focus goes back to static rows once it leaves the screen.
   useEffect(() => {
@@ -487,7 +508,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, fallback, fi
       </>
     )
   }
-  if (active) return <div className="diff-editor" ref={host} />
+  if (active) return <><div className="diff-editor" ref={host} />{hunkWidgets.map(({ dom, hunk }, index) => createPortal(hunkActions?.(hunk), dom, index))}</>
   return (
     <EditorPreview model={preview!} tokens={tokens} layout={layout} opened={opened} onOpen={openFold} fileIndex={fileIndex} hunks={hunks} path={path}
       onActivate={activate} hunkActions={hunkActions} />

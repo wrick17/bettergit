@@ -6,13 +6,13 @@ import type { InstalledExtension, ThemeChoice } from '../../shared/themes'
 import { cachedAppIcon, cachedApps, fetchApps, loadAppIcon, storeApps } from './app-icons'
 import { CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
 import { confirmOverBlur } from './confirm'
-import { ExtensionSettings } from './ExtensionSettings'
+import { ExtensionDetailsContent, ExtensionSettings, type ExtensionDetailRequest } from './ExtensionSettings'
 import { Icon, type IconName } from './Icons'
 import { forgetThemes, isThemeBroken, preloadThemes, useAppliedThemes, warmThemes } from './themes'
 
 const api = window.bettergit
 
-const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'
+const FOCUSABLE = 'a[href], summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'
 
 // While a dialog is open the app root is inert, focus moves in, Tab wraps inside, and focus returns to the opener on close.
 export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {
@@ -20,12 +20,15 @@ export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {
   const [opener] = useState(() => document.activeElement as HTMLElement | null)
   useEffect(() => {
     const root = document.getElementById('root')!
+    const covered = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].filter((element) => element !== dialog.current)
+    const top = () => [...document.querySelectorAll('[role="dialog"]')].at(-1) === dialog.current
+    covered.forEach((element) => element.toggleAttribute('inert', true))
     // Only Tab stops: roving tabIndex=-1 items (inactive tabs, radios) are skipped, so the first stop is the selected tab.
     const focusable = () => [...(dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((item) => item.tabIndex >= 0)
     root.toggleAttribute('inert', true)
     focusable()[0]?.focus()
     const wrap = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return
+      if (event.key !== 'Tab' || !top()) return
       const items = focusable()
       const first = items[0]
       const last = items[items.length - 1]
@@ -40,7 +43,8 @@ export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {
     window.addEventListener('keydown', wrap)
     return () => {
       window.removeEventListener('keydown', wrap)
-      root.toggleAttribute('inert', false)
+      covered.forEach((element) => element.toggleAttribute('inert', false))
+      root.toggleAttribute('inert', !!document.querySelector('[role="dialog"]'))
       opener?.focus()
     }
   }, [dialog, opener])
@@ -60,7 +64,12 @@ function Modal({ title, subtitle, footer, onClose, children, className, hideHead
   useDialogFocus(dialogRef)
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && [...document.querySelectorAll('[role="dialog"]')].at(-1) === dialogRef.current) {
+        event.preventDefault()
+        onClose()
+      }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -392,13 +401,13 @@ function AppPicker({ kind, label, value, onChange }: {
   )
 }
 
-type SectionId = 'general' | 'appearance' | 'apps' | 'syntax' | 'extensions'
+type SectionId = 'general' | 'appearance' | 'apps' | 'syntax' | 'themes'
 const SECTIONS: { id: SectionId; label: string; icon: IconName }[] = [
   { id: 'general', label: 'General', icon: 'settings' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
   { id: 'apps', label: 'Editor & Terminal', icon: 'terminal' },
   { id: 'syntax', label: 'Syntax', icon: 'code' },
-  { id: 'extensions', label: 'Extensions', icon: 'extensions' },
+  { id: 'themes', label: 'Themes', icon: 'extensions' },
 ]
 const SECTION_KEY = 'bettergit.settingsSection'
 
@@ -474,7 +483,8 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
   const close = () => { commitLanguages(); onClose() }
 
   const [section, setSection] = useState<SectionId>(() => {
-    const saved = sessionStorage.getItem(SECTION_KEY)
+    const previous = sessionStorage.getItem(SECTION_KEY)
+    const saved = previous === 'extensions' ? 'themes' : previous
     return SECTIONS.some((entry) => entry.id === saved) ? saved as SectionId : 'general'
   })
   const show = (next: SectionId) => {
@@ -496,11 +506,15 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
     set({ appearance: next })
   }
   const setAppearance = (patch: Partial<Appearance>) => writeAppearance({ ...appearanceRef.current, ...patch })
-  const resetAppearance = () => writeAppearance({})
+  const resetAppearance = () => {
+    const { lightTheme, darkTheme, iconTheme } = appearanceRef.current
+    writeAppearance({ lightTheme, darkTheme, iconTheme })
+  }
   const title = SECTIONS.find((entry) => entry.id === section)!.label
 
-  // Installed extensions, for the theme pickers and the Extensions section.
+  // Installed extensions, for the theme pickers and installation in the Themes section.
   const [extensions, setExtensions] = useState<InstalledExtension[] | null>(null)
+  const [details, setDetails] = useState<ExtensionDetailRequest | null>(null)
   const listExtensions = () => api.listExtensions().then(setExtensions, () => setExtensions([]))
   useEffect(() => { void listExtensions() }, [])
   // The installed themes load one at a time while idle, so most picks apply at once. Caps in main bound each load.
@@ -521,6 +535,7 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
   }
 
   return (
+    <>
     <Modal
       title="Settings"
       hideHead
@@ -586,23 +601,8 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
         {section === 'appearance' && (
           <>
             <section className="settings-section">
-              <h4>Theme</h4>
+              <h4>Layout</h4>
               <div className="settings-group">
-                <Row label="Appearance">
-                  <Segmented label="Appearance" options={THEMES} value={settings.theme} onChange={(theme) => set({ theme })} />
-                </Row>
-                <Row label="Light theme" htmlFor="light-theme" help="Colours and syntax in light appearance.">
-                  <ThemeSelect id="light-theme" kind="color" value={applied.lightTheme} wanted={appearance.lightTheme} builtIn="BetterGit Light" extensions={extensions}
-                    themes={(extension) => extension.themes.filter((theme) => !theme.dark)} onChange={(lightTheme) => setAppearance({ lightTheme })} />
-                </Row>
-                <Row label="Dark theme" htmlFor="dark-theme" help="Colours and syntax in dark appearance.">
-                  <ThemeSelect id="dark-theme" kind="color" value={applied.darkTheme} wanted={appearance.darkTheme} builtIn="BetterGit Dark" extensions={extensions}
-                    themes={(extension) => extension.themes.filter((theme) => theme.dark)} onChange={(darkTheme) => setAppearance({ darkTheme })} />
-                </Row>
-                <Row label="File icons" htmlFor="icon-theme" help="Image icon themes. Icon-font themes fall back to the built-in icons.">
-                  <ThemeSelect id="icon-theme" kind="icons" value={applied.iconTheme} wanted={appearance.iconTheme} builtIn="BetterGit (vscode-icons)" extensions={extensions}
-                    themes={(extension) => extension.iconThemes} onChange={(iconTheme) => setAppearance({ iconTheme })} />
-                </Row>
                 <Row label="Density" help="Row height in the sidebar and file lists.">
                   <Segmented label="Density" options={DENSITIES} value={appearance.density} onChange={(density) => setAppearance({ density })} />
                 </Row>
@@ -652,7 +652,31 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
             </div>
           </section>
         )}
-        {section === 'extensions' && <ExtensionSettings extensions={extensions} onChanged={extensionChanged} />}
+        {section === 'themes' && (
+          <>
+            <section className="settings-section">
+              <h4>Selection</h4>
+              <div className="settings-group">
+                <Row label="Appearance">
+                  <Segmented label="Appearance" options={THEMES} value={settings.theme} onChange={(theme) => set({ theme })} />
+                </Row>
+                <Row label="Light theme" htmlFor="light-theme" help="Colours and syntax in light appearance.">
+                  <ThemeSelect id="light-theme" kind="color" value={applied.lightTheme} wanted={appearance.lightTheme} builtIn="BetterGit Light" extensions={extensions}
+                    themes={(extension) => extension.themes.filter((theme) => !theme.dark)} onChange={(lightTheme) => setAppearance({ lightTheme })} />
+                </Row>
+                <Row label="Dark theme" htmlFor="dark-theme" help="Colours and syntax in dark appearance.">
+                  <ThemeSelect id="dark-theme" kind="color" value={applied.darkTheme} wanted={appearance.darkTheme} builtIn="BetterGit Dark" extensions={extensions}
+                    themes={(extension) => extension.themes.filter((theme) => theme.dark)} onChange={(darkTheme) => setAppearance({ darkTheme })} />
+                </Row>
+                <Row label="File icons" htmlFor="icon-theme" help="Image icon themes. Icon-font themes fall back to the built-in icons.">
+                  <ThemeSelect id="icon-theme" kind="icons" value={applied.iconTheme} wanted={appearance.iconTheme} builtIn="BetterGit (vscode-icons)" extensions={extensions}
+                    themes={(extension) => extension.iconThemes} onChange={(iconTheme) => setAppearance({ iconTheme })} />
+                </Row>
+              </div>
+            </section>
+            <ExtensionSettings extensions={extensions} onChanged={extensionChanged} onDetails={setDetails} />
+          </>
+        )}
         {section === 'syntax' && (
           <section className="settings-section">
             <h4>Syntax highlighting</h4>
@@ -675,5 +699,12 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
         )}
       </div>
     </Modal>
+    {details && (
+      <Modal title={details.label} subtitle="Open VSX" className="extension-details-dialog" onClose={() => setDetails(null)}
+        footer={<button type="button" className="primary" onClick={() => setDetails(null)}>Close</button>}>
+        <ExtensionDetailsContent key={`${details.namespace}.${details.name}`} namespace={details.namespace} name={details.name} />
+      </Modal>
+    )}
+    </>
   )
 }

@@ -394,7 +394,7 @@ function TreeItem(props: ItemProps) {
             onClick={() => props.onToggleHidden(node.path)}
           />
         </span>
-        <span className="tree-label">{node.name}</span>
+        <span className="tree-label" title={node.name}>{node.name}</span>
         {node.branch && <span className="repo-branch" title={node.branch}>{node.branch}</span>}
         {dirtyCount > 0 && <span className="repo-dirty" title={`${dirtyCount} uncommitted files`}>{dirtyCount}</span>}
       </div>

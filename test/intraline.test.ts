@@ -13,12 +13,12 @@ test('a one-word replacement highlights only the changed word on each side', () 
   expect(changedText(after, pair?.after)).toEqual(['amount'])
 })
 
-test('separate edits stay separate, and a whitespace change is a change', () => {
+test('separate edits form one inner block while unchanged prefixes and suffixes stay plain', () => {
   const before = 'const a = foo(1) + bar(2)'
   const after = 'const a = foo(9) + baz(2)'
   const pair = changedSpans(before, after)
-  expect(changedText(before, pair?.before)).toEqual(['1', 'bar'])
-  expect(changedText(after, pair?.after)).toEqual(['9', 'baz'])
+  expect(changedText(before, pair?.before)).toEqual(['1) + bar'])
+  expect(changedText(after, pair?.after)).toEqual(['9) + baz'])
   expect(changedText('return  value', changedSpans('return  value', 'return value')?.before)).toEqual(['  '])
 })
 
@@ -106,6 +106,17 @@ test('emphasis splits coloured segments without losing text or colour, even acro
   expect(pieces.find((piece) => piece.text === 'x')).toEqual({ text: 'x', light: '#2', changed: false })
 })
 
+test('one inner block stays contiguous across syntax token boundaries', () => {
+  const before = 'const a = foo(1) + bar(2)'
+  const after = 'const a = foo(9) + baz(2)'
+  const segments = ['const a = foo(', '9', ') + ', 'baz', '(2)'].map((text, index) => ({ text, light: `#00000${index}` }))
+  const pieces = emphasize(after, segments, changedSpans(before, after)!.after)
+  expect(pieces.map((piece) => piece.text).join('')).toBe(after)
+  expect(pieces.filter((piece) => piece.changed).map((piece) => piece.text).join('')).toBe('9) + baz')
+  expect(pieces.map((piece) => piece.changed)).toEqual([false, true, true, true, false])
+  expect(pieces.map((piece) => piece.light)).toEqual(segments.map((segment) => segment.light))
+})
+
 // Renders the real row components, so a cell that drops its `changed` prop fails here even though the helpers pass.
 // Runs in a child process: DiffView reads localStorage and window when it loads, and session.test.ts stubs them in this process.
 const RENDER_CHECK = `
@@ -117,23 +128,34 @@ const { createElement } = await import('react')
 const { renderToStaticMarkup } = await import('react-dom/server')
 const { SplitCell, UnifiedLine } = await import('./src/renderer/src/DiffView')
 const { intralineSpans } = await import('./src/renderer/src/intraline')
+const { previewOf } = await import('./src/renderer/src/cm-editor')
 const lines = [
-  { type: 'del', text: 'const total = count + 1', oldNo: 1, newNo: null },
-  { type: 'add', text: 'const total = amount + 1', oldNo: null, newNo: 1 },
+  { type: 'del', text: 'const a = foo("😀", 1) + preserveMiddle(value) + bar(2)', oldNo: 1, newNo: null },
+  { type: 'add', text: 'const a = foo("😀", 9) + preserveMiddle(value) + baz(2)', oldNo: null, newNo: 1 },
 ]
 const spans = intralineSpans(lines)
 const intraCount = (html) => (html.match(/class="intra"/g) ?? []).length
+const preview = previewOf(lines[1].text + '\\nunchanged\\nreturn pink + keepSecond(input) + cyan;', lines[0].text + '\\nunchanged\\nreturn red + keepSecond(input) + blue;')
+const marked = (side) => preview.stretches.flatMap(stretch => stretch.kind !== 'chunk' ? [] :
+  stretch[side === 'old' ? 'marksA' : 'marksB'].flatMap((marks, index) =>
+    marks.map(([from, to]) => (side === 'old' ? preview.old : preview.lines)[stretch[side === 'old' ? 'a' : 'b'] + index - 1].slice(from, to))))
 console.log(JSON.stringify({
   split: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0) }))),
   unified: intraCount(renderToStaticMarkup(createElement(UnifiedLine, { line: lines[1], changed: spans.get(1) }))),
   splitMoved: intraCount(renderToStaticMarkup(createElement(SplitCell, { cell: { line: lines[0], index: 0 }, side: 'old', changed: spans.get(0), label: 'moved' }))),
+  editorBefore: marked('old'),
+  editorAfter: marked('new'),
 }))
 `
 
-test('split and unified rows render the changed words, and a moved label drops them', () => {
+test('raw and editor rows use one inner block for separated edits, and moved rows drop it', () => {
   const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
   expect(child.stderr.toString()).toBe('')
-  expect(JSON.parse(child.stdout.toString())).toEqual({ split: 1, unified: 1, splitMoved: 0 })
+  expect(JSON.parse(child.stdout.toString())).toEqual({
+    split: 1, unified: 1, splitMoved: 0,
+    editorBefore: ['1) + preserveMiddle(value) + bar', 'red + keepSecond(input) + blue'],
+    editorAfter: ['9) + preserveMiddle(value) + baz', 'pink + keepSecond(input) + cyan'],
+  })
 })
 
 // A collapsed file does no word comparison for its hunks, in any layout or with Markdown formatting. The lines count reads

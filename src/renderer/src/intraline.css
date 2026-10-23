@@ -2,3 +2,6 @@
 .line.add .intra, .split-cell.add .intra { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .line.del .intra, .split-cell.del .intra { background: color-mix(in srgb, var(--del) 30%, transparent); }
 .intra { border-radius: 3px; }
+/* Syntax tokens inside one changed block share its outer corners. */
+.intra:has(+ .intra) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.intra + .intra { border-top-left-radius: 0; border-bottom-left-radius: 0; }

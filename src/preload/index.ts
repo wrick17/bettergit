@@ -5,7 +5,7 @@ import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { AppKind, InstalledApp } from '../shared/editors'
-import type { ColorTheme, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
+import type { ColorTheme, ExtensionDetails, ExtensionMetadata, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
@@ -75,6 +75,9 @@ const api = {
   // VS Code extensions, for their colour and file icon themes. Main validates every id and ref; the .vsix file is picked in main.
   listExtensions: () => invoke('extensions:list') as Promise<InstalledExtension[]>,
   searchExtensions: (query: string) => invoke('extensions:search', query) as Promise<ExtensionResult[]>,
+  extensionMetadata: (namespace: string, name: string) => invoke('extensions:metadata', namespace, name) as Promise<ExtensionMetadata>,
+  extensionDetails: (namespace: string, name: string) => invoke('extensions:details', namespace, name) as Promise<ExtensionDetails>,
+  extensionImage: (url: string) => invoke('extensions:image', url) as Promise<string | null>,
   installExtension: (namespace: string, name: string) => invoke('extensions:install', namespace, name) as Promise<InstalledExtension>,
   installExtensionFile: () => invoke('extensions:install-file') as Promise<InstalledExtension | null>,
   removeExtension: (id: string) => invoke('extensions:remove', id) as Promise<void>,

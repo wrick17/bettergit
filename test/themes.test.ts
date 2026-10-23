@@ -19,6 +19,126 @@ function extension(id: string, files: Record<string, string>) {
   }
 }
 
+async function registryWithFetch(fetch: (url: URL) => Promise<Response>, lookup = async (_host: string) => [{ address: '151.101.1.242', family: 4 }]) {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  expect(compiled.success).toBe(true)
+  const module = { exports: {} as typeof import('../src/main/extensions') }
+  runInNewContext(await compiled.outputs[0].text(), {
+    module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer, fetch,
+    require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises'
+      ? { lookup } : require(id),
+  })
+  return module.exports
+}
+
+test('registry lists and metadata stay lazy; Details reads the selected README and never an extension archive', async () => {
+  const api = 'https://open-vsx.org/api/PKief/material-icon-theme'
+  const readmeUrl = `${api}/5.39.0/file/readme.md`
+  const storedReadme = 'https://openvsx.eclipsecontent.org/PKief/material-icon-theme/5.39.0/readme.md'
+  const icon = `${api}/5.39.0/file/logo.png`
+  const entry = { namespace: 'PKief', name: 'material-icon-theme', displayName: 'Material Icon Theme', description: 'Icons', version: '5.39.0',
+    downloadCount: 6532520, averageRating: 4.846153846153846, reviewCount: 13,
+    files: { icon, readme: readmeUrl, download: `${api}/5.39.0/file/theme.vsix` } }
+  const requests: string[] = []
+  let missing = false
+  const registry = await registryWithFetch(async (url) => {
+    requests.push(url.href)
+    if (url.pathname === '/api/-/search') return Response.json({ extensions: [entry] })
+    if (url.href === api) return Response.json(missing ? { files: { icon: 'file:///tmp/icon.svg' } } : entry)
+    if (url.href === readmeUrl) return new Response(null, { status: 302, headers: { location: storedReadme } })
+    if (url.href === storedReadme) {
+      const response = new Response('# Material Icon Theme\n![Preview](./images/preview.png)', { headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      Object.defineProperty(response, 'url', { value: storedReadme })
+      return response
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  const [result] = await registry.searchOpenVsx('Material Icon Theme')
+  expect(result).toMatchObject({ namespace: 'PKief', name: 'material-icon-theme', icon, downloads: 6532520, averageRating: entry.averageRating, reviewCount: 13 })
+  expect(requests.length).toBe(1)
+  expect(new URL(requests[0]).pathname).toBe('/api/-/search')
+  requests.length = 0
+  const metadata = await registry.extensionMetadata('PKief', 'material-icon-theme')
+  expect(metadata).toMatchObject({ ...result, url: 'https://open-vsx.org/extension/PKief/material-icon-theme' })
+  expect(requests).toEqual([api])
+  requests.length = 0
+  const details = await registry.extensionDetails('PKief', 'material-icon-theme')
+  expect(details.readme).toBe('# Material Icon Theme\n![Preview](./images/preview.png)')
+  expect(details.readmeBaseUrl).toBe(storedReadme)
+  expect(requests).toEqual([api, readmeUrl, storedReadme])
+  expect(requests.some((url) => url.endsWith('.vsix') || url === icon)).toBe(false)
+  requests.length = 0
+  missing = true
+  expect(await registry.extensionDetails('PKief', 'material-icon-theme')).toMatchObject({ readme: null, readmeBaseUrl: null, icon: null, downloads: null, averageRating: null, reviewCount: null })
+  expect(requests).toEqual([api])
+  requests.length = 0
+  for (const [namespace, name] of [['acme', 'Display Name'], ['https://evil.example', 'theme'], ['acme', '../theme'], ['acme.theme', 'extra'], [undefined, 'theme'], ['acme', null]]) {
+    await expect(registry.extensionDetails(namespace, name)).rejects.toThrow('Unknown extension.')
+  }
+  expect(requests).toEqual([])
+})
+
+test('registry images are bounded data URLs inferred from bytes, with no arbitrary hosts, HTML or archive requests', async () => {
+  const icon = 'https://open-vsx.org/api/PKief/material-icon-theme/5.39.0/file/logo.png'
+  const storedIcon = 'https://openvsx.eclipsecontent.org/PKief/material-icon-theme/5.39.0/logo.png'
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZZkAAAAASUVORK5CYII=', 'base64')
+  const requests: string[] = []
+  const registry = await registryWithFetch(async (url) => {
+    requests.push(url.href)
+    if (url.href === icon) return new Response(null, { status: 302, headers: { location: storedIcon } })
+    if (url.href === storedIcon) return new Response(png, { headers: { 'content-type': 'application/octet-stream' } })
+    if (url.pathname === '/large.png') return new Response(png, { headers: { 'content-length': String(512 * 1024 + 1) } })
+    return new Response('<html><script>throw 1</script></html>', { headers: { 'content-type': 'image/png' } })
+  })
+  expect(await registry.extensionImage(icon)).toBe(`data:image/png;base64,${png.toString('base64')}`)
+  expect(requests).toEqual([icon, storedIcon])
+  expect(await registry.extensionImage('https://open-vsx.org/large.png')).toBeNull()
+  expect(await registry.extensionImage('https://open-vsx.org/fake.png')).toBeNull()
+  requests.length = 0
+  for (const url of ['https://evil.example/logo.png', 'http://open-vsx.org/logo.png', 'https://user@open-vsx.org/logo.png', 'file:///tmp/logo.png', 'javascript:alert(1)', `${icon}.vsix`]) {
+    expect(await registry.extensionImage(url)).toBeNull()
+  }
+  expect(requests).toEqual([])
+})
+
+test('Flow Icons README assets and Shields badges use an image-only public-address policy on every redirect', async () => {
+  const raw = 'https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/'
+  const badge = 'https://img.shields.io/badge/Get_full-Flow_Icons-blue'
+  const registryIcon = 'https://open-vsx.org/flow-logo.png'
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZZkAAAAASUVORK5CYII=', 'base64')
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Flow Icons</text></svg>'
+  const requests: string[] = []
+  const lookups: string[] = []
+  let privateAddress = false
+  const registry = await registryWithFetch(async (url) => {
+    requests.push(url.href)
+    if (url.href === registryIcon) return new Response(null, { status: 302, headers: { location: `${raw}logo.png` } })
+    if (url.pathname === '/redirect') return new Response(null, { status: 302, headers: { location: 'https://evil.example/badge.svg' } })
+    return new Response(url.hostname === 'img.shields.io' ? svg : png)
+  }, async (host) => {
+    lookups.push(host)
+    return [{ address: privateAddress ? '127.0.0.1' : '151.101.1.242', family: 4 }]
+  })
+  expect(await registry.extensionImage(registryIcon)).toStartWith('data:image/png;base64,')
+  expect(requests).toEqual([registryIcon, `${raw}logo.png`])
+  expect(lookups).toEqual(['open-vsx.org', 'raw.githubusercontent.com'])
+  for (const file of ['preview.png', 'preview_light.png', 'you/sequoia_moonlight.png']) {
+    expect(await registry.extensionImage(`${raw}${file}`)).toStartWith('data:image/png;base64,')
+  }
+  expect(await registry.extensionImage(badge)).toBe(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+  expect(await registry.isOpenVsxUrl(new URL(`${raw}logo.png`))).toBe(false)
+  expect(await registry.isOpenVsxUrl(new URL(badge))).toBe(false)
+  requests.length = 0
+  expect(await registry.extensionImage('https://img.shields.io/redirect')).toBeNull()
+  expect(requests).toEqual(['https://img.shields.io/redirect'])
+  requests.length = 0
+  expect(await registry.extensionImage(`${raw}README.md`)).toBeNull()
+  expect(await registry.extensionImage('https://raw.githubusercontent.com/other/repo/main/logo.png')).toBeNull()
+  privateAddress = true
+  expect(await registry.extensionImage(`${raw}logo.png`)).toBeNull()
+  expect(requests).toEqual([])
+})
+
 test('workbench colours fill app variables best key first, and anything but a hex colour is dropped', () => {
   const variables = themeVariables({
     'editor.background': '#282a36',
@@ -34,6 +154,28 @@ test('workbench colours fill app variables best key first, and anything but a he
   expect(themeVariables({ focusBorder: '#ffd' }, false)['--on-accent']).toBe('#111114')
   const css = themeCss(null, { name: 'x', label: 'X', dark: true, colors: { 'editor.background': '#000' }, tokenColors: [] })
   expect(css).toBe(":root:root[data-theme='dark'] { --window: #000; --glass-fill: #000; --content: #000; --list: #000; --glass-strong: #000; }")
+})
+
+test('custom light themes keep the app diff fills while their other colours and dark diff fills still apply', () => {
+  const colors = {
+    'editor.background': '#ffffff',
+    'editor.foreground': '#1f2328',
+    'diffEditor.insertedLineBackground': '#aceebb4d',
+    'diffEditor.insertedTextBackground': '#6fdd8b80',
+    'diffEditor.removedLineBackground': '#ffcecb4d',
+    'diffEditor.removedTextBackground': '#ff818266',
+  }
+  const light = themeVariables(colors, false)
+  expect(light).toMatchObject({ '--content': '#ffffff', '--text': '#1f2328' })
+  expect(light['--add-bg']).toBeUndefined()
+  expect(light['--del-bg']).toBeUndefined()
+  const theme = { name: 'github-light', label: 'GitHub Light Default', dark: false, colors, tokenColors: [] }
+  const css = themeCss(theme, null)
+  expect(css).not.toContain('--add-bg:')
+  expect(css).not.toContain('--del-bg:')
+  expect(css).toContain('--text: #1f2328;')
+  expect(themeVariables(colors, true)).toMatchObject({ '--add-bg': '#aceebb4d', '--del-bg': '#ffcecb4d' })
+  expect(themeCss(null, { ...theme, dark: true })).toContain('--add-bg: #aceebb4d; --del-bg: #ffcecb4d;')
 })
 
 test('JSONC keeps comment-like text in strings and drops comments and trailing commas', () => {
@@ -134,7 +276,7 @@ test('Open VSX retries a transient DNS or connection failure once and validates 
     let requests = 0
     const module = { exports: {} as typeof import('../src/main/extensions') }
     runInNewContext(await compiled.outputs[0].text(), {
-      module, exports: module.exports, URL, URLSearchParams, AbortSignal,
+      module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer,
       require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises' ? {
         lookup: async () => {
           if (++validations === 1 && failure === 'dns') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
