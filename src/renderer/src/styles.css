@@ -500,7 +500,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Files scrolled far off screen skip layout and paint; the last rendered height keeps the scrollbar stable. */
 /* Files off screen skip layout. Each file sets its own placeholder height (DiffView `estimate`), close to its real one, so
    a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
-.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 8px 8px 0; border-radius: var(--radius-card); }
+.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 8px 0 0; }
 .diff-file.editable { content-visibility: visible; }
 /* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
@@ -510,9 +510,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-file > header {
   position: sticky; top: var(--diff-toolbar-height); z-index: 2;
   display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px 0 20px;
-  background: linear-gradient(color-mix(in srgb, var(--accent-soft) 45%, transparent) 0 0), var(--raised); border-bottom: 1px solid var(--line-strong); border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: color-mix(in srgb, var(--content) 75%, var(--glass-edge)); border-bottom: 1px solid var(--line-strong);
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
+:root[data-theme='dark'] .diff-file > header { background: color-mix(in srgb, var(--content) 75%, var(--glass-outline)); }
 .diff-file > header .path-name { font-weight: 600; }
 /* Header controls: a chevron that collapses the file. The icon swaps between right and down, so it does not rotate. */
 .diff-file-toggle { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }

@@ -4,7 +4,10 @@ import { gfmFromMarkdown } from 'mdast-util-gfm'
 import { gfm } from 'micromark-extension-gfm'
 import type { Definition, Nodes } from 'mdast'
 import type { ExtensionDetails, ExtensionMetadata, ExtensionResult, InstalledExtension } from '../../shared/themes'
+import { Code } from './DiffView'
 import { Icon } from './Icons'
+import { languageFor, tokenize, type Segment } from './highlight'
+import { useLanguageOverrides } from './prefs'
 
 const api = window.bettergit
 
@@ -50,6 +53,21 @@ function ExtensionStats({ value }: { value: Pick<InstalledExtension, 'downloads'
 }
 
 const README_HTML_TAGS = new Set('a b blockquote br caption code dd del details div dl dt em h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre s samp small span strong sub summary sup table tbody td tfoot th thead tr ul'.split(' '))
+
+function ExtensionCode({ text, hint }: { text: string; hint?: string | null }) {
+  const lang = (hint ?? '').toLowerCase()
+  const language = lang === 'json' ? 'jsonc' : languageFor(`code.${lang}`, {}) ?? languageFor(`code.${lang}`, { [lang]: lang })
+  const recoloured = useLanguageOverrides()
+  const [colours, setColours] = useState<{ text: string; language: string; lines: Segment[][] | null }>()
+  useEffect(() => {
+    let stale = false
+    if (language) void tokenize(text, language, () => stale).then((lines) => { if (!stale) setColours({ text, language, lines }) }, () => {})
+    return () => { stale = true }
+  }, [text, language, recoloured])
+  const lines = colours?.text === text && colours.language === language ? colours.lines : null
+  const segments = lines?.flatMap((line, index) => index ? [{ text: '\n' }, ...line] : line)
+  return <pre><Code text={text} segments={segments} /></pre>
+}
 
 function ExtensionReadme({ source, base, onError }: { source: string; base: string | null; onError: (error: unknown) => void }) {
   return useMemo(() => {
@@ -132,7 +150,7 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
           case 'emphasis': return <em key={key}>{children()}</em>
           case 'delete': return <del key={key}>{children()}</del>
           case 'inlineCode': return <code key={key}>{node.value}</code>
-          case 'code': return <pre key={key}><code>{node.value}</code></pre>
+          case 'code': return <ExtensionCode key={key} text={node.value} hint={node.lang} />
           case 'blockquote': return <blockquote key={key}>{children()}</blockquote>
           case 'list': return node.ordered ? <ol key={key} start={node.start ?? 1}>{children()}</ol> : <ul key={key}>{children()}</ul>
           case 'listItem': return <li key={key}>{node.checked != null && <input type="checkbox" checked={node.checked} disabled aria-label="README task" />}{children()}</li>
