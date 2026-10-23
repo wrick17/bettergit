@@ -1,7 +1,7 @@
 import { ChangeSet, Compartment, EditorSelection, EditorState, findClusterBreak, RangeSetBuilder, StateEffect, StateField, Text, Transaction, type Extension } from '@codemirror/state'
-import { Decoration, drawSelection, EditorView, keymap, lineNumbers, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
+import { Decoration, drawSelection, EditorView, keymap, lineNumbers, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands'
-import { Chunk, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
+import { Change, Chunk, diff, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { onRecolour } from './prefs'
 import { wholeLine } from './intraline'
@@ -20,6 +20,8 @@ export interface Mounted {
   view: EditorView
   scrollers: HTMLElement[]
   setWrap: (wrap: boolean) => void
+  setContext: (context: number) => void
+  setHunkActions: (actions: { line: number; dom: HTMLElement }[]) => void
   // Opens the fold holding a line, so find can show it.
   unfold: (side: 'old' | 'new', line: number) => void
   // The drawn row of a removed line in the unified editor, after scrolling its block into view; null until drawn.
@@ -44,6 +46,28 @@ const findField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 })
 
+// React owns the existing buttons; CodeMirror positions their hosts above the corresponding current-side line.
+class HunkWidget extends WidgetType {
+  constructor(readonly dom: HTMLElement) { super() }
+  eq(other: HunkWidget) { return this.dom === other.dom }
+  toDOM() { return this.dom }
+  get estimatedHeight() { return 28 }
+}
+const setHunkActions = StateEffect.define<{ line: number; dom: HTMLElement }[]>()
+const hunkActionField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(widgets, tr) {
+    widgets = widgets.map(tr.changes)
+    for (const effect of tr.effects) if (effect.is(setHunkActions)) {
+      widgets = Decoration.set(effect.value.map(({ line, dom }) => Decoration.widget({
+        widget: new HunkWidget(dom), block: true, side: -100,
+      }).range(tr.state.doc.line(Math.min(Math.max(1, line), tr.state.doc.lines)).from)), true)
+    }
+    return widgets
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+
 function select(view: EditorView, line: number, from: number, to: number) {
   const { doc } = view.state
   const at = doc.line(Math.min(Math.max(line, 1), doc.lines))
@@ -54,7 +78,7 @@ function select(view: EditorView, line: number, from: number, to: number) {
 
 // Unified: one editor of the current file, with removed lines as read-only blocks. Split: the read-only old side on the
 // left, the editable current side on the right. Unchanged stretches fold like the read-only diff.
-export function mountEditor({ parent, layout, language, path, text, original, separator, onText, onSave, onEscape, wrap, folds, opened, onFold, at }: {
+export function mountEditor({ parent, layout, language, path, text, original, separator, onText, onSave, onEscape, wrap, context = 3, folds, opened, onFold, at }: {
   parent: HTMLElement
   layout: 'unified' | 'split'
   language: string | null
@@ -67,6 +91,7 @@ export function mountEditor({ parent, layout, language, path, text, original, se
   onSave: () => void
   onEscape: () => boolean
   wrap: boolean
+  context?: number
   // The folds the editor starts with (from previewOf), the ones already opened in the static rows, and a callback for
   // each fold opened in the editor, so the static rows match it after the editor goes.
   folds: Fold[]
@@ -80,6 +105,7 @@ export function mountEditor({ parent, layout, language, path, text, original, se
   const foldsA = folds.map((fold) => ({ ...fold, from: -1 }))
   const current: Extension[] = [
     common(language, wrapping, wrap),
+    hunkActionField,
     EditorView.updateListener.of((update) => {
       for (const tr of update.transactions) {
         for (const effect of tr.effects) {
@@ -105,7 +131,7 @@ export function mountEditor({ parent, layout, language, path, text, original, se
       if (update.docChanged) onText(update.state.doc.sliceString(0, update.state.doc.length, separator))
     }),
   ]
-  const collapse = FOLD
+  const collapse = collapseFor(context)
   const quiet = Transaction.addToHistory.of(false)
   const foldsB = folds.map((fold) => ({ ...fold, from: -1 }))
   const doc = Text.of(text.split(/\r\n?|\n/))
@@ -133,6 +159,11 @@ export function mountEditor({ parent, layout, language, path, text, original, se
     if (foldsB[index].from >= 0) b.dispatch({ effects: uncollapseUnchanged.of(foldsB[index].from) })
   }
   const whole = (doc: Text, insert: string) => (doc.toString() === insert ? undefined : { from: 0, to: doc.length, insert })
+  const resetFolds = (a: EditorView | null, b: EditorView, next: number) => {
+    folds = previewOf(b.state.doc.toString(), (a?.state.doc ?? getOriginalDoc(b.state)).toString(), next).stretches.flatMap(stretch => stretch.kind === 'fold' ? [stretch] : [])
+    foldsA.splice(0, foldsA.length, ...folds.map(fold => ({ ...fold, from: a ? a.state.doc.line(fold.a).from : -1 })))
+    foldsB.splice(0, foldsB.length, ...folds.map(fold => ({ ...fold, from: b.state.doc.line(fold.b).from })))
+  }
   if (layout === 'split') {
     const merge = new MergeView({
       a: { doc: original, extensions: [common(language, wrapping, wrap), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.contentAttributes.of({ 'aria-label': `Previous contents of ${path}` })] },
@@ -140,12 +171,22 @@ export function mountEditor({ parent, layout, language, path, text, original, se
       parent,
       gutter: true,
       collapseUnchanged: collapse,
+      diffConfig: DIFF,
     })
     start(merge.a, merge.b)
     return {
       view: merge.b,
       scrollers: [merge.a.scrollDOM, merge.b.scrollDOM],
       setWrap: (next) => { for (const side of [merge.a, merge.b]) side.dispatch({ effects: wrapping.reconfigure(next ? EditorView.lineWrapping : []) }) },
+      setHunkActions: (actions) => merge.b.dispatch({ effects: setHunkActions.of(actions) }),
+      setContext: (next) => {
+        const snapshots = [merge.a.scrollSnapshot(), merge.b.scrollSnapshot()]
+        // The fold field initializes only when added, so remove just that field before rebuilding it.
+        merge.reconfigure({ collapseUnchanged: undefined })
+        merge.reconfigure({ collapseUnchanged: collapseFor(next) })
+        resetFolds(merge.a, merge.b, next)
+        ;[merge.a, merge.b].forEach((view, index) => view.dispatch({ effects: snapshots[index] }))
+      },
       unfold: (side, line) => unfold(merge.a, merge.b, side, line),
       deletedLine: () => null,
       replace: (next) => merge.b.dispatch({ changes: whole(merge.b.state.doc, next) }),
@@ -160,12 +201,14 @@ export function mountEditor({ parent, layout, language, path, text, original, se
       destroy: () => merge.destroy(),
     }
   }
+  const merging = new Compartment()
+  const unified = (next: number) => unifiedMergeView({ original, mergeControls: false, syntaxHighlightDeletions: false, collapseUnchanged: collapseFor(next), diffConfig: DIFF })
   const view = new EditorView({
     parent,
     state: EditorState.create({
       doc,
       selection: clampSelection,
-      extensions: [current, unifiedMergeView({ original, mergeControls: false, syntaxHighlightDeletions: false, collapseUnchanged: collapse, diffConfig: DIFF })],
+      extensions: [current, merging.of(unified(context))],
     }),
   })
   start(null, view)
@@ -182,6 +225,13 @@ export function mountEditor({ parent, layout, language, path, text, original, se
     view,
     scrollers: [view.scrollDOM],
     setWrap: (next) => view.dispatch({ effects: wrapping.reconfigure(next ? EditorView.lineWrapping : []) }),
+    setHunkActions: (actions) => view.dispatch({ effects: setHunkActions.of(actions) }),
+    setContext: (next) => {
+      const snapshot = view.scrollSnapshot()
+      view.dispatch({ effects: merging.reconfigure(unified(100000)) })
+      view.dispatch({ effects: [merging.reconfigure(unified(next)), snapshot] })
+      resetFolds(null, view, next)
+    },
     unfold: (side, line) => {
       // An old line outside every change shows as the same current line, which is what folds.
       if (side === 'old') {
@@ -366,28 +416,44 @@ export type Stretch =
   // A changed block: old lines [a, a + countA) and current lines [b, b + countB), with the changed text of each line.
   | { kind: 'chunk'; a: number; countA: number; b: number; countB: number; marksA: Marks[]; marksB: Marks[] }
 export interface Preview {
+  context: number
   old: string[]
   lines: string[]
   stretches: Stretch[]
 }
 
-// The editor's fold settings: unchanged runs keep 3 lines beside each change and fold when 4 or more lines are left.
-const FOLD = { margin: 3, minSize: 4 }
-const DIFF = { scanLimit: 500 }
+// All shows the entire file. Smaller choices fold unchanged runs of at least four lines.
+const collapseFor = (context: number) => context >= 100000 ? undefined : { margin: context, minSize: 4 }
+const DIFF = { override: continuousDiff }
 
-export function previewOf(text: string, original: string): Preview {
+// Join changes within one line on both sides, so the preview and either live layout paint one inner block.
+function continuousDiff(a: string, b: string): Change[] {
+  const changes: Change[] = []
+  for (const change of diff(a, b, { scanLimit: 500 })) {
+    const last = changes[changes.length - 1]
+    if (last && !a.slice(last.toA, change.fromA).includes('\n') && !b.slice(last.toB, change.fromB).includes('\n')) {
+      changes[changes.length - 1] = new Change(last.fromA, change.toA, last.fromB, change.toB)
+    } else {
+      changes.push(change)
+    }
+  }
+  return changes
+}
+
+export function previewOf(text: string, original: string, context = 3): Preview {
   // The same documents the editors build: EditorState splits on any line break, unifiedMergeView's original on \r?\n.
   const b = Text.of(text.split(/\r\n?|\n/))
   const a = Text.of(original.split(/\r?\n/))
   const chunks = Chunk.build(a, b, DIFF)
+  const collapse = collapseFor(context)
   const stretches: Stretch[] = []
   // Unchanged run between two chunks, from (lineA, lineB) for `count` lines, folded like buildCollapsedRanges.
   const unchanged = (lineA: number, lineB: number, count: number, first: boolean, last: boolean) => {
     if (count <= 0) return
-    const before = first ? 0 : FOLD.margin
-    const after = last ? 0 : FOLD.margin
+    const before = first ? 0 : collapse?.margin ?? 0
+    const after = last ? 0 : collapse?.margin ?? 0
     const folded = count - before - after
-    if (folded < FOLD.minSize) {
+    if (!collapse || folded < collapse.minSize) {
       stretches.push({ kind: 'same', a: lineA, b: lineB, count })
       return
     }
@@ -409,7 +475,7 @@ export function previewOf(text: string, original: string): Preview {
   })
   unchanged(lineA, lineB, b.lines - lineB + 1, chunks.length === 0, true)
   const lines = (doc: Text) => Array.from({ length: doc.lines }, (_, index) => doc.line(index + 1).text)
-  return { old: lines(a), lines: lines(b), stretches }
+  return { context, old: lines(a), lines: lines(b), stretches }
 }
 
 // The changed text of each line of a chunk side, as offsets in that line, like the editor's changed-text marks.

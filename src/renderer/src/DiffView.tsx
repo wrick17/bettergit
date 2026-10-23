@@ -34,6 +34,8 @@ interface Props {
   }
   // Set in the Changes view. Each hunk gets an expand row above and below to show more context for that file.
   onExpand?: (file: DiffFile) => void
+  // The context of a working file, including an expansion made for that file alone.
+  contextFor?: (file: DiffFile) => number
   // Where the open and closed choices of each file are saved. The choices come back only for the same key, such as a commit.
   persist?: { id: string; key: string }
   // Set by the conflict resolver, which shows a conflicted file here with its controls inline.
@@ -107,7 +109,7 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, persist, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
+export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
   const layoutNow = useDiffLayout()
   const containerRef = useRef<HTMLDivElement>(null)
   const [limited, setLimited] = useState(false)
@@ -296,7 +298,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
               <IconButton icon="expandAll" label="Expand all files" onClick={() => openAllFiles(containerRef.current, true)} />
             </div>
           )}
-          {!onExpand && (
+          {(
             // Each option's tooltip names the group, since the options are what the pointer rests on.
             <div className="context-toggle" role="group" aria-label="Lines of unchanged context around each change">
               {CONTEXT_OPTIONS.map((value) => {
@@ -368,6 +370,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             stage={stageFor}
             edit={editFor}
             onExpand={expand}
+            context={contextFor?.(file) ?? context}
           />
         )
       })}
@@ -403,8 +406,9 @@ export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, stagedOnly, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage: viewStage, edit, onExpand }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, stagedOnly, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage: viewStage, edit, onExpand, context }: {
   file: DiffFile
+  context: number
   fileIndex: number
   stat: { adds: number; dels: number }
   open: boolean
@@ -536,7 +540,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, sta
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
-        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
+        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} context={context} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
         : hunks())}
       {open && !markdown && file.hunks.length > 0 && <HScrollBar file={file} extra={editor ? editorExtent : 0} />}
     </section>

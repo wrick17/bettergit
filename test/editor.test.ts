@@ -359,6 +359,52 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
   busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
 })
 
+test('native menu shortcuts do not collide after Electron role defaults and modifier aliases resolve', async () => {
+  type Item = { label?: string; role?: string; accelerator?: string; submenu?: Item[]; click?: () => void }
+  const actions: string[] = []
+  const module = await loadEntry('../src/main/menu.ts', {
+    electron: { app: { name: 'BetterGit' }, Menu: { buildFromTemplate: (items: Item[]) => items } },
+  })
+  const flatten = (items: Item[]): Item[] => items.flatMap(item => [item, ...flatten(item.submenu ?? [])])
+  const items = flatten(module.buildMenu({ send: (action: string) => actions.push(action), setTheme() {}, currentTheme: () => 'system' }))
+  const refresh = items.find(item => item.label === 'Refresh')!
+  expect(refresh.accelerator).toBe('Cmd+R')
+  refresh.click!()
+  expect(actions).toEqual(['refresh'])
+  for (const platform of ['darwin', 'win32']) {
+    // Electron's built-in roles register these even when the template omits an accelerator.
+    // https://github.com/electron/electron/blob/main/shell/browser/api/electron_api_menu_roles.cc
+    const defaults: Record<string, string> = {
+      close: 'CommandOrControl+W', copy: 'CommandOrControl+C', cut: 'CommandOrControl+X',
+      forcereload: 'Shift+CmdOrCtrl+R', hide: 'Command+H', hideothers: 'Command+Alt+H',
+      minimize: 'CommandOrControl+M', paste: 'CommandOrControl+V',
+      quit: platform === 'win32' ? '' : 'CommandOrControl+Q',
+      redo: platform === 'win32' ? 'Control+Y' : 'Shift+CommandOrControl+Z',
+      reload: 'CmdOrCtrl+R', resetzoom: 'CommandOrControl+0', selectall: 'CommandOrControl+A',
+      toggledevtools: platform === 'darwin' ? 'Alt+Command+I' : 'Ctrl+Shift+I',
+      togglefullscreen: platform === 'darwin' ? 'Control+Command+F' : 'F11',
+      undo: 'CommandOrControl+Z', zoomin: 'CommandOrControl+Plus', zoomout: 'CommandOrControl+-',
+    }
+    const normalize = (accelerator: string) => accelerator.toLowerCase().split('+').map(part => {
+      if (part === 'commandorcontrol' || part === 'cmdorctrl') return platform === 'darwin' ? 'cmd' : 'ctrl'
+      if (part === 'command' || part === 'cmd' || (platform === 'darwin' && (part === 'meta' || part === 'super'))) return 'cmd'
+      if (part === 'control') return 'ctrl'
+      return part === 'option' ? 'alt' : part
+    }).sort().join('+')
+    const seen = new Map<string, string>()
+    const collisions: string[] = []
+    for (const item of items) {
+      const accelerator = item.accelerator ?? defaults[item.role?.toLowerCase() ?? '']
+      if (!accelerator) continue
+      const key = normalize(accelerator), label = item.label ?? item.role!
+      if (seen.has(key)) collisions.push(`${seen.get(key)} / ${label}: ${key}`)
+      seen.set(key, label)
+    }
+    expect(collisions, platform).toEqual([])
+  }
+  expect(items.find(item => item.role === 'reload')).toMatchObject({ label: 'Reload UI', accelerator: 'CmdOrCtrl+Alt+R' })
+})
+
 test('title-bar Actions menu keeps the sync icons and lists every repo action with groups, danger, and shortcuts', async () => {
   const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
     'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './repo-busy': repoBusy,

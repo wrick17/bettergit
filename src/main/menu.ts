@@ -87,7 +87,7 @@ export function buildMenu(handlers: MenuHandlers): Menu {
         { type: 'separator' },
         { label: 'Appearance', submenu: [themeItem('system', 'System'), themeItem('light', 'Light'), themeItem('dark', 'Dark')] },
         { type: 'separator' },
-        { role: 'reload' },
+        { role: 'reload', label: 'Reload UI', accelerator: 'CmdOrCtrl+Alt+R' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'resetZoom' },

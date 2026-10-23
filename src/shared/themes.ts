@@ -50,6 +50,10 @@ export interface InstalledExtension {
   description: string
   themes: ThemeChoice[]
   iconThemes: ThemeChoice[]
+  icon?: string | null
+  downloads?: number | null
+  averageRating?: number | null
+  reviewCount?: number | null
 }
 
 export interface ExtensionResult {
@@ -59,6 +63,29 @@ export interface ExtensionResult {
   description: string
   version: string
   downloads: number
+  icon?: string | null
+  averageRating?: number | null
+  reviewCount?: number | null
+}
+
+export interface ExtensionMetadata {
+  namespace: string
+  name: string
+  displayName: string
+  description: string
+  version: string
+  downloads: number | null
+  averageRating: number | null
+  reviewCount: number | null
+  // A registry image URL, loaded on demand through extensionImage under the existing image CSP.
+  icon: string | null
+  url: string
+}
+
+export interface ExtensionDetails extends ExtensionMetadata {
+  // Untrusted Markdown text. The renderer parses it without executing HTML.
+  readme: string | null
+  readmeBaseUrl: string | null
 }
 
 export const isHexColor =(value: unknown): value is string =>
@@ -93,6 +120,8 @@ const VARIABLES: [string, string[]][] = [
 export function themeVariables(colors: Record<string, string>, dark: boolean): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [variable, keys] of VARIABLES) {
+    // Light diff fills stay fixed across themes; dark themes keep their own contrast.
+    if (!dark && (variable === '--add-bg' || variable === '--del-bg')) continue
     const key = keys.find((name) => Object.hasOwn(colors, name) && isHexColor(colors[name]))
     if (key) out[variable] = colors[key]
   }

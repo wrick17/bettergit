@@ -7,6 +7,10 @@ import { EditableDiff, bufferedKey, lineColumnAt, mountedEditors } from '../src/
 import { FindBar } from '../src/renderer/src/FindBar'
 import { clearHighlight, revealMatch, setFindQuery, useFindSource, watchFind } from '../src/renderer/src/find'
 import { typeKeys } from '../src/renderer/src/cm-editor'
+import { SettingsDialog } from '../src/renderer/src/Dialogs'
+import { applyAppearance } from '../src/renderer/src/appearance'
+import { DiffView, setDiffLayout } from '../src/renderer/src/DiffView'
+import { setContextLines } from '../src/renderer/src/prefs'
 
 // A diff container that registers its files with find, as DiffView does.
 function FindDiff({ files }: { files: Parameters<typeof useFindSource>[1] }) {
@@ -16,5 +20,5 @@ function FindDiff({ files }: { files: Parameters<typeof useFindSource>[1] }) {
 }
 
 Object.assign(window, {
-  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors },
+  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, setDiffLayout, setContextLines },
 })

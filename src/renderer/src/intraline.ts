@@ -139,14 +139,14 @@ function matchCommon(a: Token[], b: Token[], onMatch: (i: number, j: number) => 
   }
 }
 
-// Joins runs of unmatched tokens into one span, so a changed phrase is one highlighted block.
+// One block from the first changed token through the last, keeping the shared prefix and suffix plain.
 function spansOf(tokens: Token[], matched: boolean[]): Span[] {
   const spans: Span[] = []
   tokens.forEach((token, i) => {
     if (matched[i]) return
     const end = token.start + token.text.length
     const last = spans[spans.length - 1]
-    if (last && last[1] === token.start) last[1] = end
+    if (last) last[1] = end
     else spans.push([token.start, end])
   })
   return spans

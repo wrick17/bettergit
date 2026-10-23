@@ -5,7 +5,7 @@ import { isIP, isIPv4 } from 'node:net'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { inflateRawSync } from 'node:zlib'
-import { isHexColor, type ColorTheme, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
+import { isHexColor, type ColorTheme, type ExtensionDetails, type ExtensionMetadata, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
 
 // VS Code extensions, used only for the colour and file icon themes they contribute. An extension is untrusted input:
 // its code is never unpacked, so it can never run, and every file read back must stay inside the extension's folder.
@@ -22,6 +22,7 @@ const MAX_FILE = 20 * 1024 * 1024
 // Theme, include and manifest JSON. The largest real one seen is 1.5 MB (vscode-icons); the cap bounds parse memory.
 const MAX_JSON = 4 * 1024 * 1024
 const MAX_ICON = 512 * 1024
+const MAX_README = 1024 * 1024
 // Caps on one icon theme, checked from the map and file sizes before any image is read. Bytes count once per icon id,
 // since each id carries its own copy of the data URL to the renderer. vscode-icons, the largest seen, has 1,668 images
 // in 4.4 MB.
@@ -300,22 +301,108 @@ export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolea
   throw new Error('Open VSX redirected too many times.')
 }
 
-// An empty query lists the most downloaded themes.
+function extensionPath(namespace: unknown, name: unknown): string {
+  if (typeof namespace !== 'string' || typeof name !== 'string' || !isExtensionId(`${namespace}.${name}`)) throw new Error('Unknown extension.')
+  return `${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+}
+
+// Assets come only from registry metadata or README links. DNS and every redirect are checked again by fetchOk.
+function registryAsset(value: unknown): string | null {
+  try {
+    const url = new URL(text(value))
+    if (url.protocol !== 'https:' || url.port || url.username || url.password || !OPEN_VSX_HOSTS.has(url.hostname) || /\.vsix(?:$|\/)/i.test(url.pathname)) return null
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+interface RegistryEntry {
+  namespace?: unknown
+  name?: unknown
+  displayName?: unknown
+  description?: unknown
+  version?: unknown
+  downloadCount?: unknown
+  averageRating?: unknown
+  reviewCount?: unknown
+  files?: { icon?: unknown; readme?: unknown }
+}
+
+const countValue = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+
+function registryMetadata(namespace: unknown, name: unknown, entry: RegistryEntry): ExtensionMetadata {
+  const route = extensionPath(namespace, name)
+  const rating = entry.averageRating
+  return {
+    namespace: text(namespace), name: text(name),
+    displayName: text(entry.displayName) || text(name),
+    description: text(entry.description), version: text(entry.version),
+    downloads: countValue(entry.downloadCount),
+    averageRating: typeof rating === 'number' && Number.isFinite(rating) && rating >= 0 && rating <= 5 ? rating : null,
+    reviewCount: countValue(entry.reviewCount),
+    icon: registryAsset(entry.files?.icon),
+    url: `https://open-vsx.org/extension/${route}`,
+  }
+}
+
+async function registryJson(url: string) {
+  return JSON.parse((await readBody(await fetchOk(url), MAX_JSON, 'The Open VSX metadata is too large.')).toString('utf8'))
+}
+
+async function readRegistryExtension(namespace: unknown, name: unknown) {
+  const entry = await registryJson(`${OPEN_VSX}/${extensionPath(namespace, name)}`) as RegistryEntry | null
+  if (!entry || typeof entry !== 'object') throw new Error('Open VSX returned invalid extension metadata.')
+  return { metadata: registryMetadata(namespace, name, entry), readmeUrl: registryAsset(entry.files?.readme) }
+}
+
+export async function extensionMetadata(namespace: unknown, name: unknown): Promise<ExtensionMetadata> {
+  return (await readRegistryExtension(namespace, name)).metadata
+}
+
+export async function extensionDetails(namespace: unknown, name: unknown): Promise<ExtensionDetails> {
+  const { metadata, readmeUrl } = await readRegistryExtension(namespace, name)
+  if (!readmeUrl) return { ...metadata, readme: null, readmeBaseUrl: null }
+  const response = await fetchOk(readmeUrl)
+  const readme = (await readBody(response, MAX_README, 'The extension README is larger than 1 MB.')).toString('utf8')
+  return { ...metadata, readme, readmeBaseUrl: registryAsset(response.url) ?? readmeUrl }
+}
+
+// Images are loaded separately so slow logos never delay search results or installed metadata.
+export async function extensionImage(value: unknown): Promise<string | null> {
+  const url = registryAsset(value)
+  if (!url) return null
+  try {
+    const data = await readBody(await fetchOk(url), MAX_ICON, 'The extension image is larger than 512 KB.')
+    // The registry serves some PNGs as application/octet-stream. Identify bytes, never trust the declared MIME.
+    const head = data.subarray(0, 12)
+    let mime: string | null = null
+    if (head.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mime = 'image/png'
+    else if (head[0] === 255 && head[1] === 216 && head[2] === 255) mime = 'image/jpeg'
+    else if (/^GIF8[79]a$/.test(head.toString('ascii', 0, 6))) mime = 'image/gif'
+    else if (head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp'
+    else {
+      const svg = data.toString('utf8')
+      // Like installed SVG icons, these data URLs are image sources only, never inserted as markup.
+      if (!/<!DOCTYPE/i.test(svg) && /^\s*(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg(?:\s|>)/i.test(svg)) mime = 'image/svg+xml'
+    }
+    return mime ? `data:${mime};base64,${data.toString('base64')}` : null
+  } catch {
+    return null
+  }
+}
+
+// An empty query lists the most downloaded themes. Image URLs are returned without fetching their bodies.
 export async function searchOpenVsx(query: unknown): Promise<ExtensionResult[]> {
   const words = text(query).trim().slice(0, 100)
   const params = new URLSearchParams({ ...(words ? { query: words } : { sortBy: 'downloadCount', sortOrder: 'desc' }), category: 'Themes', size: '30' })
-  const body = await (await fetchOk(`${OPEN_VSX}/-/search?${params}`)).json() as { extensions?: unknown }
-  if (!Array.isArray(body.extensions)) return []
-  return body.extensions.flatMap((entry): ExtensionResult[] => (PART.test(text(entry?.namespace)) && PART.test(text(entry?.name))
-    ? [{
-        namespace: entry.namespace,
-        name: entry.name,
-        displayName: text(entry.displayName) || entry.name,
-        description: text(entry.description),
-        version: text(entry.version),
-        downloads: Number(entry.downloadCount) || 0,
-      }]
-    : []))
+  const body = await registryJson(`${OPEN_VSX}/-/search?${params}`) as { extensions?: unknown } | null
+  if (!Array.isArray(body?.extensions)) return []
+  return body.extensions.slice(0, 30).flatMap((entry): ExtensionResult[] => {
+    if (!isExtensionId(`${text(entry?.namespace)}.${text(entry?.name)}`)) return []
+    const metadata = registryMetadata(entry.namespace, entry.name, entry)
+    return [{ ...metadata, downloads: metadata.downloads ?? 0 }]
+  })
 }
 
 async function downloadFromOpenVsx(namespace: unknown, name: unknown): Promise<Buffer> {

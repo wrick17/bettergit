@@ -40,6 +40,14 @@ type Working = { files: DiffFile[]; moves: MovedBlock[] }
 // Loads of one status, revision, context and widening (`of`), keyed by loadKey.
 interface Loads { of: unknown[]; pending: Map<string, Promise<Working>>; done: Map<string, Working> }
 const loadKey = (staged: boolean, hideWhitespace: boolean) => `${staged} ${hideWhitespace}`
+const NO_EXTRA: Record<string, number> = {}
+// Context is the penultimate part of either load key. A context reload keeps the same file sections and editors.
+function sameSource(before: string | null, after: string | null): boolean {
+  if (!before || !after) return false
+  const previous: unknown[] = JSON.parse(before)
+  const next: unknown[] = JSON.parse(after)
+  return previous.length === next.length && previous.every((value, index) => index === previous.length - 2 || value === next[index])
+}
 type Stats = { add: number; del: number }
 type Section = 'staged' | 'unstaged'
 type View = 'list' | 'tree'
@@ -102,10 +110,14 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // Each result keeps the status it was loaded for, so the file list and the diffs change in the same frame.
   const [all, setAll] = useState<{ staged: Working; unstaged: Working; status: RepoStatus } | null>(null)
   // Context level of each widened file, keyed by levelKey. Kept across refreshes and read by the loaders.
-  const [extra, setExtra] = useState<Record<string, number>>(() => loadSession().places[repo]?.widened ?? {})
+  const context = useContextLines()
+  const [widened, setWidened] = useState(() => ({ context, levels: loadSession().places[repo]?.widened ?? NO_EXTRA }))
+  const extra = widened.context === context ? widened.levels : NO_EXTRA
+  useEffect(() => {
+    if (widened.context !== context) setWidened({ context, levels: NO_EXTRA })
+  }, [context])
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
-  const context = useContextLines()
   const ignoreWhitespace = useIgnoreWhitespace()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
   // The view and options each loaded result belongs to. Only a result loaded for the view on screen is ready for its scroll position.
@@ -137,8 +149,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // A result, or the failure of its load, shows only for the view and options it was loaded for. While a load for the
   // view on screen runs, its toolbar shows loading in place of hunks and counts from other options.
   const cachedAll = loaded(true) && loaded(false)
-  const allShown = all && allFor.current === allKey ? all : cachedAll ? { staged: loaded(true)!, unstaged: loaded(false)! } : null
-  const diffShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? null
+  const allShown = all && allFor.current === allKey ? all : cachedAll ? { staged: loaded(true)!, unstaged: loaded(false)! } : sameSource(allFor.current, allKey) ? all : null
+  const diffShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? (sameSource(diffFor.current, diffKey) ? diff : null)
+  const contextPending = section === null ? allFor.current !== allKey && !cachedAll : diffFor.current !== diffKey && !loaded(section)
   const conflicted = useMemo(() => shownStatus.changes.filter((change) => change.conflicted), [shownStatus])
   // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
   const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
@@ -400,7 +413,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       reload: onChanged,
     })
   }
-  const onHunk = ignoreWhitespace ? undefined : changeHunk
+  const onHunk = ignoreWhitespace || contextPending ? undefined : changeHunk
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
 
@@ -516,7 +529,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       const working = inSelection ? latest?.diff : latest?.all?.[section]
       if (!latest || !replacement || !working) return
       const widened = replaceFile(working, path, replacement)
-      setExtra((prev) => ({ ...prev, [key]: next }))
+      setWidened((prev) => ({ context, levels: { ...(prev.context === context ? prev.levels : NO_EXTRA), [key]: next } }))
       if (inSelection) {
         latest.diff = widened
         setDiff(widened)
@@ -706,6 +719,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   stage={{ staged: false, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: stagedOnly }}
                   edit={edit}
                   onExpand={(file) => expandChange(file)}
+                  contextFor={(file) => extra[levelKey(stagedOnly.has(pathOf(file)), pathOf(file))] ?? context}
                   persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
                   refreshOf={`${repo} unstaged`}
                   onShown={shownHandlers.unstaged}
@@ -720,6 +734,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   moves={stagedShown?.moves ?? NO_FILES.moves}
                   stage={{ staged: true, busy, onToggle: togglePath, onHunk }}
                   onExpand={(file) => expandFile('staged', file)}
+                  contextFor={(file) => extra[levelKey(true, pathOf(file))] ?? context}
                   persist={{ id: `${repo}|changes-staged`, key: 'all' }}
                   refreshOf={`${repo} staged`}
                   onShown={shownHandlers.staged}
@@ -736,6 +751,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               stage={{ staged: listed.selection?.staged ?? selection.staged, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: (listed.selection?.staged ?? selection.staged) ? undefined : stagedOnly }}
               edit={(listed.selection?.staged ?? selection.staged) ? undefined : edit}
               onExpand={(file) => (selection.staged ? expandFile('staged', file, true) : expandChange(file, true))}
+              contextFor={(file) => extra[levelKey(selection.staged || stagedOnly.has(pathOf(file)), pathOf(file))] ?? context}
               persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
               onShown={shownHandlers.selection}

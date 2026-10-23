@@ -88,7 +88,10 @@ const diff = () => find(tree, (p) => Array.isArray(p.files) && typeof p.onExpand
   ?? find(tree, (p) => Array.isArray(p.files) && typeof p.onExpand === 'function')
 const change = (path) => ({ path, staged: true, unstaged: true, conflicted: false, kind: 'modified' })
 function working(label) {
-  return { files: ['a.ts', 'b.ts'].flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n')), moves: [] }
+  return { files: ['a.ts', 'b.ts'].flatMap((path) => {
+    const patch = 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n'
+    return parseDiff(patch, Buffer.from(patch))
+  }), moves: [] }
 }
 async function load(label, renderUpdates = true) {
   for (const request of requests.filter((r) => !r.done && r.args[3] === undefined)) {
@@ -120,7 +123,41 @@ function expand() {
   return request
 }
 
-if (process.env.CHECK_MODE === 'rails') {
+if (process.env.CHECK_MODE === 'hunk-context') {
+  const writes = []
+  window.bettergit.applyHunk = async (...args) => { writes.push(args) }
+  document.createElement = () => ({ remove() {} })
+  document.body = { append() {} }
+  globalThis.requestAnimationFrame = (callback) => { callback(); return 0 }
+  let confirms = 0
+  window.confirm = () => { confirms++; return true }
+  for (const selected of [false, true]) {
+    await start(selected)
+    for (const [step, context] of [3, 10, 25, 100000, 3].entries()) {
+      if (step) {
+        setContextLines(context); render()
+        assert.equal(diff().stage.onHunk, undefined, 'old-context hunk writes remain available during reload')
+        await load('context-' + context)
+      }
+      const view = diff(), hunk = view.files[0].hunks[0]
+      assert.equal(typeof view.stage.onHunk, 'function', 'fresh context did not restore per-hunk actions')
+      for (const action of ['stage', 'discard']) {
+        await view.stage.onHunk('a.ts', hunk, action); await flush()
+        assert.deepEqual(writes.at(-1), ['/repo', action, { path: 'a.ts', staged: false, context,
+          header: hunk.header, lines: hunk.lines.map(({ type, text }) => ({ type, text })), id: hunk.id }])
+      }
+    }
+    const request = expand()
+    request.done = true; request.resolve({ files: [working('wide').files[0]], moves: [] })
+    await flush()
+    const view = diff(), hunk = view.files[0].hunks[0]
+    await view.stage.onHunk('a.ts', hunk, 'stage'); await flush()
+    assert.equal(writes.at(-1)[2].context, 10, 'expanded hunk did not use its own Git context')
+    assert.equal(writes.at(-1)[2].id, hunk.id)
+    unmount()
+  }
+  assert.equal(confirms, 10, 'discard hunks must retain their confirmation')
+} else if (process.env.CHECK_MODE === 'rails') {
   await start(true)
   find(tree, (p) => p['aria-label'] === 'Commit message').onChange({ target: { value: 'unfinished draft' } })
   render()
@@ -499,7 +536,8 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   globalThis.requestAnimationFrame = (callback) => { frames.set(nextFrame, callback); return nextFrame++ }
   globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
   let top = 0
-  const pane = { clientHeight: 100, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0, bottom: 100 }) }
+  let revealTarget = null
+  const pane = { clientHeight: 100, querySelectorAll: (selector) => selector === '[data-path]' && revealTarget ? [revealTarget] : [], getBoundingClientRect: () => ({ top: 0, bottom: 100 }) }
   Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
   Object.defineProperty(pane, 'scrollHeight', { get: () => {
     const shown = []
@@ -540,10 +578,14 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   // not loaded yet reloads; the whitespace option loaded before would show at once.
   setContextLines(10); render()
   frame()
+  assert.equal(pane.scrollTop, 900, 'context reload must keep the existing editor and its scroll position')
+  // Give revealFile a real target in this model. The old empty-pane clamp used to move it without a reveal.
+  revealTarget = { dataset: { path: 'b.ts' }, classList: { add() {}, remove() {} }, offsetWidth: 100,
+    scrollIntoView: () => { pane.scrollTop = 1200 } }
   find(tree, (p) => p.title === 'Changes' && typeof p.onSelect === 'function').onSelect(change('b.ts')); render()
   await load('picked')
   frame(); frame(); frame()
-  assert.notEqual(pane.scrollTop, 900, 'old view position restored into a picked file')
+  assert.equal(pane.scrollTop, 1200, 'old view position restored into a picked file instead of its header')
   setIgnoreWhitespace(false); setContextLines(3)
   unmount()
 } else if (process.env.CHECK_MODE === 'status-loads') {
@@ -770,6 +812,7 @@ function check(mode: string) {
 }
 
 test('a current Changes widen replaces only its file and persists its level', () => check('fresh'))
+test('Changes restores fresh stage and discard hunk actions after context reloads and per-file expansion', () => check('hunk-context'))
 test('all Changes drops stale widen replies and errors across options, refreshes, targets and unmount', () => check('all'))
 test('selected Changes drops stale widen replies and errors across options, refreshes, targets and unmount', () => check('selected'))
 test('old Changes loads and widens cannot replace a newer load error', () => check('errors'))
