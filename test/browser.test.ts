@@ -320,6 +320,43 @@ test.skipIf(!playwright)('Themes combines selection and installation while Appea
   expect(await page.getByText(/1,200 downloads.*4.5\/5/).count()).toBe(1)
   expect(await page.getByText(/Open VSX.*Unrated/).count()).toBe(1)
   expect(await page.getByRole('img', { name: 'Fixture logo unavailable' }).count()).toBe(1)
+  const detailsAction = page.getByRole('button', { name: 'Details for Fixture', exact: true }).first()
+  expect(await detailsAction.getAttribute('class')).toContain('icon-button')
+  expect(await detailsAction.textContent()).toBe('')
+  await detailsAction.hover()
+  await page.locator('.tooltip').filter({ hasText: 'Details for Fixture' }).waitFor()
+  await page.mouse.move(799, 599)
+  await detailsAction.press('Tab')
+  expect(await page.getByRole('button', { name: 'Remove Fixture' }).evaluate((button: HTMLElement) => document.activeElement === button)).toBe(true)
+  await page.locator('.tooltip').filter({ hasText: 'Remove Fixture' }).waitFor()
+  const checkStats = async () => {
+    const stats = await page.evaluate(() => {
+      const root = document.documentElement, saved = root.style.cssText, mode = root.dataset.theme
+      const check = () => [...document.querySelectorAll<HTMLElement>('.extension-stats')].map(element => {
+        const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')!
+        canvas.width = canvas.height = 1
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 1, 1)
+        const ancestors: Element[] = []
+        for (let at: Element | null = element; at; at = at.parentElement) ancestors.unshift(at)
+        for (const at of ancestors) { ctx.fillStyle = getComputedStyle(at).backgroundColor; ctx.fillRect(0, 0, 1, 1) }
+        const light = (rgb: number[]) => rgb.slice(0, 3).map(value => { const s = value / 255; return s <= .04045 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4 }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
+        const background = light([...ctx.getImageData(0, 0, 1, 1).data])
+        ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = getComputedStyle(element).color; ctx.fillRect(0, 0, 1, 1)
+        const foreground = light([...ctx.getImageData(0, 0, 1, 1).data])
+        return { groups: element.children.length, fits: element.scrollWidth <= element.clientWidth, size: parseFloat(getComputedStyle(element).fontSize), contrast: (Math.max(background, foreground) + .05) / (Math.min(background, foreground) + .05) }
+      })
+      const output = ['light', 'dark', 'custom-light'].flatMap(theme => {
+        root.style.cssText = saved
+        root.dataset.theme = theme === 'dark' ? 'dark' : 'light'
+        if (theme === 'custom-light') { root.style.setProperty('--content', '#e8edf4'); root.style.setProperty('--text', '#172137'); root.style.setProperty('--text-2', '#35445a') }
+        return check()
+      })
+      root.style.cssText = saved; root.dataset.theme = mode
+      return output
+    })
+    for (const row of stats) { expect(row.groups).toBe(3); expect(row.fits).toBe(true); expect(row.size).toBeGreaterThanOrEqual(12.5); expect(row.contrast).toBeGreaterThanOrEqual(4.5) }
+  }
+  await checkStats()
   const reads = await page.evaluate(() => (window as any).themeReads.length)
   await page.getByRole('button', { name: 'Details for Fixture', exact: true }).nth(0).click()
   expect(await page.getByRole('status').textContent()).toBe('Loading extension details…')
@@ -329,6 +366,9 @@ test.skipIf(!playwright)('Themes combines selection and installation while Appea
   await page.evaluate(() => { (window as any).finishDetails(); (window as any).detailMode = 'normal' })
   await page.getByRole('button', { name: 'Details for Fixture', exact: true }).nth(1).click()
   await page.getByRole('heading', { name: 'Fixture README', exact: true }).waitFor()
+  expect(await page.locator('.extension-details-meta .extension-stats > span').count()).toBe(3)
+  expect(await page.locator('.extension-details-meta .extension-stats').evaluate((element: HTMLElement) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await checkStats()
   expect(await page.locator('.extension-readme strong').textContent()).toBe('theme')
   expect(await page.locator('.extension-readme script, .extension-readme iframe').count()).toBe(0)
   expect(await page.evaluate(() => (window as any).readmeExecuted)).toBeUndefined()
