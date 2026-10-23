@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises'
 import { promises as fs } from 'node:fs'
 import { isIP, isIPv4 } from 'node:net'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { inflateRawSync } from 'node:zlib'
 import { isHexColor, type ColorTheme, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
 
@@ -13,6 +14,7 @@ const OPEN_VSX = 'https://open-vsx.org/api'
 // The API host, and the storage host its file URLs redirect to (a 302 to openvsx.eclipsecontent.org, seen 2026-10-19).
 const OPEN_VSX_HOSTS = new Set(['open-vsx.org', 'openvsx.eclipsecontent.org'])
 const MAX_REDIRECTS = 3
+const TRANSIENT_NETWORK_ERRORS = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'UND_ERR_SOCKET'])
 const MAX_DOWNLOAD = 50 * 1024 * 1024
 const MAX_UNPACKED = 100 * 1024 * 1024
 const MAX_ENTRIES = 20_000
@@ -259,17 +261,34 @@ export function isInternalAddress(address: string): boolean {
 export async function isOpenVsxUrl(url: URL): Promise<boolean> {
   const host = url.hostname.replace(/^\[|\]$/g, '')
   if (url.protocol !== 'https:' || url.port || url.username || url.password || isIP(host) || !OPEN_VSX_HOSTS.has(host)) return false
-  const addresses = await lookup(host, { all: true }).catch(() => [])
+  const addresses = await lookup(host, { all: true })
   return addresses.length > 0 && !addresses.some(({ address }) => isInternalAddress(address))
 }
 
 // Redirects are followed by hand, so every hop is checked before it is requested: a redirect to a host off the list
 // fails without ever reaching it.
 export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolean> = isOpenVsxUrl): Promise<Response> {
+  const signal = AbortSignal.timeout(30_000)
+  const expired = new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+  let retried = false
   let next = new URL(url)
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!await allowed(next)) throw new Error(`Refusing to fetch from ${next.host}: not an Open VSX address.`)
-    const response = await fetch(next, { redirect: 'manual', signal: AbortSignal.timeout(30_000) })
+    let response: Response
+    for (;;) {
+      try {
+        signal.throwIfAborted()
+        if (!await Promise.race([allowed(next), expired])) throw new Error(`Refusing to fetch from ${next.host}: not an Open VSX address.`)
+        signal.throwIfAborted()
+        response = await fetch(next, { redirect: 'manual', signal })
+        break
+      } catch (error) {
+        const failure = error as NodeJS.ErrnoException & { cause?: NodeJS.ErrnoException }
+        if (retried || signal.aborted || !TRANSIENT_NETWORK_ERRORS.has(failure?.code ?? failure?.cause?.code ?? '')) throw error
+        // One retry for a short DNS/socket interruption, with the same deadline and fresh address validation.
+        retried = true
+        await delay(250, undefined, { signal })
+      }
+    }
     const location = response.headers.get('location')
     if (response.status < 300 || response.status > 399 || !location) {
       if (!response.ok) throw new Error(`Open VSX answered ${response.status}.`)

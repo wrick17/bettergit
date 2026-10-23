@@ -7,6 +7,8 @@ const RENDER_CHECK = `
 const stored = {
   'bettergit.ignoreWhitespace': process.env.IGNORE_WHITESPACE ?? 'false',
   'bettergit.formatMarkdown': process.env.FORMAT_MARKDOWN,
+  'bettergit.contextLines': process.env.CONTEXT_LINES,
+  'bettergit.contextLines.v2': process.env.CONTEXT_LINES_V2,
 }
 Object.assign(globalThis, {
   localStorage: { getItem: (key) => stored[key] ?? null, setItem: () => undefined },
@@ -44,6 +46,35 @@ function renderEmpty(ignoreWhitespace: 'true' | 'false', formatMarkdown?: 'true'
 function whitespaceButton(html: string): string {
   return html.match(/<button[^>]*aria-label="Whitespace changes:[^"]*"[^>]*>/)?.[0] ?? ''
 }
+
+test('legacy All opens compactly, saved compact choices remain, and a new All preference restores', () => {
+  const renderContext = (saved?: string, current?: string) => {
+    const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], {
+      cwd: `${import.meta.dir}/..`,
+      env: { ...process.env, CONTEXT_LINES: saved, CONTEXT_LINES_V2: current },
+      stderr: 'pipe',
+    })
+    expect(child.exitCode, child.stderr.toString()).toBe(0)
+    const html = JSON.parse(child.stdout.toString().trim()) as string
+    return html.match(/<button[^>]*aria-label="([^"]*unchanged context[^"]*)"[^>]*aria-pressed="true"[^>]*>/)?.[1]
+  }
+  expect(renderContext('100000')).toBe('3 lines of unchanged context around each change: on')
+  for (const saved of [undefined, 'invalid', '3', '10', '25']) {
+    expect(renderContext(saved)).toBe(`${saved === '10' || saved === '25' ? saved : '3'} lines of unchanged context around each change: on`)
+  }
+  expect(renderContext('100000', '100000')).toBe('All lines of unchanged context around each change: on')
+  const chosen = Bun.spawnSync([process.execPath, '-e', `
+    const stored = { 'bettergit.contextLines': '100000' }
+    globalThis.localStorage = { getItem: key => stored[key] ?? null, setItem: (key, value) => stored[key] = value }
+    require('react').useSyncExternalStore = (_subscribe, snapshot) => snapshot()
+    const prefs = await import('./src/renderer/src/prefs?initial')
+    prefs.setContextLines(100000)
+    const reloaded = await import('./src/renderer/src/prefs?reload')
+    console.log(JSON.stringify({ persisted: stored['bettergit.contextLines.v2'], restored: reloaded.useContextLines() }))
+  `], { cwd: `${import.meta.dir}/..`, stderr: 'pipe' })
+  expect(chosen.exitCode, chosen.stderr.toString()).toBe(0)
+  expect(JSON.parse(chosen.stdout.toString())).toEqual({ persisted: '100000', restored: 100000 })
+})
 
 test('an empty filtered diff keeps the Hide whitespace button pressed and actionable', () => {
   const html = renderEmpty('true')
