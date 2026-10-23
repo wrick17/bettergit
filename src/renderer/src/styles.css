@@ -36,6 +36,7 @@
   --find-match: rgba(255, 204, 0, 0.38);
   --find-hit: #ff9632;
   color-scheme: light;
+  --window: #e6e8ee;
   --glass-fill: rgba(255, 255, 255, 0.4);
   --glass-strong: rgba(252, 252, 255, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.62);
@@ -81,6 +82,7 @@
   --find-match: rgba(255, 214, 10, 0.3);
   --find-hit: #ff9f43;
   color-scheme: dark;
+  --window: #1c1d23;
   --glass-fill: rgba(16, 17, 22, 0.5);
   --glass-strong: rgba(20, 21, 27, 0.9);
   --glass-chip: rgba(255, 255, 255, 0.07);
@@ -133,8 +135,8 @@ html, body, #root { height: 100%; margin: 0; background: transparent; }
 body {
   font: calc(14px + var(--ui-delta))/1.45 var(--font-ui);
   color: var(--text);
-  /* Transparent so the desktop shows through the glass panels. An extension theme paints --window. */
-  background: var(--window, transparent);
+  /* Opaque: the window has no native material, so any alpha here shows other apps through the glass panels. */
+  background: var(--window);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
