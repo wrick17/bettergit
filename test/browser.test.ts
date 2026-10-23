@@ -162,15 +162,15 @@ test.skipIf(!playwright)('saved working hunks keep stage and discard actions in 
   await page.setViewportSize({ width: 800, height: 600 })
 })
 
-test.skipIf(!playwright)('file headers fill Changes and History diff panes with square contrasting surfaces and sticky scrolling', async () => {
+test.skipIf(!playwright)('file headers match the Files pane fill and remain full width, square and sticky in Changes and History', async () => {
   for (const view of ['changes', 'history']) for (const theme of ['light', 'dark', 'custom-light', 'custom-dark']) {
     await page.evaluate(({ view, theme }: { view: string; theme: string }) => {
       const w = window as any
       const { createElement, createRoot, flushSync, DiffView } = w.under
       document.documentElement.dataset.theme = theme.endsWith('dark') ? 'dark' : 'light'
-      document.documentElement.style.cssText = `--window: ${theme.endsWith('dark') ? '#303640' : '#d0d5de'}; ${theme.startsWith('custom') ? `--content: ${theme.endsWith('dark') ? '#263341' : '#ebeef4'}` : ''}`
+      document.documentElement.style.cssText = `--window: ${theme.endsWith('dark') ? '#303640' : '#d0d5de'}; ${theme.startsWith('custom') ? `--content: ${theme.endsWith('dark') ? '#263341' : '#ebeef4'}; --list: ${theme.endsWith('dark') ? '#313b4a' : '#cbd5e1'}` : ''}`
       const rail = '<div class="diff-rail"><div class="diff-pane"></div></div>'
-      document.getElementById('root')!.innerHTML = `<div class="${view}" style="height:450px;width:780px">${view === 'history' ? `<div class="commit-detail has-commit">${rail}</div>` : rail}</div>`
+      document.getElementById('root')!.innerHTML = `<div class="${view}" style="height:450px;width:780px;grid-template-columns:120px minmax(0,1fr)">${view === 'history' ? `<div class="history-list"></div><div class="commit-detail has-commit" style="grid-template-columns:120px minmax(0,1fr)"><div class="commit-info"></div>${rail}</div>` : `<div class="file-list"></div>${rail}`}</div>`
       const files = ['first.txt', 'second.txt'].map(path => ({ oldPath: path, newPath: path, status: 'modified', binary: false, hunks: [{ header: '@@ -1,40 +1,40 @@', lines: Array.from({ length: 40 }, (_, index) => ({ type: 'context', text: `line ${index + 1}`, oldNo: index + 1, newNo: index + 1 })) }] }))
       w.headerRoot = createRoot(document.querySelector('.diff-pane'))
       flushSync(() => w.headerRoot.render(createElement(DiffView, { files, moves: [] })))
@@ -179,22 +179,13 @@ test.skipIf(!playwright)('file headers fill Changes and History diff panes with 
     const result = await page.evaluate(() => {
       const pane = document.querySelector<HTMLElement>('.diff-pane')!, file = document.querySelector<HTMLElement>('.diff-file')!, header = file.querySelector('header')!
       const box = pane.getBoundingClientRect(), head = header.getBoundingClientRect(), style = getComputedStyle(header)
-      const luminance = (element: Element) => {
-        const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')!
-        canvas.width = canvas.height = 1
-        const ancestors: Element[] = []
-        for (let at: Element | null = element; at; at = at.parentElement) ancestors.unshift(at)
-        for (const at of ancestors) { ctx.fillStyle = getComputedStyle(at).backgroundColor; ctx.fillRect(0, 0, 1, 1) }
-        return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map(value => { const s = value / 255; return s <= .04045 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4 }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
-      }
       return { left: head.left - box.left - pane.clientLeft, width: head.width - pane.clientWidth, radius: style.borderRadius, border: getComputedStyle(file).borderWidth,
         gap: parseFloat(getComputedStyle(file).marginTop), overflow: getComputedStyle(pane).overflowY, horizontal: pane.scrollWidth - pane.clientWidth,
-        visibility: getComputedStyle(file).contentVisibility, headerLight: luminance(header), codeLight: luminance(file), image: style.backgroundImage }
+        visibility: getComputedStyle(file).contentVisibility, headerFill: style.backgroundColor, filesFill: getComputedStyle(document.querySelector('.file-list, .commit-info')!).backgroundColor, image: style.backgroundImage }
     })
     expect([result.left, result.width, result.radius, result.border]).toEqual([0, 0, '0px', '0px'])
     expect([result.gap, result.overflow, result.horizontal, result.visibility, result.image]).toEqual([8, 'auto', 0, 'auto', 'none'])
-    if (theme.endsWith('dark')) expect(result.headerLight).toBeLessThan(result.codeLight)
-    else expect(result.headerLight).toBeGreaterThan(result.codeLight)
+    expect(result.headerFill).toBe(result.filesFill)
     await page.locator('.diff-pane').evaluate((pane: HTMLElement) => { pane.scrollTop = 100 })
     const sticky = await page.evaluate(() => document.querySelector('.diff-file > header')!.getBoundingClientRect().top - document.querySelector('.diff-pane')!.getBoundingClientRect().top)
     expect(Math.abs(sticky - 40)).toBeLessThan(1)
