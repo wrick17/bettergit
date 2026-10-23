@@ -223,6 +223,42 @@ test.skipIf(!playwright)('primary buttons keep readable theme colours on hover i
   await page.evaluate(() => { document.documentElement.style.cssText = ''; document.documentElement.dataset.theme = 'dark' })
 })
 
+// The native window is transparent with no material behind it, so any page pixel with alpha shows other apps through.
+test.skipIf(!playwright)('built-in and extension themes paint an opaque window behind the translucent panes', async () => {
+  for (const theme of ['light', 'dark', 'extension-dark']) {
+    const panes = await page.evaluate(async (theme: string) => {
+      const w = window as any
+      w.bettergit.colorTheme = async (ref: string) => ({ name: ref, label: ref, dark: true, tokenColors: [],
+        colors: { 'titleBar.activeBackground': '#010409', 'sideBar.background': '#010409', 'editor.background': '#0d1117' } })
+      document.documentElement.dataset.theme = theme.endsWith('dark') ? 'dark' : 'light'
+      w.under.applyAppearance({ darkTheme: theme === 'extension-dark' ? 'acme.github/dark.json' : '', lightTheme: '', iconTheme: '' })
+      document.getElementById('root')!.innerHTML = '<div class="changes" style="height:450px;width:780px;grid-template-columns:120px minmax(0,1fr)"><div class="file-list"></div><div class="diff-rail"><div class="diff-pane"></div></div></div>'
+      await new Promise(resolve => setTimeout(resolve, 50))
+      return { body: getComputedStyle(document.body).backgroundColor, list: getComputedStyle(document.querySelector('.file-list')!).backgroundColor }
+    }, theme)
+    // omitBackground drops the browser's own white canvas, so the screenshot keeps only what the page paints.
+    const shot = (await page.screenshot({ omitBackground: true })).toString('base64')
+    const paint = await page.evaluate(async (shot: string) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${shot}`)).blob())
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height), context = canvas.getContext('2d')!
+      context.drawImage(bitmap, 0, 0)
+      const data = context.getImageData(0, 0, bitmap.width, bitmap.height).data
+      let translucent = 0
+      for (let index = 3; index < data.length; index += 4) if (data[index] < 255) translucent++
+      return { translucent, corner: [...data.slice(0, 4)] }
+    }, shot)
+    expect({ theme, translucent: paint.translucent }).toEqual({ theme, translucent: 0 })
+    if (theme === 'extension-dark') {
+      expect(paint.corner).toEqual([1, 4, 9, 255])
+      expect(panes.list).toBe('rgb(1, 4, 9)')
+    } else expect(Number(panes.list.match(/[\d.]+/g)![3])).toBeLessThan(1)
+  }
+  await page.evaluate(() => {
+    (window as any).under.applyAppearance({ darkTheme: '', lightTheme: '', iconTheme: '' })
+    document.documentElement.dataset.theme = 'dark'
+  })
+})
+
 test.skipIf(!playwright)('repository hover and keyboard focus give branch width back to the name and keep badges', async () => {
   await page.mouse.move(799, 599)
   await page.evaluate(() => {

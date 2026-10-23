@@ -1,7 +1,7 @@
 {
   "name": "bettergit",
   "productName": "BetterGit",
-  "version": "0.0.8",
+  "version": "0.1.0",
   "private": true,
   "description": "Mac-only Git client with a multi-repo sidebar, inspired by Sublime Merge.",
   "main": "./out/main/index.js",
