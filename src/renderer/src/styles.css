@@ -64,9 +64,9 @@
   --idle-selection: rgba(20, 26, 44, 0.09);
   --segment-on: rgba(255, 255, 255, 0.95);
   --add: #17803a;
-  --add-bg: rgba(52, 199, 89, 0.14);
+  --add-bg: #C6F5C5;
   --del: #c12c26;
-  --del-bg: rgba(255, 59, 48, 0.1);
+  --del-bg: #F7C7C8;
   --mod: #9a5a00;
   --mod-bg: rgba(255, 159, 10, 0.16);
   --ren: #066f8f;
@@ -542,7 +542,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .line.add { background: var(--add-bg); box-shadow: inset 2px 0 0 var(--add); }
 .line.del { background: var(--del-bg); box-shadow: inset 2px 0 0 var(--del); }
 .line.note { color: var(--text-3); font-style: italic; }
-.line.moved { background: var(--move-bg); box-shadow: inset 2px 0 0 var(--move); }
+.line.moved { box-shadow: inset 2px 0 0 var(--move); }
 /* The lane left of the line numbers. Unified move connectors run down it, so they never cross code. */
 .lane { flex: none; width: 28px; }
 .gutter { flex: none; width: 50px; padding-right: 12px; text-align: right; color: var(--text-3); user-select: none; font-variant-numeric: tabular-nums; }
@@ -567,7 +567,6 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .split-cell.empty { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hover) 6px 7px) fixed; }
 .split-cell.add { background: var(--add-bg); }
 .split-cell.del { background: var(--del-bg); }
-.split-cell.moved { background: var(--move-bg); }
 .split-cell code { flex: 1; min-width: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .split-cell .gutter { width: 44px; }
 

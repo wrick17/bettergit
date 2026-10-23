@@ -126,6 +126,84 @@ test('a redirect is checked before it is followed, so a hop off the allowed host
   expect(['104.18.12.1', '172.32.0.1', '2606:4700::1'].filter(isInternalAddress)).toEqual([])
 })
 
+test('Open VSX retries a transient DNS or connection failure once and validates the address again', async () => {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  expect(compiled.success).toBe(true)
+  for (const failure of ['dns', 'connection']) {
+    let validations = 0
+    let requests = 0
+    const module = { exports: {} as typeof import('../src/main/extensions') }
+    runInNewContext(await compiled.outputs[0].text(), {
+      module, exports: module.exports, URL, URLSearchParams, AbortSignal,
+      require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises' ? {
+        lookup: async () => {
+          if (++validations === 1 && failure === 'dns') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
+          return [{ address: '151.101.1.242', family: 4 }]
+        },
+      } : require(id),
+      fetch: async (input: URL) => {
+        expect(input.searchParams.get('query')).toBe('Material icon theme')
+        if (++requests === 1 && failure === 'connection') {
+          throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }) })
+        }
+        return Response.json({ extensions: [{ namespace: 'PKief', name: 'material-icon-theme' }] })
+      },
+    })
+    const found = await module.exports.searchOpenVsx('Material icon theme')
+    expect(found[0].name).toBe('material-icon-theme')
+    expect(validations).toBe(2)
+    expect(requests).toBe(failure === 'dns' ? 1 : 2)
+  }
+})
+
+test('Open VSX stops after one retry and never retries policy, TLS or HTTP failures', async () => {
+  const original = globalThis.fetch
+  try {
+    for (const failure of ['policy', 'tls', 'http', 'connection', 'changed-address']) {
+      let validations = 0
+      let requests = 0
+      globalThis.fetch = (async () => {
+        requests++
+        if (failure === 'http') return new Response(null, { status: 404 })
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error(failure), {
+          code: failure === 'tls' ? 'CERT_HAS_EXPIRED' : 'ECONNRESET',
+        }) })
+      }) as unknown as typeof fetch
+      await expect(fetchOk('https://open-vsx.org/api/-/search', async () => {
+        validations++
+        return failure !== 'policy' && !(failure === 'changed-address' && validations > 1)
+      })).rejects.toThrow(failure === 'policy' || failure === 'changed-address' ? 'Refusing to fetch' : failure === 'http' ? '404' : 'fetch failed')
+      expect(validations).toBe(failure === 'connection' || failure === 'changed-address' ? 2 : 1)
+      expect(requests).toBe(failure === 'policy' ? 0 : failure === 'connection' ? 2 : 1)
+    }
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('Open VSX DNS validation and retry backoff share the request deadline', async () => {
+  const originalTimeout = AbortSignal.timeout
+  const originalFetch = globalThis.fetch
+  let requests = 0
+  AbortSignal.timeout = ((milliseconds: number) => {
+    expect(milliseconds).toBe(30_000)
+    return originalTimeout(20)
+  }) as typeof AbortSignal.timeout
+  globalThis.fetch = (async () => {
+    requests++
+    throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }) })
+  }) as unknown as typeof fetch
+  try {
+    await expect(fetchOk('https://open-vsx.org/api', () => new Promise(() => {}))).rejects.toThrow()
+    expect(requests).toBe(0)
+    await expect(fetchOk('https://open-vsx.org/api', async () => true)).rejects.toThrow()
+    expect(requests).toBe(1)
+  } finally {
+    AbortSignal.timeout = originalTimeout
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('icon caps are checked from the map and file sizes before any image is read, each file is read once, a few at a time', async () => {
   const icons = (count: number, file: (index: number) => string) => JSON.stringify({
     iconDefinitions: Object.fromEntries(Array.from({ length: count }, (_, index) => [`icon${index}`, { iconPath: file(index) }])),

@@ -21,8 +21,10 @@ function createStore<T>(initial: T) {
 
 // Unchanged lines shown around each change. 100000 is "All": the whole file.
 export const CONTEXT_OPTIONS = [3, 10, 25, 100000]
-const CONTEXT_KEY = 'bettergit.contextLines'
-const savedContext = Number(localStorage.getItem(CONTEXT_KEY))
+// Start legacy All users with compact context once; an All choice made after this still persists.
+const CONTEXT_KEY = 'bettergit.contextLines.v2'
+const legacyContext = Number(localStorage.getItem('bettergit.contextLines'))
+const savedContext = Number(localStorage.getItem(CONTEXT_KEY) ?? (legacyContext === 100000 ? 3 : legacyContext))
 const contextStore = createStore(CONTEXT_OPTIONS.includes(savedContext) ? savedContext : 3)
 
 export function setContextLines(next: number) {

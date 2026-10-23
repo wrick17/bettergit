@@ -12,7 +12,7 @@
 .diff .md-source-row.del { background: var(--del-bg); box-shadow: inset 2px 0 var(--del); }
 .diff .md-source-row.add .sign { color: var(--add); }
 .diff .md-source-row.del .sign { color: var(--del); }
-.diff .md-source-row.moved { background: var(--move-bg); box-shadow: inset 2px 0 var(--move); }
+.diff .md-source-row.moved { box-shadow: inset 2px 0 var(--move); }
 .diff .md-source-gap { flex: 1; min-height: var(--code-line); }
 .diff .md-split .md-source-rail .gutter { width: 44px; }
 .diff .md-content { flex: 1; min-width: 0; padding: 3px 12px 3px 0; font: 14px/22px var(--font-ui); overflow-wrap: anywhere; }
@@ -45,5 +45,5 @@
 .diff .md-destination, .diff .md-image, .diff .md-definition, .diff .md-note { color: var(--text-2); }
 .diff .md-footnote-definition { display: flex; gap: 6px; font-size: 12px; }
 .diff .md-content hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
-.diff .md-moved-text { background: var(--move-bg); color: var(--move); }
+.diff .md-moved-text { color: var(--move); }
 .diff .md-content li > input + p { display: inline; }
