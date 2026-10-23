@@ -368,12 +368,31 @@ export async function extensionDetails(namespace: unknown, name: unknown): Promi
   return { ...metadata, readme, readmeBaseUrl: registryAsset(response.url) ?? readmeUrl }
 }
 
+// README image hosts stay separate from the metadata and extension-download policy.
+function imageAsset(value: unknown): URL | null {
+  try {
+    const url = new URL(text(value))
+    if (url.protocol !== 'https:' || url.port || url.username || url.password || /\.vsix(?:$|\/)/i.test(url.pathname)) return null
+    if (OPEN_VSX_HOSTS.has(url.hostname) || url.hostname === 'img.shields.io' ||
+      (url.hostname === 'raw.githubusercontent.com' && /^\/thang-nm\/Flow-Icons\/main\/(?:logo|preview|preview_light|freeCodeCamp|packs|alternatives|icons|you\/(?:sequoia_moonlight|ayu_dark))\.png$/.test(url.pathname))) return url
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function isImageUrl(url: URL): Promise<boolean> {
+  if (!imageAsset(url.href)) return false
+  const addresses = await lookup(url.hostname, { all: true })
+  return addresses.length > 0 && !addresses.some(({ address }) => isInternalAddress(address))
+}
+
 // Images are loaded separately so slow logos never delay search results or installed metadata.
 export async function extensionImage(value: unknown): Promise<string | null> {
-  const url = registryAsset(value)
+  const url = imageAsset(value)
   if (!url) return null
   try {
-    const data = await readBody(await fetchOk(url), MAX_ICON, 'The extension image is larger than 512 KB.')
+    const data = await readBody(await fetchOk(url.href, isImageUrl), MAX_ICON, 'The extension image is larger than 512 KB.')
     // The registry serves some PNGs as application/octet-stream. Identify bytes, never trust the declared MIME.
     const head = data.subarray(0, 12)
     let mime: string | null = null

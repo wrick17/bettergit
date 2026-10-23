@@ -12,7 +12,7 @@ import { forgetThemes, isThemeBroken, preloadThemes, useAppliedThemes, warmTheme
 
 const api = window.bettergit
 
-const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'
+const FOCUSABLE = 'a[href], summary, button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'
 
 // While a dialog is open the app root is inert, focus moves in, Tab wraps inside, and focus returns to the opener on close.
 export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {

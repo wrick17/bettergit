@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, createElement, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import { gfmFromMarkdown } from 'mdast-util-gfm'
 import { gfm } from 'micromark-extension-gfm'
@@ -29,7 +29,7 @@ function safeUrl(value: string, base?: string | null): string | null {
   } catch { return null }
 }
 
-function ExtensionImage({ source, alt, logo = false }: { source?: string | null; alt: string; logo?: boolean }) {
+function ExtensionImage({ source, alt, logo = false, inline = false, width }: { source?: string | null; alt: string; logo?: boolean; inline?: boolean; width?: number }) {
   const [loaded, setLoaded] = useState<{ source: string; data: string | null } | null>(null)
   useEffect(() => {
     if (!source) return
@@ -39,7 +39,7 @@ function ExtensionImage({ source, alt, logo = false }: { source?: string | null;
     return () => { live = false }
   }, [source])
   const data = loaded?.source === source ? loaded?.data : null
-  if (data) return <img className={logo ? 'extension-logo' : 'extension-readme-image'} src={data} alt={alt} onError={() => setLoaded({ source: source!, data: null })} />
+  if (data) return <img className={logo ? 'extension-logo' : `extension-readme-image${inline ? ' inline' : ''}`} src={data} alt={alt} width={width} onError={() => setLoaded({ source: source!, data: null })} />
   if (logo) return <span className="extension-logo extension-logo-fallback" role="img" aria-label={`${alt} logo unavailable`}><Icon name="extensions" /></span>
   const url = source && safeUrl(source)
   return url ? <a href={url} onClick={(event) => { event.preventDefault(); void api.openExternal(url).catch(() => {}) }}>{alt || 'View image'}</a> : <span>{alt || 'Image unavailable'}</span>
@@ -48,6 +48,8 @@ function ExtensionImage({ source, alt, logo = false }: { source?: string | null;
 function ExtensionStats({ value }: { value: Pick<InstalledExtension, 'downloads' | 'averageRating' | 'reviewCount'> }) {
   return <small className="extension-stats">Open VSX · {value.downloads == null ? 'Downloads unavailable' : `${value.downloads.toLocaleString()} downloads`} · {value.averageRating == null ? 'Unrated' : `${value.averageRating.toFixed(1)}/5${value.reviewCount == null ? '' : ` (${value.reviewCount.toLocaleString()} reviews)`}`}</small>
 }
+
+const README_HTML_TAGS = new Set('a b blockquote br caption code dd del details div dl dt em h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre s samp small span strong sub summary sup table tbody td tfoot th thead tr ul'.split(' '))
 
 function ExtensionReadme({ source, base, onError }: { source: string; base: string | null; onError: (error: unknown) => void }) {
   return useMemo(() => {
@@ -66,8 +68,62 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
         const url = safeUrl(value, base)
         return url ? <a key={key} href={url} onClick={(event) => { event.preventDefault(); void api.openExternal(url).catch(onError) }}>{children}</a> : <span key={key}>{children}</span>
       }
+      const html = (value: string, slots = new Map<string, ReactNode>()) => {
+        // Template contents are inert and never attached; only allowlisted React elements leave this parser.
+        const template = document.createElement('template')
+        template.innerHTML = value
+        const image = (element: Element, key: number, selected?: string) => {
+          const size = element.getAttribute('width') ?? ''
+          const width = /^\d{1,4}$/.test(size) && Number(size) > 0 && Number(size) <= 4096 ? Number(size) : undefined
+          return <ExtensionImage key={key} source={safeUrl(selected ?? element.getAttribute('src') ?? '', base)} alt={element.getAttribute('alt') || 'README image'} width={width} inline />
+        }
+        const visit = (node: ChildNode, key: number, depth = 0): ReactNode => {
+          if (depth > 128) throw new Error('README HTML nesting limit exceeded')
+          if (node.nodeType === Node.TEXT_NODE) return node.textContent
+          if (!(node instanceof Element) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml') return null
+          const slot = node.getAttribute('data-readme-slot')
+          if (slot && slots.has(slot)) return <Fragment key={key}>{slots.get(slot)}</Fragment>
+          const tag = node.localName
+          if (!README_HTML_TAGS.has(tag)) return null
+          if (tag === 'img') return image(node, key)
+          if (tag === 'picture') {
+            const children = [...node.children]
+            const fallback = children.find((child) => child.localName === 'img')
+            if (!fallback) return null
+            const selected = children.filter((child) => child.localName === 'source').find((child) => {
+              const media = child.getAttribute('media')
+              return (!media || window.matchMedia(media).matches) && safeUrl(child.getAttribute('srcset')?.trim().split(/[\s,]+/)[0] ?? '', base)
+            })
+            // Resolve the picture candidate through the image bridge, never a remote DOM srcset.
+            return <picture key={key}>{image(fallback, 0, selected?.getAttribute('srcset')?.trim().split(/[\s,]+/)[0])}</picture>
+          }
+          if (tag === 'br' || tag === 'hr') return createElement(tag, { key })
+          const children = [...node.childNodes].map((child, index) => visit(child, index, depth + 1))
+          if (tag === 'a') return link(node.getAttribute('href') ?? '', children, key)
+          const align = node.getAttribute('align')
+          const textAlign = align === 'center' || align === 'left' || align === 'right' ? align : undefined
+          const props = { key, title: node.getAttribute('title') ?? undefined, style: textAlign ? { textAlign } : undefined,
+            ...(tag === 'details' ? { open: node.hasAttribute('open') } : {}),
+            ...(tag === 'ol' && /^-?\d{1,6}$/.test(node.getAttribute('start') ?? '') ? { start: Number(node.getAttribute('start')) } : {}) }
+          const result = createElement(tag, props, children)
+          return tag === 'table' ? <div key={key} className="extension-readme-table">{result}</div> : result
+        }
+        return [...template.content.childNodes].map((node, index) => visit(node, index))
+      }
+      const renderNodes = (nodes: Nodes[]): ReactNode[] => {
+        if (!nodes.some((node) => node.type === 'html')) return nodes.map(render)
+        const slots = new Map<string, ReactNode>()
+        const value = nodes.map((node, index) => {
+          if (node.type === 'html') return node.value
+          // Opaque slots keep Markdown siblings intact across inline HTML opening/closing tags.
+          const slot = crypto.getRandomValues(new Uint32Array(4)).join('-')
+          slots.set(slot, render(node, index))
+          return `<span data-readme-slot="${slot}"></span>`
+        }).join('')
+        return html(value, slots)
+      }
       const render = (node: Nodes, key: number): ReactNode => {
-        const children = () => 'children' in node ? node.children.map(render) : null
+        const children = () => 'children' in node ? renderNodes(node.children) : null
         switch (node.type) {
           case 'text': return node.value
           case 'paragraph': return <p key={key}>{children()}</p>
@@ -89,12 +145,11 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
           case 'imageReference': return <ExtensionImage key={key} source={safeUrl(definitions.get(node.identifier)?.url ?? '', base)} alt={node.alt || 'README image'} />
           case 'thematicBreak': return <hr key={key} />
           case 'break': return <br key={key} />
-          // React escapes raw HTML rather than executing extension-authored markup.
-          case 'html': return <pre key={key} className="extension-readme-html"><code>{node.value}</code></pre>
+          case 'html': return <Fragment key={key}>{html(node.value)}</Fragment>
           default: return null
         }
       }
-      return <div className="extension-readme">{tree.children.map(render)}</div>
+      return <div className="extension-readme">{renderNodes(tree.children)}</div>
     } catch {
       // Keep untrusted Markdown failures inside the scrollable body, away from the modal controls.
       return <div className="extension-readme"><p role="status">README formatting is too complex to display. Showing plain text.</p><pre><code>{source}</code></pre></div>

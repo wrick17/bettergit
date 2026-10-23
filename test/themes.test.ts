@@ -19,14 +19,14 @@ function extension(id: string, files: Record<string, string>) {
   }
 }
 
-async function registryWithFetch(fetch: (url: URL) => Promise<Response>) {
+async function registryWithFetch(fetch: (url: URL) => Promise<Response>, lookup = async (_host: string) => [{ address: '151.101.1.242', family: 4 }]) {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
   expect(compiled.success).toBe(true)
   const module = { exports: {} as typeof import('../src/main/extensions') }
   runInNewContext(await compiled.outputs[0].text(), {
     module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer, fetch,
     require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises'
-      ? { lookup: async () => [{ address: '151.101.1.242', family: 4 }] } : require(id),
+      ? { lookup } : require(id),
   })
   return module.exports
 }
@@ -98,6 +98,44 @@ test('registry images are bounded data URLs inferred from bytes, with no arbitra
   for (const url of ['https://evil.example/logo.png', 'http://open-vsx.org/logo.png', 'https://user@open-vsx.org/logo.png', 'file:///tmp/logo.png', 'javascript:alert(1)', `${icon}.vsix`]) {
     expect(await registry.extensionImage(url)).toBeNull()
   }
+  expect(requests).toEqual([])
+})
+
+test('Flow Icons README assets and Shields badges use an image-only public-address policy on every redirect', async () => {
+  const raw = 'https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/'
+  const badge = 'https://img.shields.io/badge/Get_full-Flow_Icons-blue'
+  const registryIcon = 'https://open-vsx.org/flow-logo.png'
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZZkAAAAASUVORK5CYII=', 'base64')
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Flow Icons</text></svg>'
+  const requests: string[] = []
+  const lookups: string[] = []
+  let privateAddress = false
+  const registry = await registryWithFetch(async (url) => {
+    requests.push(url.href)
+    if (url.href === registryIcon) return new Response(null, { status: 302, headers: { location: `${raw}logo.png` } })
+    if (url.pathname === '/redirect') return new Response(null, { status: 302, headers: { location: 'https://evil.example/badge.svg' } })
+    return new Response(url.hostname === 'img.shields.io' ? svg : png)
+  }, async (host) => {
+    lookups.push(host)
+    return [{ address: privateAddress ? '127.0.0.1' : '151.101.1.242', family: 4 }]
+  })
+  expect(await registry.extensionImage(registryIcon)).toStartWith('data:image/png;base64,')
+  expect(requests).toEqual([registryIcon, `${raw}logo.png`])
+  expect(lookups).toEqual(['open-vsx.org', 'raw.githubusercontent.com'])
+  for (const file of ['preview.png', 'preview_light.png', 'you/sequoia_moonlight.png']) {
+    expect(await registry.extensionImage(`${raw}${file}`)).toStartWith('data:image/png;base64,')
+  }
+  expect(await registry.extensionImage(badge)).toBe(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+  expect(await registry.isOpenVsxUrl(new URL(`${raw}logo.png`))).toBe(false)
+  expect(await registry.isOpenVsxUrl(new URL(badge))).toBe(false)
+  requests.length = 0
+  expect(await registry.extensionImage('https://img.shields.io/redirect')).toBeNull()
+  expect(requests).toEqual(['https://img.shields.io/redirect'])
+  requests.length = 0
+  expect(await registry.extensionImage(`${raw}README.md`)).toBeNull()
+  expect(await registry.extensionImage('https://raw.githubusercontent.com/other/repo/main/logo.png')).toBeNull()
+  privateAddress = true
+  expect(await registry.extensionImage(`${raw}logo.png`)).toBeNull()
   expect(requests).toEqual([])
 })
 

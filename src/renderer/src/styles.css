@@ -500,7 +500,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Files scrolled far off screen skip layout and paint; the last rendered height keeps the scrollbar stable. */
 /* Files off screen skip layout. Each file sets its own placeholder height (DiffView `estimate`), close to its real one, so
    a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
-.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 8px 8px 0; border: 1px solid var(--line-strong); border-radius: var(--radius-card); }
+.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 8px 8px 0; border-radius: var(--radius-card); }
 .diff-file.editable { content-visibility: visible; }
 /* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
@@ -510,7 +510,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .diff-file > header {
   position: sticky; top: var(--diff-toolbar-height); z-index: 2;
   display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px 0 20px;
-  background: linear-gradient(var(--sunken) 0 0), var(--raised); border-bottom: 1px solid var(--line-strong); border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: linear-gradient(color-mix(in srgb, var(--accent-soft) 45%, transparent) 0 0), var(--raised); border-bottom: 1px solid var(--line-strong); border-radius: var(--radius-card) var(--radius-card) 0 0;
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-file > header .path-name { font-weight: 600; }
@@ -957,9 +957,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .extension-readme pre code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0; background: transparent; }
 .extension-readme blockquote { border-left: 3px solid var(--line-strong); margin: 8px 0; padding-left: 12px; color: var(--text-2); }
 .extension-readme-image { display: block; max-width: 100%; height: auto; margin: 8px 0; }
+.extension-readme-image.inline { display: inline-block; vertical-align: middle; margin: 4px 0; }
 .extension-readme-table { max-width: 100%; overflow: auto; }
 .extension-readme table { border-collapse: collapse; }
-.extension-readme td { border: 1px solid var(--line); padding: 6px 10px; }
+.extension-readme :is(td, th) { border: 1px solid var(--line); padding: 6px 10px; }
 /* Narrow windows keep the section icons and drop their names. */
 @media (max-width: 640px) {
   .settings-dialog > .dialog-body { grid-template-columns: 56px minmax(0, 1fr); }

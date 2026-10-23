@@ -337,6 +337,120 @@ test.skipIf(!playwright)('Themes combines selection and installation while Appea
   await page.evaluate(() => (window as any).settingsRoot.unmount())
 })
 
+test.skipIf(!playwright)('Flow Icons README HTML renders through safe links and image data while dialog controls remain usable', async () => {
+  const requests: string[] = []
+  const onRequest = (request: any) => requests.push(request.url())
+  page.on('request', onRequest)
+  await page.emulateMedia({ colorScheme: 'light' })
+  try {
+    await page.evaluate(() => {
+      const w = window as any
+      const { createElement, flushSync, createRoot, SettingsDialog } = w.under
+      // Header and picture from the shipped thang-nm.flow-icons 2.0.10 README.
+      const readme = `<h1 align="center">
+  <img src="https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/logo.png" width="160" alt="Flow Icons"/><br/>
+  <a href="https://marketplace.visualstudio.com/items?itemName=thang-nm.flow-icons">Flow Icons</a>
+</h1>
+
+<p align="center">
+  🌼 A brand new premium icon pack for VSCode
+</p>
+
+<p align="center">
+  💎 <strong>IMPORTANT</strong> 💎<br>
+  <a target="_blank" href="https://flow-icons.pages.dev">
+    <img src="https://img.shields.io/badge/Get_full-Flow_Icons-blue?colorA=363a4f&colorB=c6a0f6&style=for-the-badge">
+  </a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/preview_light.png">
+    <img width="640" src="https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/preview.png">
+  </picture>
+</p>
+
+Mixed <strong>safe **Markdown**</strong> prose. [Guide](./guide.md)
+
+<details><summary>More</summary><p>Readable details</p></details>
+<table><tr><th>Kind</th><td>Icons</td></tr></table>
+<pre><code>&lt;safe&gt;</code></pre>
+<a href="./guide.html">HTML guide</a><img src="./safe.png" alt="Relative image">
+<script>window.readmeExecuted = true</script>
+<img src="javascript:alert(1)" onerror="window.readmeExecuted = true" alt="Unsafe image">
+<a href="javascript:alert(1)" onclick="window.readmeExecuted = true">Unsafe link</a>
+<a href="https://user:password@example.org/">Credential link</a>
+<p style="position:fixed" onmouseover="window.readmeExecuted = true">Safe text</p>
+<iframe src="https://example.org/frame" srcdoc="<script>alert(1)</script>"></iframe>
+<object data="https://example.org/object"></object><form action="https://example.org/"><input autofocus></form>
+<svg onload="window.readmeExecuted = true"><script>alert(1)</script></svg>`
+      w.htmlImages = []; w.htmlLinks = []; w.htmlArchives = []
+      Object.assign(w.bettergit, {
+        listExtensions: async () => [],
+        searchExtensions: async () => [{ namespace: 'thang-nm', name: 'flow-icons', displayName: 'Flow Icons', description: '', version: '2.0.10', downloads: 0 }],
+        extensionDetails: async () => ({ namespace: 'thang-nm', name: 'flow-icons', displayName: 'Flow Icons', description: '', version: '2.0.10', downloads: null, averageRating: null, reviewCount: null, icon: null, url: 'https://open-vsx.org/extension/thang-nm/flow-icons', readme: w.htmlReadme ?? readme, readmeBaseUrl: 'https://open-vsx.org/api/thang-nm/flow-icons/2.0.10/file/readme.md' }),
+        extensionImage: async (url: string) => { w.htmlImages.push(url); return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/r9sAAAAASUVORK5CYII=' },
+        openExternal: async (url: string) => { w.htmlLinks.push(url) },
+        installExtension: async (...args: unknown[]) => { w.htmlArchives.push(args) },
+        installExtensionFile: async () => { w.htmlArchives.push('file') },
+      })
+      sessionStorage.setItem('bettergit.settingsSection', 'themes')
+      w.htmlRoot = createRoot(document.getElementById('root')!)
+      flushSync(() => w.htmlRoot.render(createElement(SettingsDialog, {
+        config: { sources: [], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null, settings: { theme: 'light', backgroundFetch: true, fetchIntervalMinutes: 10, idleThresholdSeconds: 120, textZoom: 1, languages: {}, editor: 'vscode', appearance: {} } },
+        onUpdate() {}, onClose: () => w.htmlRoot.unmount(),
+      })))
+    })
+    const details = page.getByRole('button', { name: 'Details for Flow Icons', exact: true })
+    await details.click()
+    await page.locator('.extension-readme h1 img').waitFor({ timeout: 3000 })
+    expect(await page.locator('.extension-readme h1 a').textContent()).toBe('Flow Icons')
+    expect(await page.locator('.extension-readme h1').evaluate((heading: HTMLElement) => getComputedStyle(heading).textAlign)).toBe('center')
+    expect(await page.locator('.extension-readme h1 img').getAttribute('width')).toBe('160')
+    expect(await page.locator('.extension-readme picture img').getAttribute('width')).toBe('640')
+    expect(await page.locator('.extension-readme strong strong').textContent()).toBe('Markdown')
+    expect(await page.locator('.extension-readme th').textContent()).toBe('Kind')
+    expect(await page.locator('.extension-readme pre code').textContent()).toBe('<safe>')
+    expect(await page.locator('.extension-readme').textContent()).not.toContain('<h1')
+    expect(await page.locator('.extension-readme [onerror], .extension-readme [onclick], .extension-readme [onmouseover], .extension-readme [style="position:fixed"]').count()).toBe(0)
+    expect(await page.locator('.extension-readme script, .extension-readme iframe, .extension-readme object, .extension-readme form, .extension-readme svg, .extension-readme input').count()).toBe(0)
+    expect(await page.locator('.extension-readme a[href^="javascript:"], .extension-readme a[href*="password"]').count()).toBe(0)
+    expect(await page.locator('.extension-readme img:not([src^="data:image/"])').count()).toBe(0)
+    const images = await page.evaluate(() => (window as any).htmlImages)
+    expect(images).toContain('https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/logo.png')
+    expect(images).toContain('https://raw.githubusercontent.com/thang-nm/Flow-Icons/main/preview_light.png')
+    expect(images).toContain('https://img.shields.io/badge/Get_full-Flow_Icons-blue?colorA=363a4f&colorB=c6a0f6&style=for-the-badge')
+    expect(images).toContain('https://open-vsx.org/api/thang-nm/flow-icons/2.0.10/file/safe.png')
+    expect(images.every((url: string) => url.startsWith('https://'))).toBe(true)
+    await page.getByRole('link', { name: 'HTML guide', exact: true }).click()
+    expect(await page.evaluate(() => (window as any).htmlLinks)).toEqual(['https://open-vsx.org/api/thang-nm/flow-icons/2.0.10/file/guide.html'])
+    await page.locator('.extension-readme summary').click()
+    expect(await page.getByText('Readable details', { exact: true }).isVisible()).toBe(true)
+    expect(await page.evaluate(() => (window as any).readmeExecuted)).toBeUndefined()
+    expect(requests.filter((url) => /^https?:/.test(url))).toEqual([])
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
+    expect(await details.evaluate((button: HTMLElement) => document.activeElement === button)).toBe(true)
+    await page.evaluate(() => { (window as any).htmlReadme = '<details open><summary>More</summary><p>Readable details</p></details>' })
+    await details.click()
+    await page.locator('.extension-readme summary').waitFor()
+    await page.getByRole('button', { name: 'Close', exact: true }).focus()
+    await page.keyboard.press('Tab')
+    expect(await page.locator('.extension-readme summary').evaluate((summary: HTMLElement) => document.activeElement === summary)).toBe(true)
+    await page.keyboard.press('Shift+Tab')
+    expect(await page.getByRole('button', { name: 'Close', exact: true }).evaluate((button: HTMLElement) => document.activeElement === button)).toBe(true)
+    await page.keyboard.press('Escape')
+    expect(await page.getByRole('dialog', { name: 'Settings', exact: true }).getAttribute('inert')).toBeNull()
+    expect(await page.getByRole('dialog').count()).toBe(1)
+    expect(await page.evaluate(() => (window as any).htmlArchives)).toEqual([])
+    await page.getByRole('button', { name: 'Done', exact: true }).click()
+    expect(await page.getByRole('dialog').count()).toBe(0)
+  } finally {
+    page.off('request', onRequest)
+    await page.evaluate(() => (window as any).htmlRoot?.unmount())
+    await page.emulateMedia({ colorScheme: 'dark' })
+  }
+})
+
 test.skipIf(!playwright)('deeply nested extension READMEs fall back to text and keep Close, Escape and Settings usable', async () => {
   const errors: string[] = []
   const onError = (error: Error) => errors.push(error.message)
@@ -361,8 +475,10 @@ test.skipIf(!playwright)('deeply nested extension READMEs fall back to text and 
       })))
     })
     const details = page.getByRole('button', { name: 'Details for Nested', exact: true })
-    for (const [depth, close] of [[6000, 'button'], [256, 'escape']] as const) {
-      await page.evaluate((depth: number) => { (window as any).nestedReadme = '> '.repeat(depth) + 'text' + (depth === 256 ? ' <script>window.readmeExecuted = true</script>' : '') }, depth)
+    for (const [format, depth, close] of [['markdown', 6000, 'button'], ['markdown', 256, 'escape'], ['html', 256, 'button']] as const) {
+      await page.evaluate(({ format, depth }: { format: string; depth: number }) => {
+        (window as any).nestedReadme = format === 'html' ? '<div>'.repeat(depth) + 'text' + '</div>'.repeat(depth) : '> '.repeat(depth) + 'text' + (depth === 256 ? ' <script>window.readmeExecuted = true</script>' : '')
+      }, { format, depth })
       await details.click()
       await page.waitForFunction(() => document.querySelector('.extension-readme') || !document.querySelector('[role="dialog"]'))
       expect(errors).toEqual([])
