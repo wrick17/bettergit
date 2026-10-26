@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { Icon, IconButton, type IconName } from './Icons'
 import './overflow-bar.css'
 import './action-progress.css'
@@ -30,12 +30,10 @@ const HOVER_DELAY = 150
 // The sync actions used most often stay one click away. The menu lists them too, so it names every action.
 const QUICK = new Set(['fetch', 'pullMerge', 'push'])
 
-// The title-bar actions: the most frequent sync actions as icon buttons, then a labelled "Actions" button whose menu lists
+// The title-bar actions: the most frequent sync actions as icon buttons, then an "Actions" icon button whose menu lists
 // every action with its label and shortcut. The trigger has a fixed width, so busy or blocked states never shift the bar.
 export function ActionsMenu({ items }: { items: BarItem[] }) {
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const [open, setOpen] = useState(false)
-  const close = () => { setOpen(false); triggerRef.current?.focus() }
+  const menu = useHoverMenu()
 
   return (
     <>
@@ -43,29 +41,18 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
         ? <SplitButton key={item.key} item={item} menu={item.menu} />
         : <IconButton key={item.key} icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked}
           className={item.danger ? 'danger' : undefined} onClick={item.onClick} />)}
-      <div className="overflow-more" onKeyDown={(event) => { if (open && event.key === 'Escape') { event.preventDefault(); close() } }}>
-        <button
-          ref={triggerRef}
-          type="button"
-          className={`actions-trigger${open ? ' on' : ''}`}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          // While open, a press on the trigger must not move focus first: the menu would close on blur, then the click reopen it.
-          onMouseDown={(event) => { if (open) event.preventDefault() }}
-          // Closing from the trigger also goes through close(), so focus lands back on it rather than on the body.
-          onClick={() => { if (open) close(); else setOpen(true) }}
-          onKeyDown={(event) => { if (!open && event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}
-        >
-          Actions
-          <Icon name="chevronDown" className="chevron-down" />
+      <div ref={menu.rootRef} className="overflow-more" {...menu.hover}>
+        <button {...menu.trigger} className={`icon-button${menu.open ? ' on' : ''}`} aria-label="Actions">
+          <Icon name="more" />
         </button>
-        {open && (
+        {menu.open && (
           <ActionMenu
             className="overflow-menu"
             label="Repository actions"
             items={items}
-            onPick={(item) => { close(); item.onClick() }}
-            onDismiss={() => setOpen(false)}
+            autoFocus={menu.open === 'focus'}
+            onPick={(item) => { menu.close(menu.open === 'focus'); item.onClick() }}
+            onDismiss={() => menu.setOpen(null)}
           />
         )}
       </div>
@@ -73,12 +60,12 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
   )
 }
 
-// A quick action with a dropdown of its options. Hovering the pair opens it after a short delay without taking focus, so
-// typing elsewhere carries on, and it closes once the pointer has left for the same delay. The chevron opens it by click,
-// Enter, Space or ArrowDown with focus on the first option. Escape or a press outside dismisses it either way.
-function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
+// A menu that hovering its trigger opens after a short delay without taking focus, so typing elsewhere carries on, and
+// that closes once the pointer has left for the same delay. The trigger opens it by click, Enter, Space or ArrowDown with
+// focus on the first option. Escape or a press outside dismisses it either way.
+function useHoverMenu(disabled?: boolean) {
   const rootRef = useRef<HTMLDivElement>(null)
-  const chevronRef = useRef<HTMLButtonElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const timer = useRef<number | undefined>(undefined)
   // 'hover' leaves focus where it was; 'focus' moves it into the menu.
   const [open, setOpen] = useState<'hover' | 'focus' | null>(null)
@@ -86,7 +73,7 @@ function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
   const close = (refocus: boolean) => {
     window.clearTimeout(timer.current)
     setOpen(null)
-    if (refocus) chevronRef.current?.focus()
+    if (refocus) triggerRef.current?.focus()
   }
 
   useEffect(() => () => window.clearTimeout(timer.current), [])
@@ -107,38 +94,48 @@ function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
     }
   }, [open])
 
+  return {
+    rootRef,
+    open,
+    setOpen,
+    close,
+    hover: {
+      onMouseEnter: () => { if (disabled) return; if (open) window.clearTimeout(timer.current); else later(() => setOpen('hover')) },
+      onMouseLeave: () => later(() => setOpen((current) => current === 'hover' ? null : current)),
+    },
+    trigger: {
+      ref: triggerRef,
+      type: 'button' as const,
+      'aria-haspopup': 'menu' as const,
+      'aria-expanded': !!open,
+      disabled,
+      // While focused open, a press here must not blur the menu first: it would close, then the click reopen it.
+      onMouseDown: (event: ReactMouseEvent) => { if (open === 'focus') event.preventDefault() },
+      onClick: () => { window.clearTimeout(timer.current); if (open === 'focus') close(true); else setOpen('focus') },
+      onKeyDown: (event: ReactKeyboardEvent) => { if (event.key === 'ArrowDown') { event.preventDefault(); window.clearTimeout(timer.current); setOpen('focus') } },
+    },
+  }
+}
+
+// A quick action with a dropdown of its options, opened from the chevron (useHoverMenu) or by hovering the pair.
+function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
+  const options = useHoverMenu(item.disabled)
+
   return (
-    <div
-      ref={rootRef}
-      className="split-action"
-      onMouseEnter={() => { if (item.disabled) return; if (open) window.clearTimeout(timer.current); else later(() => setOpen('hover')) }}
-      onMouseLeave={() => later(() => setOpen((current) => current === 'hover' ? null : current))}
-    >
+    <div ref={options.rootRef} className="split-action" {...options.hover}>
       <IconButton icon={item.icon} label={item.label} disabled={item.disabled} busy={item.busy} blocked={item.blocked}
         className={item.danger ? 'danger' : undefined} onClick={item.onClick} />
-      <button
-        ref={chevronRef}
-        type="button"
-        className={`split-chevron${open ? ' on' : ''}`}
-        aria-label={`${item.label} options`}
-        aria-haspopup="menu"
-        aria-expanded={!!open}
-        disabled={item.disabled}
-        // While focused open, a press here must not blur the menu first: it would close, then the click reopen it.
-        onMouseDown={(event) => { if (open === 'focus') event.preventDefault() }}
-        onClick={() => { if (open === 'focus') close(true); else setOpen('focus') }}
-        onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen('focus') } }}
-      >
+      <button {...options.trigger} className={`split-chevron${options.open ? ' on' : ''}`} aria-label={`${item.label} options`}>
         <Icon name="chevronDown" className="chevron-down" />
       </button>
-      {open && (
+      {options.open && (
         <ActionMenu
           className="overflow-menu split-menu"
           label={`${item.label} options`}
           items={menu}
-          autoFocus={open === 'focus'}
-          onPick={(option) => { close(open === 'focus'); option.onClick() }}
-          onDismiss={() => setOpen(null)}
+          autoFocus={options.open === 'focus'}
+          onPick={(option) => { options.close(options.open === 'focus'); option.onClick() }}
+          onDismiss={() => options.setOpen(null)}
         />
       )}
     </div>

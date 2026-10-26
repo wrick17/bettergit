@@ -50,9 +50,12 @@ test('opening commit details from the strip with no control focuses the header a
   expect(released).toEqual([])
 })
 
-test('a rail previews on hover, cancels a pending leave, and returns keyboard focus on Escape', async () => {
+// Runs the real hook in memory. Each mounted pane keeps its own state between renders, as in React, and all panes share
+// one module, as the app's panes do.
+async function loadFold() {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/fold.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
-  const slots: any[] = []
+  let slots: any[] = []
+  let refs: unknown[] = []
   let slot = 0
   const keep = (create: () => unknown) => {
     const at = slot++
@@ -60,10 +63,6 @@ test('a rail previews on hover, cancels a pending leave, and returns keyboard fo
     return at
   }
   const document = { activeElement: null as unknown }
-  const target = { focus: () => { document.activeElement = target } }
-  const strip = { focus: () => { document.activeElement = strip } }
-  const pane = { querySelector: () => target, contains: (element: unknown) => element === target }
-  const refs = [pane, strip, 0]
   const timers = new Map<number, () => void>()
   let nextTimer = 0
   const react = {
@@ -71,7 +70,8 @@ test('a rail previews on hover, cancels a pending leave, and returns keyboard fo
     useRef: () => slots[keep(() => ({ current: refs.shift() }))],
     useState: (initial: unknown) => {
       const at = keep(() => initial)
-      return [slots[at], (value: unknown) => { slots[at] = value }]
+      const own = slots
+      return [slots[at], (value: unknown) => { own[at] = value }]
     },
   }
   const module = { exports: {} as { useFoldHold: (...args: any[]) => any } }
@@ -82,7 +82,22 @@ test('a rail previews on hover, cancels a pending leave, and returns keyboard fo
       clearTimeout: (id: number) => timers.delete(id),
     },
   })
-  const render = () => { slot = 0; return module.exports.useFoldHold(true, 'button') }
+  // A pane whose only control is `target`, and its strip. Both take focus like DOM elements.
+  const mount = () => {
+    const target = { focus: () => { document.activeElement = target } }
+    const strip = { focus: () => { document.activeElement = strip } }
+    const pane = { querySelector: () => target, contains: (element: unknown) => element === target }
+    const own: any[] = []
+    const ownRefs = [pane, strip, 0]
+    const render = () => { slots = own; refs = ownRefs; slot = 0; return module.exports.useFoldHold(true, 'button') }
+    return { render, target, strip }
+  }
+  return { mount, timers, document }
+}
+
+test('a rail previews on hover, cancels a pending leave, and returns keyboard focus on Escape', async () => {
+  const { mount, timers, document } = await loadFold()
+  const { render, target, strip } = mount()
   expect(render().collapsed).toBe(true)
   render().paneHandlers.onPointerEnter()
   expect(render().collapsed).toBe(false)
@@ -100,6 +115,28 @@ test('a rail previews on hover, cancels a pending leave, and returns keyboard fo
   render().paneHandlers.onKeyDown({ key: 'Escape', defaultPrevented: false, preventDefault() {} })
   expect(render().collapsed).toBe(true)
   expect(document.activeElement).toBe(strip)
+})
+
+// Moving straight from one previewed pane to another must not leave both open for the leave delay: the layout would
+// widen with both, then jump when the first closes. A pane held by the keyboard stays open.
+test('entering another folded pane closes the previous preview at once, but keeps a keyboard hold', async () => {
+  const { mount, timers } = await loadFold()
+  const a = mount(), b = mount(), c = mount()
+  a.render().paneHandlers.onPointerEnter()
+  a.render().paneHandlers.onPointerLeave()
+  b.render().paneHandlers.onPointerEnter()
+  expect([a.render().collapsed, b.render().collapsed]).toEqual([true, false])
+  expect(timers.size).toBe(0)
+  // A divider that belongs to the open pane keeps it open, as before.
+  b.render().paneHandlers.onPointerLeave()
+  b.render().splitterHandlers.onPointerEnter()
+  expect(b.render().collapsed).toBe(false)
+
+  c.strip.focus()
+  c.render().activate()
+  c.render().paneHandlers.onPointerEnter()
+  a.render().paneHandlers.onPointerEnter()
+  expect([a.render().collapsed, b.render().collapsed, c.render().collapsed]).toEqual([false, true, false])
 })
 
 // Runs the real divider hook in memory on a stub grid. getComputedStyle reports the tracks as laid out on screen;

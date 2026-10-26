@@ -421,8 +421,10 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   const toolbar = renderToStaticMarkup(React.createElement(bar.ActionsMenu, { items }))
   expect(toolbar).toContain('aria-haspopup="menu"')
   expect(toolbar).toContain('aria-expanded="false"')
-  expect(toolbar).toContain('>Actions<')
-  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options'])
+  // The Actions trigger is an icon button like the sync actions, so it shows no text.
+  expect(toolbar).not.toContain('>Actions<')
+  expect(toolbar).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*class="icon-button"[^>]*aria-label="Actions"/)
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options', 'Actions'])
   // Fetch and Push open dropdowns of git commands; the force pushes are marked dangerous.
   const options = (key: string) => items.find((item) => item.key === key)!.menu!
   expect(options('fetch').map((item) => item.label)).toEqual(['pull', 'pull --ff-only', 'pull --rebase', 'pull --rebase --autostash', 'fetch', 'fetch --tags', 'fetch --prune'])
@@ -436,6 +438,46 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   expect(list.match(/role="separator"/g)).toHaveLength(new Set(items.map((item) => item.group)).size - 1)
   expect(list.match(/class="danger"/g)).toHaveLength(1)
   expect([...list.matchAll(/<kbd class="menu-shortcut">([^<]+)<\/kbd>/g)].map((match) => match[1])).toEqual(['⇧⌘F', '⇧⌘L', '⇧⌘P', '⇧⌘H'])
+})
+
+test('click and keyboard activation keep Actions focused after a pending hover timer', async () => {
+  const timers = new Map<number, () => void>()
+  const slots: any[] = []
+  let cursor = 0, nextTimer = 0
+  const react = {
+    useEffect() {},
+    useRef: (current: unknown) => {
+      const at = cursor++
+      return slots[at] ?? (slots[at] = { current })
+    },
+    useState: (initial: unknown) => {
+      const at = cursor++
+      if (!(at in slots)) slots[at] = initial
+      return [slots[at], (value: any) => { slots[at] = typeof value === 'function' ? value(slots[at]) : value }]
+    },
+  }
+  const bar = await loadEntry('../src/renderer/src/OverflowBar.tsx', {
+    react, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime,
+  }, '', { window: {
+    setTimeout: (callback: () => void) => { timers.set(++nextTimer, callback); return nextTimer },
+    clearTimeout: (id: number) => timers.delete(id),
+  } })
+  const render = () => {
+    cursor = 0
+    return bar.ActionsMenu({ items: [] }).props.children[1].props
+  }
+  const flush = () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(callback => callback()) }
+  for (const activation of ['click', 'ArrowDown']) {
+    slots.length = 0
+    render().onMouseEnter()
+    const trigger = render().children[0].props
+    if (activation === 'click') trigger.onClick()
+    else trigger.onKeyDown({ key: activation, preventDefault() {} })
+    flush()
+    render().onMouseLeave()
+    flush()
+    expect(render().children[1]?.props.autoFocus).toBe(true)
+  }
 })
 
 test('App supplies the working-copy editor bridge and Open in buttons independent of Git busy state', async () => {

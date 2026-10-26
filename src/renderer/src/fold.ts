@@ -24,6 +24,10 @@ export function useFolded(pane: Pane): boolean {
 // Leaving the pane waits a beat, so a pointer that crosses a divider or a gap does not flicker the pane.
 const LEAVE_DELAY = 120
 
+// The pane the pointer last entered. Entering another pane releases its pointer hold at once instead of after the
+// leave delay, so two previews never sit open together and shift the layout twice. Keyboard holds are kept.
+let previewing: { leave: { current: number }; release: () => void } | null = null
+
 // A folded pane opens in flow while it is held: the pointer is over it, or keyboard focus or typing is inside it.
 // The strip never holds the pane, so a click on the strip cannot keep it open after the pointer leaves.
 // `focusTarget` is the element that receives focus when the strip opens the pane from the keyboard.
@@ -38,7 +42,10 @@ export function useFoldHold<T extends HTMLElement>(folded: boolean, focusTarget:
   const held = pointer || keyboard
   const collapsed = folded && !held
 
-  useEffect(() => () => window.clearTimeout(leave.current), [])
+  useEffect(() => () => {
+    window.clearTimeout(leave.current)
+    if (previewing?.leave === leave) previewing = null
+  }, [])
 
   // Focus never falls to the body. A pane that folds under focus hands focus to its strip, and a strip that opens the pane hands it to the target.
   useLayoutEffect(() => {
@@ -60,6 +67,8 @@ export function useFoldHold<T extends HTMLElement>(folded: boolean, focusTarget:
 
   const enter = () => {
     window.clearTimeout(leave.current)
+    if (previewing?.leave !== leave) previewing?.release()
+    previewing = { leave, release: () => { window.clearTimeout(leave.current); setPointer(false) } }
     setPointer(true)
   }
   const exit = () => {
