@@ -23,10 +23,15 @@ const { EditorContext } = await import('./src/renderer/src/editor-launch')
 // EDITOR_SOURCE renders one deleted file under an editor bridge for that view.
 const source = process.env.EDITOR_SOURCE
 // MARKDOWN_FILE adds one binary Markdown file, so the formatting toggle shows.
-const files = source ? [{ oldPath: 'gone.txt', newPath: null, status: 'deleted', binary: true, hunks: [] }]
+// HEADER_ACTIONS renders two added files in an unstaged view, only one of them untracked in the status.
+const actions = process.env.HEADER_ACTIONS
+const files = actions ? ['new.txt', 'intent.txt'].map((name) => ({ oldPath: null, newPath: name, status: 'added', binary: true, hunks: [] }))
+  : source ? [{ oldPath: 'gone.txt', newPath: null, status: 'deleted', binary: true, hunks: [] }]
   : process.env.MARKDOWN_FILE ? [{ oldPath: 'notes.md', newPath: 'notes.md', status: 'modified', binary: true, hunks: [] }] : []
 // The staged section passes a stage control, as ChangesView does.
-const stage = process.env.STAGED ? { staged: true, onToggle: () => undefined } : undefined
+const noop = () => undefined
+const stage = actions ? { staged: false, onToggle: noop, onDiscard: noop, onDelete: noop, untrackedPaths: new Set(['new.txt']) }
+  : process.env.STAGED ? { staged: true, onToggle: noop } : undefined
 const view = createElement(DiffView, { files, moves: [], stage })
 const bridge = { app: { name: 'VS Code', icon: null }, openFile: async () => undefined, onError: () => undefined, source }
 console.log(JSON.stringify(renderToStaticMarkup(source ? createElement(EditorContext.Provider, { value: bridge }, view) : view)))
@@ -107,6 +112,14 @@ test('Format Markdown shows only with a Markdown file, says its state, and sits 
     const buttons = [...toolbar.matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map((match) => match[1].split(':')[0])
     expect(buttons.slice(-5)).toEqual(['Formatted Markdown', 'Unified layout', 'Split layout', 'Word wrap', 'Whitespace changes'])
   }
+})
+
+test('an untracked file offers Delete and a tracked addition offers Discard, decided by the status, not the diff kind', () => {
+  const child = Bun.spawnSync([process.execPath, '-e', RENDER_CHECK], { cwd: `${import.meta.dir}/..`, env: { ...process.env, HEADER_ACTIONS: '1' }, stderr: 'pipe' })
+  expect(child.exitCode, child.stderr.toString()).toBe(0)
+  const html: string = JSON.parse(child.stdout.toString().trim())
+  const labels = [...html.matchAll(/aria-label="((?:Delete|Discard)[^"]*)"/g)].map((match) => match[1])
+  expect(labels).toEqual(['Delete untracked file new.txt', 'Discard changes to intent.txt'])
 })
 
 // A deleted status does not say whether the working file exists now: a past commit's deletion or a staged deletion

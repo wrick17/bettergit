@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2, Columns3,
-  CircleAlert, CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCompare,
+  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2,
+  CircleAlert, CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, Files, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCommitVertical, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
-  Minus, MousePointerClick, Palette, PanelRight, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Users, WrapText, X, type LucideIcon,
+  Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Unlink, Users, WrapText, X, type LucideIcon,
 } from 'lucide-react'
 
 // Every GUI icon is a Lucide icon. The names are stable keys, so call sites say what the action means, not how it looks.
@@ -20,11 +20,12 @@ const ICONS = {
   rows: Rows3,
   columns: Columns2,
   markdown: FileText,
-  paneList: Columns3,
+  // Pane toggles name what each pane holds: a list of files, a list of commits. The sidebar keeps its panel glyph.
+  paneFiles: Files,
+  paneCommits: GitCommitVertical,
   listFlat: List,
   listTree: ListTree,
   panelLeft: PanelLeft,
-  panelRight: PanelRight,
   graph: GitGraph,
   copy: Copy,
   pullMerge: GitMerge,
@@ -49,6 +50,7 @@ const ICONS = {
   mergeBase: GitFork,
   hash: Hash,
   link: Link,
+  unlink: Unlink,
   more: Ellipsis,
   eye: Eye,
   eyeOff: EyeOff,

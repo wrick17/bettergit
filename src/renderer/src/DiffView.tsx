@@ -1,4 +1,4 @@
-import { Fragment, memo, startTransition, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, memo, startTransition, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import type { DiffFile, DiffHunk, DiffLine, LineRef, MovedBlock } from '../../main/git/diff'
 import type { HunkAction } from '../../main/git/hunks'
 import { EditorContext, useEditorLaunch, type EditorBridge } from './editor-launch'
@@ -20,7 +20,8 @@ import './intraline.css'
 interface Props {
   files: DiffFile[]
   moves: MovedBlock[]
-  // Set in the Changes view. Each file header then shows Stage or Unstage, and Discard for a tracked unstaged file.
+  // Set in the Changes view. Each file header then shows Stage or Unstage, Discard for a tracked unstaged file, and Delete
+  // for an untracked one.
   // `busy` is the write running in the repo: the button that started it spins, the others say why they wait.
   // `onHunk`, when set, adds the same actions to each hunk of a modified text file.
   stage?: {
@@ -28,6 +29,9 @@ interface Props {
     busy?: string | null
     onToggle: (path: string, stage: boolean) => void
     onDiscard?: (path: string) => void
+    // Untracked files, from the repo status. Never inferred from a diff's added status, which tracked additions share.
+    untrackedPaths?: ReadonlySet<string>
+    onDelete?: (path: string) => void
     onHunk?: (path: string, hunk: DiffHunk, action: HunkAction) => void
     // Files in an unstaged view that have only staged changes. They show the staged diff with Unstage, never edit or discard.
     stagedPaths?: ReadonlySet<string>
@@ -38,6 +42,10 @@ interface Props {
   contextFor?: (file: DiffFile) => number
   // Where the open and closed choices of each file are saved. The choices come back only for the same key, such as a commit.
   persist?: { id: string; key: string }
+  // Open and closed choices owned by the caller, in place of `persist`, so several diffs share one choice per path.
+  fileChoices?: FileChoices
+  // Marks the diff (data-section), so a file found on screen can be matched to the list section it belongs to.
+  section?: string
   // Set by the conflict resolver, which shows a conflicted file here with its controls inline.
   conflict?: ConflictDecor
   // Replaces the text shown when there are no files. Set when the caller has nothing to show because a load failed.
@@ -62,6 +70,12 @@ export interface ConflictDecor {
 }
 
 export type DiffLayout = 'unified' | 'split'
+
+// Each file's open (true) or closed (false) choice by path. A file without one uses its default.
+export interface FileChoices {
+  choices: Record<string, boolean>
+  setChoices: Dispatch<SetStateAction<Record<string, boolean>>>
+}
 
 // Two code columns need room for their 44px gutters, signs, padding and the 36px move-arrow channel.
 const MIN_SPLIT_WIDTH = 900
@@ -109,7 +123,7 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
+export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, fileChoices, section, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
   const layoutNow = useDiffLayout()
   const containerRef = useRef<HTMLDivElement>(null)
   const [limited, setLimited] = useState(false)
@@ -160,11 +174,14 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   // The user's open or closed choice per file path. Files without a choice use the default.
   const persistId = persist?.id
   const persistKey = persist?.key
-  const [choices, setChoices] = useState<Record<string, boolean>>(() => (persistId !== undefined && persistKey !== undefined ? savedView(persistId, persistKey, {}) : {}))
+  const [ownChoices, setOwnChoices] = useState<Record<string, boolean>>(() => (persistId !== undefined && persistKey !== undefined ? savedView(persistId, persistKey, {}) : {}))
   useEffect(() => {
-    if (persistId !== undefined && persistKey !== undefined) saveView(persistId, persistKey, choices)
-  }, [persistId, persistKey, choices])
-  const toggleFile = useCallback((path: string, open: boolean) => setChoices((prev) => ({ ...prev, [path]: !open })), [])
+    if (!fileChoices && persistId !== undefined && persistKey !== undefined) saveView(persistId, persistKey, ownChoices)
+  }, [persistId, persistKey, ownChoices])
+  const choices = fileChoices?.choices ?? ownChoices
+  // Both setters keep one identity for the diff's life, so the handlers below never go stale.
+  const setChoices = fileChoices?.setChoices ?? setOwnChoices
+  const toggleFile = useCallback((path: string, open: boolean) => setChoices((prev) => ({ ...prev, [path]: !open })), [setChoices])
   // Collapse and expand all set a choice for every file shown, so each stays saved like a choice made by hand.
   const shownFiles = useRef(shown.files)
   shownFiles.current = shown.files
@@ -188,8 +205,9 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
     busy: stage.busy,
     onToggle: (path: string, next: boolean) => latest.current.stage?.onToggle(path, next),
     onDiscard: stage.onDiscard && ((path: string) => latest.current.stage?.onDiscard?.(path)),
+    onDelete: stage.onDelete && ((path: string) => latest.current.stage?.onDelete?.(path)),
     onHunk: stage.onHunk && ((path: string, hunk: DiffHunk, action: HunkAction) => latest.current.stage?.onHunk?.(path, hunk, action)),
-  }, [!!stage, stage?.staged, stage?.busy, !!stage?.onDiscard, !!stage?.onHunk])
+  }, [!!stage, stage?.staged, stage?.busy, !!stage?.onDiscard, !!stage?.onDelete, !!stage?.onHunk])
   const expand = useMemo(() => onExpand && ((file: DiffFile) => latest.current.onExpand?.(file)), [!!onExpand])
   const editFor = useMemo<EditBridge | undefined>(() => edit && {
     repo: edit.repo,
@@ -273,7 +291,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
   // Optional controls sit left of the fixed ones, so showing or hiding them never moves unified/split or whitespace.
   const hasMarkdown = !conflict && files.some((file) => isMarkdownPath(pathOf(file)))
   return (
-    <div className={`diff${wrap ? '' : ' nowrap'}`} ref={containerRef}>
+    <div className={`diff${wrap ? '' : ' nowrap'}`} ref={containerRef} data-section={section}>
       {arrows.length > 0 && (
         <svg className="move-arrows" width="100%" height={height} aria-hidden="true">
           <defs>
@@ -359,6 +377,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             stat={stat}
             open={open}
             stagedOnly={!!stage?.stagedPaths?.has(path)}
+            untracked={!!stage?.untrackedPaths?.has(path)}
             onToggle={toggleFile}
             layout={current}
             formatted={formatted}
@@ -406,13 +425,14 @@ export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, stagedOnly, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage: viewStage, edit, onExpand, context }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, stagedOnly, untracked, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage: viewStage, edit, onExpand, context }: {
   file: DiffFile
   context: number
   fileIndex: number
   stat: { adds: number; dels: number }
   open: boolean
   stagedOnly: boolean
+  untracked: boolean
   onToggle: (path: string, open: boolean) => void
   layout: DiffLayout
   formatted: boolean
@@ -535,7 +555,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, sta
   })
   return (
     <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
-      <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage}
+      <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage} untracked={untracked}
         actions={text && <DraftActions edit={text} path={path} />} />
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
@@ -944,12 +964,13 @@ function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHun
 
 // The sticky header for one file: collapse toggle, status, name with its folder, how many lines were added and
 // removed, then its actions.
-function FileHeader({ file, stat, open, onToggle, stage, actions }: {
+function FileHeader({ file, stat, open, onToggle, stage, untracked = false, actions }: {
   file: DiffFile
   stat: { adds: number; dels: number }
   open: boolean
   onToggle: () => void
   stage?: Props['stage']
+  untracked?: boolean
   actions?: ReactNode
 }) {
   const path = pathOf(file)
@@ -972,13 +993,13 @@ function FileHeader({ file, stat, open, onToggle, stage, actions }: {
       </span>
       {actions}
       {editor && <OpenInEditorButton file={file} bridge={editor} />}
-      {stage && <FileStageActions file={file} path={path} stage={stage} />}
+      {stage && <FileStageActions path={path} stage={stage} untracked={untracked} />}
     </header>
   )
 }
 
 // The busy keys of staging writes, shared with the Changes view, so the button that started a write is the one that spins.
-export const fileKey = (action: HunkAction, path: string) => `${action}:${path}`
+export const fileKey = (action: HunkAction | 'delete', path: string) => `${action}:${path}`
 export const hunkKey = (action: HunkAction, path: string, header: string) => `hunk-${action}:${path}\n${header}`
 
 function StageButton({ busy, running, ...button }: { busy: string | null; running: string; icon: IconName; text: string; label: string; className?: string; onClick: () => void }) {
@@ -986,8 +1007,9 @@ function StageButton({ busy, running, ...button }: { busy: string | null; runnin
     blocked={busy !== null && busy !== running ? blockedReason(busy) : undefined} />
 }
 
-// Discard and Stage in an unstaged file's header, Unstage in a staged one. An untracked file has nothing to discard.
-function FileStageActions({ file, path, stage }: { file: DiffFile; path: string; stage: NonNullable<Props['stage']> }) {
+// Discard and Stage in an unstaged file's header, Unstage in a staged one. An untracked file has nothing to restore, so it
+// offers Delete instead. A tracked addition (git add -N) shows Discard, which restores it from the index like any tracked file.
+function FileStageActions({ path, stage, untracked }: { path: string; stage: NonNullable<Props['stage']>; untracked: boolean }) {
   const busy = stage.busy ?? null
   return (
     <span className="diff-file-actions">
@@ -995,9 +1017,9 @@ function FileStageActions({ file, path, stage }: { file: DiffFile; path: string;
         ? <StageButton busy={busy} running={fileKey('unstage', path)} icon="minus" text="Unstage" label={`Unstage ${path}`} onClick={() => stage.onToggle(path, false)} />
         : (
           <>
-            {stage.onDiscard && file.status !== 'added' && (
-              <StageButton busy={busy} running={fileKey('discard', path)} icon="trash" text="Discard" label={`Discard changes to ${path}`} className="discard" onClick={() => stage.onDiscard!(path)} />
-            )}
+            {untracked
+              ? stage.onDelete && <StageButton busy={busy} running={fileKey('delete', path)} icon="trash" text="Delete" label={`Delete untracked file ${path}`} className="discard" onClick={() => stage.onDelete!(path)} />
+              : stage.onDiscard && <StageButton busy={busy} running={fileKey('discard', path)} icon="trash" text="Discard" label={`Discard changes to ${path}`} className="discard" onClick={() => stage.onDiscard!(path)} />}
             <StageButton busy={busy} running={fileKey('stage', path)} icon="plus" text="Stage" label={`Stage ${path}`} onClick={() => stage.onToggle(path, true)} />
           </>
         )}

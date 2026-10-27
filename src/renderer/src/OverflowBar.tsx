@@ -199,7 +199,9 @@ export function ActionMenu({ items, onPick, onDismiss, className, at, label, aut
       {items.map((item, index) => (
         <Fragment key={item.key}>
           {index > 0 && items[index - 1].group !== item.group && <div className="popover-sep" role="separator" />}
+          {/* type=button: a menu opened inside a form, like the branch picker, must not submit it. */}
           <button
+            type="button"
             role="menuitem"
             className={[item.danger ? 'danger' : '', item.blocked ? 'blocked' : ''].filter(Boolean).join(' ') || undefined}
             disabled={item.disabled}

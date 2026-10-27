@@ -137,7 +137,7 @@ test('an event that lands before the first read is not undone by that read', asy
 })
 
 test('every repo action key has a working label that ends in an ellipsis', () => {
-  for (const key of ['fetch', 'pull-merge', 'pull-rebase', 'pull', 'push', 'switch', 'reset', 'stash', 'pop', 'apply']) {
+  for (const key of ['fetch', 'pull-merge', 'pull-rebase', 'pull', 'push', 'switch', 'reset', 'stash', 'pop', 'apply', 'delete', 'delete-untracked']) {
     expect(REPO_WORKING_LABELS[key]).toMatch(/…$/)
   }
 })

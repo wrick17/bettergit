@@ -18,6 +18,9 @@ Object.assign(globalThis, {
   },
   document: { querySelector: () => null },
   getComputedStyle: () => ({ getPropertyValue: () => '28' }),
+  // Frames are never drawn here.
+  requestAnimationFrame: () => 0,
+  cancelAnimationFrame() {},
 })
 const react = require('react')
 let captured = [], active = []
@@ -106,7 +109,10 @@ Object.assign(globalThis, {
       commitRefs: (_repo, hash) => { refReads.push(hash); return Promise.resolve({ branches: ['moved' + refReads.length], remotes: [], tags: [] }) },
     },
   },
-  document: { activeElement: null, querySelector: () => null },
+  // No layout here: no element is under any point, and frames are drawn only by the cases that queue them.
+  document: { activeElement: null, querySelector: () => null, elementFromPoint: () => null },
+  requestAnimationFrame: () => 0,
+  cancelAnimationFrame() {},
 })
 
 let slots, cursor, effects, dirty, mounted, tree
@@ -126,6 +132,7 @@ react.useMemo = (factory, deps) => {
   if (!slots[index] || changed(slots[index].deps, deps)) slots[index] = { deps, value: factory() }
   return slots[index].value
 }
+react.useCallback = (callback, deps) => react.useMemo(() => callback, deps)
 react.useEffect = (effect, deps) => {
   const index = cursor++
   const previous = slots[index]
@@ -327,7 +334,7 @@ console.log('compare selection and restore cases passed')
   assert.deepEqual(calls.commit.map((c) => c.args[1]), ['A'], 'the newest commit was not opened')
   find(tree, (p) => p.authors && p.onChange).onChange(['x'])
   render(); await flush()
-  assert.deepEqual(pages.at(-1), ['/repo', 0, 300, ['x']])
+  assert.deepEqual(pages.at(-1), ['/repo', 0, 300, ['x'], []])
   unmount()
   window.bettergit.history = history
 }
@@ -412,6 +419,58 @@ console.log('head focus cases passed')
 }
 console.log('head search failure cases passed')
 
+// Show current branch selects HEAD's own commit when a search, the loaded pages and a hidden branch all keep it off
+// screen, lifting only what is in the way. A HEAD that no branch reaches, or an unborn one, gets an inline alert instead.
+{
+  const { hiddenBranches, setHiddenBranches } = await import('./src/renderer/src/prefs')
+  const asked = []
+  const hiddenPages = []
+  const history = window.bettergit.history
+  // A different shown branch reaches 60,000 commits, so exhausting it cannot be required before showing main.
+  window.bettergit.history = (_repo, skip, limit, _authors, hidden = []) => {
+    asked.push(limit)
+    const mainHidden = hidden.includes('refs/heads/main')
+    if (mainHidden) hiddenPages.push(skip)
+    const total = mainHidden ? 60000 : 3000
+    // P7 is shared, so the saved pick stays visible while main's unique tip is hidden.
+    return Promise.resolve(Array.from({ length: Math.max(0, Math.min(limit, total - skip)) }, (_, index) => ({ hash: (mainHidden && skip + index !== 7 ? 'Q' : 'P') + (skip + index), parents: [], refs: [], author: 'x', date: 0, subject: 's' })))
+  }
+  const settle = async () => { for (let i = 0; i < 16; i++) { render(); await flush() } }
+  const list = () => find(tree, (p) => p.rows && p.onSelect)
+  const alert = () => find(tree, (p) => p.className === 'history-note')
+  const show = (label) => { find(tree, (p) => p['aria-label'] === label).onClick(); render() }
+  setHiddenBranches('/repo', ['refs/heads/main', 'refs/remotes/origin/other'])
+  props.head = 'P2500'; props.branch = 'main'
+  // HEAD was already followed before, so opening keeps the saved pick.
+  await mount({ places: { '/repo': { commit: 'P7', head: JSON.stringify(['main', 'P2500']) } } })
+  await settle()
+  assert.equal(list().selected, 'P7')
+  find(tree, (p) => p['aria-label'] === 'Search commit messages').onChange({ target: { value: 'nothing' } })
+  await settle()
+  const hiddenReads = hiddenPages.length
+  show('Show current branch'); await settle()
+  assert.equal(hiddenPages.length, hiddenReads, 'Show current branch paged unrelated history before unhiding main')
+  assert.equal(list().selected, 'P2500', 'Show current branch did not reach HEAD')
+  assert.equal(find(tree, (p) => p['aria-label'] === 'Search commit messages').value, '', 'the search hiding HEAD stayed')
+  assert.deepEqual(hiddenBranches('/repo'), ['refs/remotes/origin/other'], 'only the current branch should be shown again')
+  assert.ok(asked.includes(2000), 'the explicit search did not page in larger pages')
+  assert.equal(alert(), undefined)
+  // Detached at a commit no branch reaches: no list change, an alert that says so.
+  props.head = 'Z'; props.branch = null; await settle()
+  assert.equal(list().selected, 'P2500')
+  show('Show current checkout'); await settle()
+  assert.match(alert().children[0], /Z is not on any shown branch/)
+  props.head = null; await settle()
+  show('Show current branch')
+  assert.match(alert().children[0], /no commits yet/)
+  unmount()
+  setHiddenBranches('/repo', [])
+  window.bettergit.history = history
+  pages = twoCommits
+  props.head = 'H'; props.branch = null
+}
+console.log('show current branch cases passed')
+
 // A collapsed diff stays mounted behind its rail. Metadata shares its scroller; files stay in the middle column.
 {
   let shows = 0
@@ -439,14 +498,15 @@ console.log('head search failure cases passed')
   render(); await flush()
   assert.equal(shown().bar, null)
   assert.deepEqual(stat(), ['A.ts'], 'exiting the comparison did not return to the commit files')
-  // The file is scrolled to once the shown diff lays out, two frames on.
-  const frames = []
+  // The file is scrolled to once the shown diff lays out, two frames on. The first frame also reads the file in view.
+  const frames = [], idle = globalThis.requestAnimationFrame
   globalThis.requestAnimationFrame = (callback) => frames.push(callback)
   props.diffOpen = true; render(); await flush()
   assert.equal(find(tree, (p) => p.className === 'diff-pane').ref, scroller.ref, 'expanding the code diff replaced its scroll container')
   assert.deepEqual(shown(), { heading: 'subject A', bar: null, files: ['A.ts'] })
-  assert.equal(frames.length, 1)
-  delete globalThis.requestAnimationFrame
+  for (const callback of frames.splice(0)) callback()
+  assert.equal(frames.length, 1, 'the file was not scrolled to in the second frame')
+  globalThis.requestAnimationFrame = idle
   props.listOpen = false; props.detailOpen = false; render(); await flush()
   assert.ok(find(tree, (p) => p.className?.startsWith('history-list folded')), 'collapsed commit list was unmounted')
   assert.ok(find(tree, (p) => p.className?.startsWith('commit-info folded')), 'collapsed commit files were unmounted')
@@ -590,7 +650,7 @@ console.log('whitespace toggle cases passed')
   const scrollEvent = (pane) => find(tree, (p) => p.className === 'diff-pane')?.onScroll?.({ currentTarget: pane })
   const makePane = () => {
     let top = 0
-    const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [], scrollTo() {} }
+    const pane = { clientHeight: 100, scrollHeight: 0, querySelectorAll: () => [], scrollTo() {}, getBoundingClientRect: () => ({ top: 0, bottom: 100, left: 0, width: 600 }) }
     Object.defineProperty(pane, 'scrollTop', { get: () => top, set: (value) => { top = Math.max(0, Math.min(value, pane.scrollHeight - pane.clientHeight)) } })
     return pane
   }
@@ -807,13 +867,15 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('first commit and author filter cases passed')
   expect(child.stdout.toString()).toContain('head focus cases passed')
   expect(child.stdout.toString()).toContain('head search failure cases passed')
+  expect(child.stdout.toString()).toContain('show current branch cases passed')
   expect(child.stdout.toString()).toContain('code diff visibility cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
 })
 
 // The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old
-// path, and the view choice remembered. Rendered from the real CommitStat with the renderer globals stubbed.
+// path, and the view choice remembered. The diff takes the list's order in both views, as History passes it.
+// Rendered from the real CommitStat with the renderer globals stubbed.
 const STAT_TREE = String.raw`
 const assert = require('node:assert/strict')
 const stored = new Map()
@@ -825,7 +887,7 @@ Object.assign(globalThis, {
 const react = require('react')
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 const { renderToStaticMarkup } = await import('react-dom/server')
-const { CommitStat } = await import('./src/renderer/src/CommitStat')
+const { CommitStat, inListOrder } = await import('./src/renderer/src/CommitStat')
 const file = (oldPath, newPath, status) => ({ oldPath, newPath, status, binary: false, hunks: [] })
 const files = [
   file('src/old/a.ts', 'src/lib/a.ts', 'renamed'),
@@ -834,8 +896,21 @@ const files = [
   file(null, 'src/lib/b.ts', 'added'),
   file('src/z.ts', 'src/z.ts', 'modified'),
 ]
-const labels = () => [...renderToStaticMarkup(react.createElement(CommitStat, { files, onSelect() {} }))
+const view = () => stored.get('bettergit.commitFilesView') === 'tree' ? 'tree' : 'list'
+const labelsOf = (patch) => [...renderToStaticMarkup(react.createElement(CommitStat, { files: inListOrder(patch, view()).files, view: view(), onView() {}, onSelect() {} }))
   .matchAll(/aria-label="([^"]*)"/g)].map((match) => match[1]).filter((label) => !/view|layout|Changed files/.test(label))
+const labels = () => labelsOf({ files, moves: [] })
+// The diff's files, as History hands them to DiffView, named the way the list's file rows name them.
+const diffOrder = (patch) => inListOrder(patch, view()).files.map((file) => file.newPath ?? file.oldPath)
+const rowOrder = (patch) => labelsOf(patch).filter((label) => label.startsWith('Show diff for '))
+  .map((label) => label.slice('Show diff for '.length).replace(/, \w+$/, '').replace(/^.* → /, ''))
+// As reported: a root file first in the patch, and src folders that the tree draws above it.
+const reported = { files: [
+  file('package.json', 'package.json', 'modified'),
+  file('src/renderer/src/App.tsx', 'src/renderer/src/App.tsx', 'modified'),
+  file('src/main/index.ts', 'src/main/index.ts', 'modified'),
+  file('src/main/git/diff.ts', 'src/main/git/diff.ts', 'modified'),
+], moves: [{ from: [{ file: 0, line: 1 }], to: [{ file: 2, line: 1 }] }] }
 
 assert.deepEqual(labels(), [
   'Show diff for src/old/a.ts → src/lib/a.ts, renamed',
@@ -844,6 +919,9 @@ assert.deepEqual(labels(), [
   'Show diff for src/lib/b.ts, added',
   'Show diff for src/z.ts, modified',
 ], 'list view keeps the patch order')
+stored.set('bettergit.commitFilesView', 'list')
+assert.equal(inListOrder(reported, 'list'), reported, 'the flat list and its diff keep the patch as it is')
+assert.deepEqual(diffOrder(reported), rowOrder(reported), 'flat: the diff follows the list')
 stored.set('bettergit.commitFilesView', 'tree')
 assert.deepEqual(labels(), [
   'docs, 1 file',
@@ -855,6 +933,12 @@ assert.deepEqual(labels(), [
   'Show diff for src/z.ts, modified',
   'Show diff for README.md, modified',
 ], 'tree view nests folders before files')
+assert.deepEqual(diffOrder(reported), ['src/main/git/diff.ts', 'src/main/index.ts', 'src/renderer/src/App.tsx', 'package.json'],
+  'tree: depth first, folders before files, the root file last')
+assert.deepEqual(diffOrder(reported), rowOrder(reported), 'tree: the diff follows the list')
+assert.deepEqual(diffOrder({ files, moves: [] }), rowOrder({ files, moves: [] }), 'tree: renames and deletions keep their row')
+// Moves name files by index, so they follow package.json and index.ts to their new places.
+assert.deepEqual(inListOrder(reported, 'tree').moves, [{ from: [{ file: 3, line: 1 }], to: [{ file: 1, line: 1 }] }])
 console.log('commit tree cases passed')
 `
 

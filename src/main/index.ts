@@ -110,6 +110,11 @@ function authorList(authors: unknown): string[] {
   return Array.isArray(authors) ? authors.filter((name): name is string => typeof name === 'string' && name !== '' && !/[\n<>]/.test(name)) : []
 }
 
+// Branches hidden in the renderer, by full ref. History only compares them with Git's own ref list, so a bad entry hides nothing.
+function refList(refs: unknown): string[] {
+  return Array.isArray(refs) ? refs.filter((ref): ref is string => typeof ref === 'string' && /^refs\/(heads|remotes)\//.test(ref)) : []
+}
+
 // Validate both the selected path and its destination before opening or locking a repo.
 function assertKnownWriteRepo(repoPath: string): string {
   const resolved = assertKnownRepo(repoPath)
@@ -203,8 +208,8 @@ function registerIpc() {
     return config
   })
   ipcMain.handle('repo:status', async (_event, repoPath: string) => readStatus(assertKnownRepo(repoPath)))
-  ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number, authors?: unknown) =>
-    readHistory(assertKnownRepo(repoPath), skip, limit, authorList(authors)))
+  ipcMain.handle('repo:history', (_event, repoPath: string, skip: number, limit: number, authors?: unknown, hidden?: unknown) =>
+    readHistory(assertKnownRepo(repoPath), skip, limit, authorList(authors), refList(hidden)))
   ipcMain.handle('repo:authors', (_event, repoPath: string) => readAuthors(assertKnownRepo(repoPath)))
   // The picture is decoded and re-encoded here, so only an image that macOS can read ever reaches the renderer.
   const avatarFor = avatars((data) => {
@@ -235,6 +240,13 @@ function registerIpc() {
   handleWrite('repo:switch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.switchBranch(repoPath, selection))
   handleWrite('repo:create-branch', (_event, repoPath: string, name: string, base: ops.BranchSelection) =>
     ops.createBranch(repoPath, name, base))
+  // The branch menu. Each names its branch by the exact ref and commit the picker showed; main refuses stale ones.
+  handleWrite('repo:delete-branch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.deleteBranch(repoPath, selection))
+  handleWrite('repo:rename-branch', (_event, repoPath: string, selection: ops.BranchSelection, name: string) =>
+    ops.renameBranch(repoPath, selection, name))
+  handleWrite('repo:set-upstream', (_event, repoPath: string, selection: ops.BranchSelection, upstream: ops.BranchSelection) =>
+    ops.setUpstream(repoPath, selection, upstream))
+  handleWrite('repo:unset-upstream', (_event, repoPath: string, selection: ops.BranchSelection) => ops.unsetUpstream(repoPath, selection))
   handleWrite('repo:fetch', (_event, repoPath: string, mode?: ops.FetchMode) => ops.fetchAll(repoPath, mode))
   handleWrite('repo:pull', (_event, repoPath: string, mode?: ops.PullMode) => ops.pull(repoPath, mode))
   handleWrite('repo:pull-from', (_event, repoPath: string, remote: string, branch: string) =>
@@ -285,10 +297,12 @@ function registerIpc() {
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>
     ops.restoreBackup(repoPath, ref))
   handleWrite('repo:discard', (_event, repoPath: string, paths: string[]) => ops.discardPaths(repoPath, paths))
+  // One untracked file. Main checks again that it is still untracked before removing it.
+  handleWrite('repo:delete-untracked', (_event, repoPath: string, filePath: string) => ops.deleteUntracked(repoPath, filePath))
   // One hunk of one file. Main validates the request and cuts the patch from its own fresh diff.
   handleWrite('repo:hunk', (_event, repoPath: string, action: unknown, request: unknown) => applyHunk(repoPath, ...parseHunk(action, request)))
-  ipcMain.handle('repo:search', (_event, repoPath: string, query: string, authors?: unknown) =>
-    searchHistory(assertKnownRepo(repoPath), query, authorList(authors)))
+  ipcMain.handle('repo:search', (_event, repoPath: string, query: string, authors?: unknown, hidden?: unknown) =>
+    searchHistory(assertKnownRepo(repoPath), query, authorList(authors), refList(hidden)))
   // Reads take no lock. The save runs under the repo lock, and it checks the fingerprint the renderer got at load.
   ipcMain.handle('repo:conflict-load', (_event, repoPath: string, filePath: string) => loadConflict(assertKnownRepo(repoPath), filePath))
   ipcMain.handle('repo:conflict-preview', (_event, repoPath: string, filePath: string, save: unknown) =>
@@ -434,9 +448,9 @@ function createWindow() {
     title: 'BetterGit',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
-    // Transparent, but the page paints an opaque --window behind its glass panels. No native vibrancy: with the
-    // under-window material, swiping between Spaces lagged on an external display, and the user found it much smoother without it.
-    transparent: true,
+    // Opaque native backing in the built-in --window color; the page still paints its own opaque --window behind the glass panels.
+    // No native vibrancy: with the under-window material, swiping between Spaces lagged on an external display.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1d23' : '#e6e8ee',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

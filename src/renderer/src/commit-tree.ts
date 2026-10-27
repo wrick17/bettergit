@@ -35,3 +35,8 @@ function sortTree<T>(folder: Folder<T>, pathOf: (item: T) => string): Folder<T> 
   folder.files.sort((a, b) => splitPath(pathOf(a)).name.localeCompare(splitPath(pathOf(b)).name))
   return folder
 }
+
+// Every file in the order the tree draws it: depth first, each folder's subfolders before its own files.
+export function treeOrder<T>(folder: Folder<T>): T[] {
+  return [...[...folder.folders.values()].flatMap(treeOrder), ...folder.files]
+}

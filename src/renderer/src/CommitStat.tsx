@@ -1,15 +1,36 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import type { DiffFile } from '../../main/git/diff'
-import { buildTree, type Folder } from './commit-tree'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useActiveFile, useKeepInView, type ActiveFiles } from './active-file'
+import type { DiffFile, MovedBlock } from '../../main/git/diff'
+import { buildTree, treeOrder, type Folder } from './commit-tree'
 import { countLines } from './DiffView'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { splitPath } from './paths'
+import { orderFiles } from './widen'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
-type View = 'list' | 'tree'
+export type FilesView = 'list' | 'tree'
 const VIEW_KEY = 'bettergit.commitFilesView'
+// A row picks its file by path: a renamed file by its new path, a deleted one by its old path.
+const pathOf = (file: DiffFile) => file.newPath ?? file.oldPath ?? ''
+
+// The file list's layout, remembered across commits and launches. Owned by History, since its diff follows the same order.
+export function useFilesView() {
+  const [view, setView] = useState<FilesView>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
+  const choose = useCallback((next: FilesView) => {
+    localStorage.setItem(VIEW_KEY, next)
+    setView(next)
+  }, [])
+  return [view, choose] as const
+}
+
+// The patch with its files in the order the list draws them, so the diff beside it reads top to bottom with the list.
+// The flat list is the patch order. Moves name files by index, so orderFiles carries them along.
+export function inListOrder(patch: { files: DiffFile[]; moves: MovedBlock[] }, view: FilesView) {
+  return view === 'tree' ? orderFiles(patch, treeOrder(buildTree(patch.files, pathOf)).map(pathOf)) : patch
+}
+
 const BADGE: Record<DiffFile['status'], string> = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R' }
 
 // One changed file and its place in the patch. The index keys the row, since a patch can name a path twice.
@@ -20,21 +41,27 @@ interface Entry {
 }
 
 // Counts come from the parsed patch, not the --stat text: --stat lists a rename as a delete plus an add.
-// A row picks its file by path: a renamed file by its new path, a deleted one by its old path.
-export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (path: string) => void }) {
-  const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
+// `files` come in list order (inListOrder), so an Entry's index is also the file's place in the diff.
+// `activeFiles` names the file at the top of the code diff. Its row is marked and kept on screen, without selecting it.
+export function CommitStat({ files, view, onView, onSelect, activeFiles }: {
+  files: DiffFile[]
+  view: FilesView
+  onView: (view: FilesView) => void
+  onSelect: (path: string) => void
+  activeFiles?: ActiveFiles
+}) {
   // Folders are open unless their path is here. Kept while the view stays mounted, so moving between commits keeps them.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
-  const entries = useMemo(() => files.map((file, index): Entry => ({ file, index, path: file.newPath ?? file.oldPath ?? '' })), [files])
+  const entries = useMemo(() => files.map((file, index): Entry => ({ file, index, path: pathOf(file) })), [files])
   const tree = useMemo(() => (view === 'tree' ? buildTree(entries, (entry) => entry.path) : null), [entries, view])
+  // Counted once per patch, since the mark re-renders the list as the diff scrolls.
+  const counts = useMemo(() => files.map(countLines), [files])
+  const blockRef = useRef<HTMLDivElement>(null)
+  const inView = useActiveFile(activeFiles)?.path ?? null
+  useKeepInView(blockRef, inView === null ? null : `${view}:${inView}`)
   if (!files.length) return null
-  const counts = files.map(countLines)
   const insertions = counts.reduce((sum, count) => sum + count.adds, 0)
   const deletions = counts.reduce((sum, count) => sum + count.dels, 0)
-  const chooseView = (next: View) => {
-    localStorage.setItem(VIEW_KEY, next)
-    setView(next)
-  }
   const toggleFolder = (path: string) => setCollapsed((prev) => {
     const next = new Set(prev)
     if (next.has(path)) next.delete(path)
@@ -46,7 +73,7 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
     const { adds, dels } = counts[index]
     const label = file.status === 'renamed' && file.oldPath && file.oldPath !== path ? `${file.oldPath} → ${path}` : path
     return (
-      <button className={className} onClick={() => onSelect(path)} title={label} aria-label={`Show diff for ${label}, ${file.status}`}>
+      <button className={`${className}${inView === path ? ' in-view' : ''}`} onClick={() => onSelect(path)} title={label} aria-label={`Show diff for ${label}, ${file.status}`}>
         <FileIcon name={name} />
         <span className="path">
           <span className="path-name">{name}</span>
@@ -65,12 +92,12 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
     )
   }
   return (
-    <div className="commit-stat-block">
+    <div className="commit-stat-block" ref={blockRef}>
       <div className="commit-stat-head">
         <span className="file-list-title">Files</span>
         <div className="changes-view-toggle" role="group" aria-label="Commit file layout">
-          <IconButton icon="listFlat" label={view === 'list' ? 'List view: on' : toggleLabel('List view: off', 'show files as a flat list')} active={view === 'list'} onClick={() => chooseView('list')} />
-          <IconButton icon="listTree" label={view === 'tree' ? 'Tree view: on' : toggleLabel('Tree view: off', 'show files in folders')} active={view === 'tree'} onClick={() => chooseView('tree')} />
+          <IconButton icon="listFlat" label={view === 'list' ? 'List view: on' : toggleLabel('List view: off', 'show files as a flat list')} active={view === 'list'} onClick={() => onView('list')} />
+          <IconButton icon="listTree" label={view === 'tree' ? 'Tree view: on' : toggleLabel('Tree view: off', 'show files in folders')} active={view === 'tree'} onClick={() => onView('tree')} />
         </div>
       </div>
       {tree ? (
@@ -86,9 +113,10 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
           {entries.map((entry) => <li key={`${entry.index}-${entry.path}`}>{row(entry, 'commit-stat-row', true)}</li>)}
         </ul>
       )}
-      <p className="commit-stat-summary">
-        {plural(files.length, 'file')} changed, <span className="add">{plural(insertions, 'insertion')}(+)</span>,{' '}
-        <span className="del">{plural(deletions, 'deletion')}(-)</span>
+      <p className="commit-stat-summary" title={`${plural(files.length, 'file')} changed, ${plural(insertions, 'insertion')}, ${plural(deletions, 'deletion')}`}>
+        <span>{plural(files.length, 'file')}</span>
+        <span className="add">+{insertions}</span>
+        <span className="del">−{deletions}</span>
       </p>
     </div>
   )

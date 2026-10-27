@@ -64,7 +64,7 @@ function fold(id: string, entries: Entry[]): Folder {
   return root
 }
 
-export function buildSections({ branches, head, tags, stashes, worktrees }: {
+export function buildSections({ branches, head, tags, stashes, worktrees, hidden }: {
   branches: Branch[]
   // Undefined hides the Starting point section; null is an unborn HEAD.
   head?: BranchSelection | null
@@ -72,18 +72,23 @@ export function buildSections({ branches, head, tags, stashes, worktrees }: {
   tags?: Tag[] | null
   stashes?: Stash[] | null
   worktrees?: Worktree[] | null
+  // Full refs hidden from the list. They move to a folded Hidden section, where they can still be picked or shown again.
+  hidden?: ReadonlySet<string>
 }): Section[] {
   const section = (id: string, label: string, entries: Entry[] | null, folders: boolean, open = false, count?: number): Section =>
     ({ id, label, entries, folders, open, count, root: entries && folders ? fold(id, entries) : null })
-  const local = branches.filter((branch) => !branch.remote)
-  const remote = branches.filter((branch) => branch.remote)
+  const branchEntry = (branch: Branch) => entry(`i:${branch.fullRef}`, branch.name, { kind: 'branch', branch },
+    branch.remote ? {} : { detail: branch.upstream ?? undefined, current: branch.current })
+  const concealed = hidden?.size ? branches.filter((branch) => hidden.has(branch.fullRef)) : []
+  const shown = concealed.length ? branches.filter((branch) => !hidden!.has(branch.fullRef)) : branches
+  const local = shown.filter((branch) => !branch.remote)
+  const remote = shown.filter((branch) => branch.remote)
   const sections = [
     ...(head === undefined ? [] : [section('head', 'Starting point', [entry('i:HEAD', 'Current HEAD', { kind: 'head', selection: head },
       { detail: head ? head.hash.slice(0, 7) : 'Create a commit first', disabled: !head })], false, true)]),
-    section('local', 'Branches', local.map((branch) =>
-      entry(`i:${branch.fullRef}`, branch.name, { kind: 'branch', branch }, { detail: branch.upstream ?? undefined, current: branch.current })), true, true),
-    section('remote', 'Remotes', remote.map((branch) => entry(`i:${branch.fullRef}`, branch.name, { kind: 'branch', branch })), true, false,
-      new Set(remote.map((branch) => branch.name.split('/')[0])).size),
+    section('local', 'Branches', local.map(branchEntry), true, true),
+    section('remote', 'Remotes', remote.map(branchEntry), true, false, new Set(remote.map((branch) => branch.name.split('/')[0])).size),
+    ...(concealed.length ? [section('hidden', 'Hidden', concealed.map(branchEntry), true)] : []),
   ]
   if (tags !== undefined) sections.push(section('tag', 'Tags', tags && tags.map((tag) => entry(`i:${tag.fullRef}`, tag.name, { kind: 'tag', tag })), true))
   if (stashes !== undefined) sections.push(section('stash', 'Stashes', stashes && stashes.map((stash) =>

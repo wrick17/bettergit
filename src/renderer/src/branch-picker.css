@@ -11,16 +11,34 @@
 }
 .branch-twisty { flex: none; width: 14px; height: 14px; color: var(--text-3); }
 .branch-choice-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 500 calc(13px + var(--ui-delta))/1 var(--font-code); }
+/* An item's name pushes its badges, detail and menu button to the right edge, so they line up from row to row. */
+.branch-choice.item .branch-choice-name { margin-right: auto; }
 .branch-choice.section .branch-choice-name { font: 600 calc(11px + var(--ui-delta))/1 var(--font-ui); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
 .branch-choice.section .count { color: var(--text-3); font-size: calc(11px + var(--ui-delta)); }
 .branch-choice.folder .branch-choice-name { font-weight: 600; }
 .branch-choice.current .branch-choice-name { font-weight: 700; }
-.branch-choice small { flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); font-size: calc(11px + var(--ui-delta)); }
+.branch-choice small { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); font-size: calc(11px + var(--ui-delta)); }
 .branch-choice.selected { background: var(--accent-fill); color: var(--on-accent); outline: 2px solid var(--accent); outline-offset: -2px; }
 .branch-choice.selected small, .branch-choice.selected .branch-twisty, .branch-choice.selected .count, .branch-choice.selected .branch-choice-name { color: inherit; }
 .branch-choice[aria-disabled='true'] { opacity: 0.55; cursor: default; }
-.branch-current { flex: none; margin-left: auto; font-size: calc(11px + var(--ui-delta)); }
-.branch-current + small { margin-left: 8px; }
+.branch-current { flex: none; font-size: calc(11px + var(--ui-delta)); }
+/* Commits to push and to pull against the upstream, from the last fetch. Leads the trailing group, so Local, Current and
+   the upstream name sit after it. */
+.branch-track { flex: none; display: inline-flex; gap: 4px; }
+.branch-track > span, .branch-local {
+  padding: 2px 6px; border-radius: 999px; background: var(--hover); color: var(--text-2);
+  font: 500 calc(11px + var(--ui-delta))/1.2 var(--font-ui); font-variant-numeric: tabular-nums;
+}
+.branch-track > .conflicts { color: var(--del); background: var(--del-bg); }
+.branch-local { flex: none; }
+.branch-choice.selected .branch-track > span, .branch-choice.selected .branch-local { background: rgba(0, 0, 0, 0.2); color: inherit; }
+/* The menu button keeps its place when hidden, so hovering a row never shifts its badges. */
+.branch-menu-trigger { flex: none; width: 22px; height: 22px; margin-right: -6px; opacity: 0; }
+.branch-choice:hover > .branch-menu-trigger, .branch-choice.selected > .branch-menu-trigger { opacity: 1; }
+.branch-choice.selected > .branch-menu-trigger { color: inherit; }
+/* Labels carry branch names, so a long one wraps inside a menu that stays narrower than the window. */
+.branch-menu { max-width: min(480px, calc(100vw - 16px)); }
+.popover.branch-menu button { height: auto; min-height: 30px; padding-block: 6px; overflow-wrap: anywhere; }
 .branch-empty { padding: 10px; color: var(--text-3); }
 .branch-base { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; text-align: left; overflow-wrap: anywhere; }
 .branch-base > span:first-child { flex: 1; min-width: 0; font-family: var(--font-code); }

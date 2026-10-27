@@ -15,17 +15,18 @@ import path from 'node:path'
 
 const hash = 'a'.repeat(40)
 const branches: Branch[] = [
-  { name: 'main', fullRef: 'refs/heads/main', hash, upstream: 'origin/main', upstreamRef: 'refs/remotes/origin/main', current: true, remote: false },
-  ...['origin', 'upstream'].map((remote) => ({ name: `${remote}/Topic/Long-Name`, fullRef: `refs/remotes/${remote}/Topic/Long-Name`, hash, upstream: null, upstreamRef: null, current: false, remote: true })),
+  { name: 'main', fullRef: 'refs/heads/main', hash, upstream: 'origin/main', upstreamRef: 'refs/remotes/origin/main', current: true, remote: false, ahead: 2, behind: 3, gone: false },
+  ...['origin', 'upstream'].map((remote) => ({ name: `${remote}/Topic/Long-Name`, fullRef: `refs/remotes/${remote}/Topic/Long-Name`, hash, upstream: null, upstreamRef: null, current: false, remote: true, ahead: 0, behind: 0, gone: false })),
 ]
 
 // Same in-memory compilation technique as repo-lock.test.ts. No Electron window, browser or disk build output.
-async function harness(api: Record<string, unknown> = {}, headHash: string | null = hash) {
+async function harness(api: Record<string, unknown> = {}, headHash: string | null = hash, list: Branch[] = branches) {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/BranchPicker.tsx', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
   expect(compiled.success).toBe(true)
   const slots: any[] = []
   let cursor = 0, closed = 0, refreshed = 0, changed = 0, confirms = 0
   let discard = false
+  let hidden: string[] = []
   const module = { exports: {} as any }
   const imports: Record<string, unknown> = {
     react: { ...React, useId: () => 'picker', useEffect() {}, useLayoutEffect() {}, useMemo: (make: () => unknown) => make(),
@@ -43,6 +44,8 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     './confirm': { confirmOverBlur: async () => { confirms++; return discard } },
     './Icons': { Icon: () => null },
     './branch-tree': refs,
+    './OverflowBar': { ActionMenu: () => null },
+    './prefs': { useHiddenBranches: () => hidden, hiddenBranches: () => hidden, setHiddenBranches: (_repo: string, refs: string[]) => { hidden = refs } },
     './repo-busy': { ...busy, useRepoBusy: () => busy.busyKey('/picker-test') },
   }
   runInNewContext(await compiled.outputs[0].text(), {
@@ -50,7 +53,7 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     window: { bettergit: api },
     document: { getElementById: () => null },
   })
-  const props = { repo: '/picker-test', branches, headHash, onRefresh: async () => { refreshed++ }, onChanged: () => { changed++ }, onClose: () => { closed++ } }
+  const props = { repo: '/picker-test', branches: list, headHash, onRefresh: async () => { refreshed++ }, onChanged: () => { changed++ }, onClose: () => { closed++ } }
   let tree: React.ReactNode
   const render = () => { cursor = 0; tree = module.exports.BranchPicker(props); return tree }
   const find = (match: (props: any) => boolean, node: React.ReactNode = tree): any => {
@@ -71,6 +74,7 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     submit: () => { find((p) => p.role === 'dialog').onSubmit({ preventDefault() {} }); render() },
     stats: () => ({ closed, refreshed, changed, confirms }),
     discard: () => { discard = true },
+    hidden: () => hidden,
   }
 }
 const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve() }
@@ -92,6 +96,32 @@ test('sections fold refs by prefix, count them, and filter every section by whol
   // Filtering opens matching sections, lists whole names, and hides sections without a match.
   expect(labels(refs.flattenRows(sections, 'TOPIC', new Set()))).toEqual(['1:Remotes(2)', '2:origin/Topic/Long-Name', '2:upstream/Topic/Long-Name', '1:Stashes(1)', '2:WIP on main: topic', '1:Worktrees(…)'])
   expect(labels(refs.flattenRows(sections, 'topic', new Set(['s:remote'])))[0]).toBe('1:Remotes(2)+')
+})
+
+test('local branches show unpushed and fetched-but-unpulled counts, both when diverged, and a gone upstream', async () => {
+  const h = await harness()
+  const local = (name: string, extra: Partial<Branch>): Branch => ({ ...branches[0], name, fullRef: `refs/heads/${name}`, current: false, ahead: 0, behind: 0, ...extra })
+  const markup = renderToStaticMarkup(h.choices({
+    branches: [branches[0], local('gone', { gone: true }), local('synced', {}), local('solo', { upstream: null, upstreamRef: null }), branches[1]],
+    query: '', active: null, onQuery() {}, onActive() {}, onPick() {}, id: 'track', disabled: false,
+  }))
+  expect(markup).toContain('<span title="2 commits to push to origin/main">↑2</span><span title="3 commits to pull from origin/main">↓3</span>')
+  expect(markup).toContain('<span title="Upstream origin/main is gone">gone</span>')
+  // In sync, no upstream, and remote rows show no badge.
+  expect(markup.match(/class="branch-track"/g)).toHaveLength(2)
+  expect(markup).not.toContain('conflict')
+})
+
+test('only the checked-out branch shows the working tree\'s unresolved conflicts, beside its divergence', async () => {
+  const h = await harness()
+  const other: Branch = { ...branches[0], name: 'other', fullRef: 'refs/heads/other', current: false, ahead: 1, behind: 1 }
+  const markup = renderToStaticMarkup(h.choices({
+    branches: [branches[0], other], conflicts: 2,
+    query: '', active: null, onQuery() {}, onActive() {}, onPick() {}, id: 'conflicts', disabled: false,
+  }))
+  expect(markup).toContain('<span class="conflicts" title="2 unresolved conflicted files in the working tree. Resolve them in Changes.">2 conflicts</span><span title="2 commits to push')
+  // A diverged branch that is not checked out shows its counts and no conflict.
+  expect(markup.match(/class="conflicts"/g)).toHaveLength(1)
 })
 
 test('a repo opened through a symlink finds its own worktree as current, by canonical path', async () => {
@@ -195,4 +225,49 @@ test('unborn Current HEAD disables creation while a picked fetched base remains 
   h.find((p) => p.className === 'branch-base').onClick(); h.render()
   h.find((p) => typeof p.onPick === 'function').onPick({ kind: 'branch', branch: branches[1] }); h.render()
   expect(h.find((p) => p.type === 'submit').disabled).toBe(false)
+})
+
+test('Local marks every local branch, and a remote branch only when a local branch tracks its exact ref', async () => {
+  const h = await harness()
+  // Every branch shares one commit, and a local branch shares a remote's name without tracking it: neither counts.
+  const list: Branch[] = [...branches, { ...branches[1], name: 'origin/main', fullRef: 'refs/remotes/origin/main' },
+    { ...branches[0], name: 'Topic/Long-Name', fullRef: 'refs/heads/Topic/Long-Name', current: false, upstream: null, upstreamRef: null }]
+  const view = (query: string) => renderToStaticMarkup(h.choices({ branches: list, query, active: null, onQuery() {}, onActive() {}, onPick() {}, id: 'local', disabled: false }))
+  expect(view('main')).toContain('<span class="branch-local" title="Local branch, tracking origin/main">Local</span>')
+  expect(view('main')).toContain('<span class="branch-local" title="Tracked by local branch main">Local</span>')
+  expect(view('long-name').match(/class="branch-local"/g)).toHaveLength(1)
+})
+
+test('the branch menu never checks out on open, gives remote rows no push-only actions, and Escape closes it before the sheet', async () => {
+  const calls: unknown[][] = []
+  const other: Branch = { ...branches[0], name: 'other', fullRef: 'refs/heads/other', current: false, upstream: null, upstreamRef: null }
+  const h = await harness({ switchBranch: async (...args: unknown[]) => { calls.push(['switch', ...args]) },
+    deleteBranch: async (...args: unknown[]) => { calls.push(['delete', ...args]) },
+    tags: async () => [], stashes: async () => [], worktrees: async () => [] }, hash, [...branches, other])
+  const open = (branch: Branch) => { h.find((p) => typeof p.onMenu === 'function').onMenu(branch, { x: 1, y: 2 }); h.render() }
+  const menu = () => h.find((p) => Array.isArray(p.items) && p.at)
+  const item = (key: string) => menu().items.find((entry: { key: string }) => entry.key === key)
+  open(branches[1])
+  expect(menu().items.map((entry: { key: string }) => entry.key)).toEqual(['checkout', 'create-from', 'hide', 'hide-others', 'copy', 'search'])
+  expect(calls).toEqual([])
+  h.key('Escape')
+  expect(menu()).toBeUndefined()
+  expect(h.stats().closed).toBe(0)
+  // Hiding is by full ref; hiding all but one keeps exactly that one shown.
+  open(branches[1]); menu().onPick(item('hide-others')); h.render()
+  expect(h.hidden()).toEqual(['refs/heads/main', 'refs/remotes/upstream/Topic/Long-Name', 'refs/heads/other'])
+  // The checked-out branch cannot be deleted. Another one is deleted only after confirmation, by exact identity, and the picker stays open.
+  open(branches[0])
+  expect(item('delete').blocked).toContain('Checked out')
+  expect(item('unset-upstream').disabled).toBe(false)
+  open(other)
+  expect(item('unset-upstream').disabled).toBe(true)
+  menu().onPick(item('delete')); await flush()
+  expect(calls).toEqual([])
+  h.discard()
+  open(other); menu().onPick(item('delete')); await flush(); h.render()
+  expect(calls).toEqual([['delete', '/picker-test', { fullRef: 'refs/heads/other', hash }]])
+  expect(h.stats()).toEqual({ closed: 0, refreshed: 1, changed: 1, confirms: 2 })
+  h.key('Escape'); await flush()
+  expect(h.stats().closed).toBe(1)
 })

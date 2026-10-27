@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git, gitRaw } from '../src/main/git/exec'
 import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
@@ -11,7 +11,8 @@ import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
-import { discardPaths, fetchAll, push } from '../src/main/git/ops'
+import { deleteUntracked, discardPaths, fetchAll, push } from '../src/main/git/ops'
+import { deleteBranch, renameBranch, setUpstream, unsetUpstream } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -240,9 +241,79 @@ describe('operations', () => {
     }
   })
 
+  test('delete removes only a file that is still untracked, never a tracked file, folder, ignored file or a path through a symlink', async () => {
+    const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'bettergit-delete-')))
+    const outside = realpathSync(mkdtempSync(path.join(tmpdir(), 'bettergit-outside-')))
+    try {
+      await git(dir, ['init', '-q'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      writeFileSync(path.join(dir, 'tracked.txt'), 'kept\n')
+      writeFileSync(path.join(dir, '.gitignore'), 'ignored.txt\n')
+      await git(dir, ['add', '-A'])
+      await git(dir, ['commit', '-qm', 'base'])
+      mkdirSync(path.join(dir, 'sub'))
+      writeFileSync(path.join(dir, 'sub', 'new [x].txt'), 'scratch\n')
+      writeFileSync(path.join(dir, 'ignored.txt'), 'local\n')
+      writeFileSync(path.join(outside, 'target.txt'), 'outside\n')
+      symlinkSync(outside, path.join(dir, 'linked-dir'))
+      symlinkSync(path.join(outside, 'target.txt'), path.join(dir, 'link.txt'))
+      await deleteUntracked(dir, 'sub/new [x].txt')
+      expect(existsSync(path.join(dir, 'sub', 'new [x].txt'))).toBe(false)
+      expect(existsSync(path.join(dir, 'sub'))).toBe(true)
+      // A symlink is removed itself, and its target stays.
+      await deleteUntracked(dir, 'link.txt')
+      expect(existsSync(path.join(dir, 'link.txt'))).toBe(false)
+      expect(readFileSync(path.join(outside, 'target.txt'), 'utf8')).toBe('outside\n')
+      for (const [file, reason] of [['tracked.txt', /no longer an untracked file/], ['ignored.txt', /no longer an untracked file/],
+        ['sub', /no longer an untracked file/], ['linked-dir/target.txt', /untracked file|symbolic link/],
+        ['../outside.txt', /inside this repository/], ['./tracked.txt', /inside this repository/], [path.join(dir, 'tracked.txt'), /Invalid file path/]] as const) {
+        await expect(deleteUntracked(dir, file)).rejects.toThrow(reason)
+      }
+      expect(readFileSync(path.join(dir, 'tracked.txt'), 'utf8')).toBe('kept\n')
+      expect(readFileSync(path.join(dir, 'ignored.txt'), 'utf8')).toBe('local\n')
+      expect(readFileSync(path.join(outside, 'target.txt'), 'utf8')).toBe('outside\n')
+    } finally {
+      cleanup(dir)
+      cleanup(outside)
+    }
+  })
+
+  test('branches count commits to push and to pull from fetched refs, and mark a gone upstream', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-track-'))
+    try {
+      await git(dir, ['init', '-q', '-b', 'main'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'base'])
+      await git(dir, ['remote', 'add', 'origin', dir])
+      await git(dir, ['switch', '-q', '-c', 'theirs'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'fetched'])
+      await git(dir, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+      await git(dir, ['update-ref', 'refs/remotes/origin/old', 'HEAD'])
+      await git(dir, ['switch', '-q', 'main'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'local'])
+      for (const [name, merge] of [['main', 'main'], ['old', 'old']]) {
+        if (name !== 'main') await git(dir, ['branch', name])
+        await git(dir, ['config', `branch.${name}.remote`, 'origin'])
+        await git(dir, ['config', `branch.${name}.merge`, `refs/heads/${merge}`])
+      }
+      await git(dir, ['update-ref', '-d', 'refs/remotes/origin/old'])
+      const track = (await readBranches(dir)).map(({ name, upstream, ahead, behind, gone }) => ({ name, upstream, ahead, behind, gone }))
+      expect(track).toEqual([
+        { name: 'main', upstream: 'origin/main', ahead: 1, behind: 1, gone: false },
+        { name: 'old', upstream: 'origin/old', ahead: 0, behind: 0, gone: true },
+        { name: 'theirs', upstream: null, ahead: 0, behind: 0, gone: false },
+        { name: 'origin/main', upstream: null, ahead: 0, behind: 0, gone: false },
+      ])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
   test('lists branches with upstreams and stashes with messages', async () => {
     const branches = await readBranches(repo('work/acme/api-service'))
-    expect(branches.find((branch) => branch.name === 'main')).toMatchObject({ current: true, upstream: 'origin/main' })
+    expect(branches.find((branch) => branch.name === 'main')).toMatchObject({ current: true, upstream: 'origin/main', ahead: 2, behind: 1, gone: false })
     expect(branches.some((branch) => branch.name === 'origin/main' && branch.remote)).toBe(true)
     const stashes = await readStashes(repo('work/personal/with-stash'))
     expect(stashes.map((stash) => stash.message)).toEqual(expect.arrayContaining([expect.stringContaining('session draft'), expect.stringContaining('wip on login')]))
@@ -1116,6 +1187,57 @@ describe('branch picker operations with real Git', () => {
     unlinkSync(lock)
     await withRepoLock(dir, 'repo:create-branch', () => createBranch(dir, 'after-lock', remote))
     expect((await readStatus(dir)).head).toBe('after-lock')
+  })
+
+  test('branch menu writes act on the exact local branch shown, never force, overwrite, self-track or touch the remote', async () => {
+    const { dir, base, tip } = await fixture()
+    const topic = await select(dir, 'refs/heads/local-base')
+    // Unmerged into HEAD with no upstream: the safe delete refuses and keeps the commit. So do the checked-out branch and
+    // an identity whose commit changed since it was shown.
+    await expect(deleteBranch(dir, topic)).rejects.toThrow()
+    expect(await sha(dir, 'refs/heads/local-base')).toBe(tip)
+    await expect(deleteBranch(dir, await select(dir, 'refs/heads/main'))).rejects.toThrow('checked out')
+    await expect(renameBranch(dir, { ...topic, hash: base }, 'stale')).rejects.toThrow('disappeared or changed')
+    await expect(setUpstream(dir, topic, topic)).rejects.toThrow('itself')
+    await setUpstream(dir, topic, await select(dir, 'refs/remotes/origin/topic'))
+    // A rename never replaces another branch, and carries the upstream to the new name.
+    await expect(renameBranch(dir, topic, 'main')).rejects.toThrow('already exists')
+    await renameBranch(dir, topic, 'renamed')
+    const renamed = (await readBranches(dir)).find((entry) => entry.name === 'renamed')!
+    expect(renamed).toMatchObject({ hash: tip, upstreamRef: 'refs/remotes/origin/topic' })
+    await unsetUpstream(dir, await select(dir, 'refs/heads/renamed'))
+    await expect(unsetUpstream(dir, await select(dir, 'refs/heads/renamed'))).rejects.toThrow('no upstream')
+    await git(dir, ['merge', '-q', '--ff-only', 'renamed'])
+    await deleteBranch(dir, await select(dir, 'refs/heads/renamed'))
+    expect((await readBranches(dir)).map((entry) => entry.fullRef)).toEqual(['refs/heads/main', 'refs/remotes/origin/topic'])
+    expect(await sha(dir, 'refs/remotes/origin/topic')).toBe(tip)
+  })
+
+  test('renaming refuses upstream settings in an included config without changing the branch or tracking', async () => {
+    const { dir, tip } = await fixture()
+    const included = path.join(dir, '.git', 'included-tracking.config')
+    const content = '[branch "local-base"]\n\tremote = origin\n\tmerge = refs/heads/topic\n'
+    writeFileSync(included, content)
+    await git(dir, ['config', 'include.path', included])
+    const topic = await select(dir, 'refs/heads/local-base')
+    await expect(renameBranch(dir, topic, 'renamed')).rejects.toThrow('outside the repository config')
+    expect((await readBranches(dir)).find((entry) => entry.fullRef === topic.fullRef))
+      .toMatchObject({ hash: tip, upstreamRef: 'refs/remotes/origin/topic' })
+    expect((await readBranches(dir)).some((entry) => entry.name === 'renamed')).toBe(false)
+    expect(readFileSync(included, 'utf8')).toBe(content)
+  })
+
+  test('hidden branches leave History without taking ancestry a shown branch reaches', async () => {
+    const { dir, base, tip } = await fixture()
+    // A remote HEAD alias of a hidden branch must not bring it back.
+    await git(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/topic'])
+    const hashes = async (hidden: string[]) => (await readHistory(dir, 0, 10, [], hidden)).map((entry) => entry.hash)
+    const both = ['refs/heads/local-base', 'refs/remotes/origin/topic']
+    expect(await hashes([])).toEqual([tip, base])
+    expect(await hashes([both[0]])).toEqual([tip, base])
+    expect(await hashes(both)).toEqual([base])
+    expect(await searchHistory(dir, 'topic', [], both)).toEqual([])
+    expect(await hashes([...both, 'refs/heads/main'])).toEqual([])
   })
 
 })
