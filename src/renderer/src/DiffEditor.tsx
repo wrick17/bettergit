@@ -200,7 +200,7 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
 // the editable text; removed lines and the old side are read-only. Until the file loads, or when it cannot be edited,
 // `fallback` (the read-only diff) shows instead. A clean editor goes back to static rows once it loses focus and leaves
 // the screen; one with unsaved text stays.
-export function EditableDiff({ edit, path, hunks, layout, language, context = 3, fallback, fileIndex, onExtent, hunkActions }: {
+export function EditableDiff({ edit, path, hunks, layout, language, context = 3, fallback, fileIndex, onExtent, hunkActions, readOnly = false }: {
   edit: EditBridge
   path: string
   hunks: DiffHunk[]
@@ -212,6 +212,8 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
   onExtent: (pixels: number) => void
   // Each Git hunk's stage and discard controls, above its first change while the file has no unsaved edits.
   hunkActions?: (hunk: DiffHunk) => ReactNode
+  // The same rows, never opened as an editor: a file with only staged changes, so staging it does not re-render it.
+  readOnly?: boolean
 }) {
   const key = keyOf(edit.repo, path)
   const wrap = useWordWrap()
@@ -230,7 +232,10 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
   const sourceFor = useRef<DiffHunk[] | null>(source ? hunks : null)
   const sourceRef = useRef(source)
   sourceRef.current = source
-  const [active, setActive] = useState(() => dirty(drafts.get(key)))
+  const [editing, setActive] = useState(() => !readOnly && dirty(drafts.get(key)))
+  // An open editor closes when its file turns read-only, and stays closed after.
+  const active = editing && !readOnly
+  useEffect(() => { if (readOnly) setActive(false) }, [readOnly])
   const [opened, setOpened] = useState(() => openedFolds.get(key) ?? new Set<number>())
   const openedRef = useRef(opened)
   openedRef.current = opened
@@ -439,7 +444,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
 
   // Synchronous from an input event, so the editor exists, focused, before the next key arrives.
   const activate = (at: At | null, row: Element | null, sync = true) => {
-    if (mounted.current) return
+    if (mounted.current || readOnly) return
     startAt.current = at
     anchor.current = at && row ? { line: at.line, top: row.getBoundingClientRect().top } : null
     if (sync) flushSync(() => setActive(true))
@@ -452,7 +457,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
     activate(startAt.current, null, false)
   })
   const fallbackClick = (event: ReactMouseEvent) => {
-    if (dragged(event)) return
+    if (readOnly || dragged(event)) return
     const row = (event.target as Element).closest<HTMLElement>('[data-source-row]')
     const [, hunk, index] = (row?.dataset.sourceRow ?? '').split(':').map(Number)
     const line = hunks[hunk]?.lines[index]
@@ -511,7 +516,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
   if (active) return <><div className="diff-editor" ref={host} />{hunkWidgets.map(({ dom, hunk }, index) => createPortal(hunkActions?.(hunk), dom, index))}</>
   return (
     <EditorPreview model={preview!} tokens={tokens} layout={layout} opened={opened} onOpen={openFold} fileIndex={fileIndex} hunks={hunks} path={path}
-      onActivate={activate} hunkActions={hunkActions} />
+      onActivate={activate} hunkActions={hunkActions} readOnly={readOnly} />
   )
 }
 
@@ -594,7 +599,7 @@ const rowHeight = (row: Row, line: number) => (row.kind === 'fold' ? 28 : row.ki
 
 // The editor's look as plain rows: its gutter, change bar, tints, changed text, folds, font and wrapping, so the editor
 // can replace it without anything moving. Rows mount in chunks near the screen, like the read-only diff.
-function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, fileIndex, hunks, path, hunkActions }: {
+function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, fileIndex, hunks, path, hunkActions, readOnly }: {
   model: Preview
   tokens: { old: Segment[][] | null; new: Segment[][] | null } | null
   layout: 'unified' | 'split'
@@ -605,6 +610,7 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
   hunks: DiffHunk[]
   path: string
   hunkActions?: (hunk: DiffHunk) => ReactNode
+  readOnly: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const actions = !!hunkActions
@@ -721,8 +727,8 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     return { line: chunk?.kind === 'chunk' ? chunk.b : 1, column: 0 }
   }
   return (
-    <div ref={ref} className={`ed-preview ed-${layout}`} style={numberStyle} tabIndex={0} role="textbox" aria-multiline="true" aria-readonly="false"
-      aria-label={`Contents of ${path}. Click a line or press Enter to edit it.`}
+    <div ref={ref} className={`ed-preview ed-${layout}`} style={numberStyle} tabIndex={0} role="textbox" aria-multiline="true" aria-readonly={readOnly}
+      aria-label={readOnly ? `Contents of ${path}.` : `Contents of ${path}. Click a line or press Enter to edit it.`}
       onMouseDown={rememberDown}
       onMouseUp={(event) => {
         if (dragged(event) || (event.target as Element).closest('.ed-fold, .ed-hunk-actions')) return

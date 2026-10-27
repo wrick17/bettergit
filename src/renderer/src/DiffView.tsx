@@ -448,15 +448,16 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, sta
   const path = pathOf(file)
   const stage = useMemo(() => (viewStage && stagedOnly ? { ...viewStage, staged: true, onDiscard: undefined } : viewStage), [viewStage, stagedOnly])
   const toggle = () => onToggle(path, open)
-  const text = edit && !stagedOnly && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
+  const source = edit && !conflict && !file.binary && file.status !== 'deleted' ? edit : undefined
+  const text = stagedOnly ? undefined : source
   const markdown = formatted && isMarkdownPath(path)
   // Hunks of a modified text file change one at a time. Not while the file has unsaved edits, which the write could lose.
   const unsaved = useUnsaved(text, path)
   const hunkActions = stage?.onHunk && !conflict && file.status === 'modified' && !file.binary && !unsaved
     ? (hunk: DiffHunk) => <HunkActions path={path} hunk={hunk} stage={stage} />
     : undefined
-  // Formatted Markdown is not source, so it stays read-only; the raw view edits it.
-  const editor = text && !markdown ? text : undefined
+  // Formatted Markdown is not source, so it stays read-only; the raw view edits it. A staged-only file keeps the same rows, read-only.
+  const editor = source && !markdown ? source : undefined
   const sectionRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => (sectionRef.current ? holdPlace(sectionRef.current, true) : undefined), [])
   // Set on the element rather than in the markup, which stays free of style attributes.
@@ -560,7 +561,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, sta
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
-        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} context={context} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
+        ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} context={context} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} readOnly={stagedOnly} />
         : hunks())}
       {open && !markdown && file.hunks.length > 0 && <HScrollBar file={file} extra={editor ? editorExtent : 0} />}
     </section>

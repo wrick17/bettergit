@@ -22,6 +22,9 @@ jobs:
         with:
           bun-version: 1.4.3
 
+      # Fails before the long build if CHANGELOG.md has no section for this version.
+      - run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
+
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test --timeout 60000
@@ -53,19 +56,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           dmg="dist/BetterGit-${GITHUB_REF_NAME#v}-arm64.dmg"
-          notes=()
+          notes="$RUNNER_TEMP/notes.md"
           if codesign -dv dist/mac-arm64/BetterGit.app 2>&1 | grep -qx 'Signature=adhoc'; then
-            notes=(--notes "**Unsigned build.** Apple has not notarized this app, so macOS blocks it the first time you open it.
-
-          1. Move BetterGit to Applications and try to open it.
-          2. Open System Settings > Privacy & Security. Under Security, click **Open Anyway** and enter your login password. The button appears for about an hour after the blocked attempt.
-
-          Or clear the quarantine flag in Terminal: \`xattr -dr com.apple.quarantine /Applications/BetterGit.app\`")
+            cat .github/unsigned-install.md >> "$notes"
           fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$dmg" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$dmg" --verify-tag --generate-notes "${notes[@]}"
+            # GitHub appends its pull request list and compare link after these notes.
+            gh release create "$GITHUB_REF_NAME" "$dmg" --verify-tag --generate-notes --notes-file "$notes"
           fi
 
       - name: Remove key material

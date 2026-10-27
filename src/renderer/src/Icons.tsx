@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Archive, ArchiveRestore, ArrowLeftRight, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2,
+  Archive, ArchiveRestore, ArrowDown, ArrowLeftRight, ArrowUp, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2,
   CircleAlert, CloudDownload, Code, Copy, Ellipsis, ExternalLink, Eye, EyeOff, FileDiff, Files, FileText, FolderPlus, GitBranch, GitBranchPlus, GitCommitHorizontal, GitCommitVertical, GitCompare,
   GitFork, GitGraph, GitMerge, Hash, Link, List, ListOrdered, ListTree, LoaderCircle, LocateFixed, PackageMinus, PackageOpen, PanelLeft,
   Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Rows3, RotateCcw, Save, Search, SearchX, Settings, Shuffle, Sparkles, SquareTerminal, Tag, Trash2, Undo2, UnfoldVertical, Unlink, Users, WrapText, X, type LucideIcon,
@@ -15,6 +15,8 @@ const ICONS = {
   // Replaces an action's glyph while that action runs.
   loader: LoaderCircle,
   push: ArrowUpFromLine,
+  arrowUp: ArrowUp,
+  arrowDown: ArrowDown,
   stash: Archive,
   undo: Undo2,
   rows: Rows3,

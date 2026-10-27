@@ -480,6 +480,90 @@ test('click and keyboard activation keep Actions focused after a pending hover t
   }
 })
 
+test('RepoPane keeps the newest status and divergence when an older refresh finishes last', async () => {
+  const pending: Array<{ resolve: (status: any) => void; reject: (error: Error) => void }> = []
+  const errors: unknown[] = []
+  const slots: any[] = []
+  let cursor = 0
+  let effects: Array<() => void> = []
+  const changed = (before: any[], after: any[]) => !before || before.some((value, index) => value !== after[index])
+  const memo = (make: () => unknown, deps: any[]) => {
+    const index = cursor++
+    if (!slots[index] || changed(slots[index].deps, deps)) slots[index] = { deps, value: make() }
+    return slots[index].value
+  }
+  const app = await loadEntry('../src/renderer/src/App.tsx', {
+    react: { ...React,
+      useState: (initial: any) => {
+        const index = cursor++
+        if (!(index in slots)) slots[index] = initial
+        return [slots[index], (value: any) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value }]
+      },
+      useRef: (current: any) => slots[cursor++] ??= { current }, useMemo: memo,
+      useCallback: (callback: any, deps: any[]) => memo(() => callback, deps),
+      useEffect: (effect: () => (() => void) | void, deps: any[]) => {
+        const index = cursor++
+        if (!slots[index] || changed(slots[index].deps, deps)) {
+          const previous = slots[index]
+          slots[index] = { deps }
+          effects.push(() => { previous?.cleanup?.(); slots[index].cleanup = effect() })
+        }
+      },
+    },
+    'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime,
+    'react-dom': { createPortal: (node: React.ReactNode) => node },
+    './OpenInAppButton': { useSelectedApp: () => null },
+    './editor-launch': editorLaunch,
+    './repo-busy': { useRepoBusy: () => null, blockedReason: () => null },
+    './RepoMenu': { repoItems: () => [] },
+    './Icons': { toggleLabel: (state: string) => state },
+  }, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: {
+    status: () => new Promise((resolve, reject) => pending.push({ resolve, reject })), branches: async () => [],
+  } } })
+  const props = { titlebar: {}, repo: { path: '/repo', name: 'repo' }, tab: 'changes', revision: 1,
+    onTab() {}, onError: (error: unknown) => errors.push(error), onCleanChange() {} }
+  const render = () => {
+    cursor = 0; effects = []
+    const tree = app.RepoPane(props)
+    effects.forEach((effect) => effect())
+    return tree
+  }
+  const find = (node: any, match: (props: any) => boolean): any => {
+    for (const child of [node].flat(Infinity)) {
+      if (!React.isValidElement<any>(child)) continue
+      if (match(child.props)) return child.props
+      const result = find(child.props.children, match)
+      if (result) return result
+    }
+  }
+  const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() }
+  const old = { head: 'main', upstream: null, ahead: 0, behind: 0, changes: [{ path: 'a.txt', unstaged: true }] }
+  const current = { ...old, upstream: 'origin/main', ahead: 1, behind: 2, changes: [{ path: 'a.txt', staged: true }] }
+  render()
+  props.revision = 2; render()
+  pending[1].resolve(current); await flush()
+  let tree = render()
+  expect(find(tree, (p) => !!p.status)?.status).toEqual(current)
+  pending[0].resolve(old); await flush()
+  tree = render()
+  expect(find(tree, (p) => !!p.status)?.status).toEqual(current)
+  const sync = find(tree, (p) => p.className === 'sync')
+  expect(sync).toBeDefined()
+  expect(find(sync.children, (p) => p['aria-label'] === '1 commit to push to origin/main')).toBeDefined()
+  expect(find(sync.children, (p) => p['aria-label'] === '2 commits to pull from origin/main')).toBeDefined()
+
+  // A stale failure and a reply after unmount must not publish errors or data either.
+  props.revision = 3; render()
+  props.revision = 4; render()
+  pending[3].resolve(current); await flush(); render()
+  pending[2].reject(new Error('obsolete status')); await flush()
+  expect(errors).toEqual([])
+  props.revision = 5; render()
+  slots.forEach((slot) => slot?.cleanup?.())
+  pending[4].resolve(old); await flush()
+  expect(find(render(), (p) => !!p.status)?.status).toEqual(current)
+})
+
 test('App supplies the working-copy editor bridge and Open in buttons independent of Git busy state', async () => {
   const launches: Array<[string, string?]> = []
   const api = { openInEditor: async (repo: string, file?: string) => { launches.push([repo, file]) } }
