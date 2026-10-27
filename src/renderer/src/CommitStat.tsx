@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useActiveFile, useKeepInView, type ActiveFiles } from './active-file'
 import type { DiffFile } from '../../main/git/diff'
 import { buildTree, type Folder } from './commit-tree'
 import { countLines } from './DiffView'
@@ -21,14 +22,19 @@ interface Entry {
 
 // Counts come from the parsed patch, not the --stat text: --stat lists a rename as a delete plus an add.
 // A row picks its file by path: a renamed file by its new path, a deleted one by its old path.
-export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (path: string) => void }) {
+// `activeFiles` names the file at the top of the code diff. Its row is marked and kept on screen, without selecting it.
+export function CommitStat({ files, onSelect, activeFiles }: { files: DiffFile[]; onSelect: (path: string) => void; activeFiles?: ActiveFiles }) {
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
   // Folders are open unless their path is here. Kept while the view stays mounted, so moving between commits keeps them.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
   const entries = useMemo(() => files.map((file, index): Entry => ({ file, index, path: file.newPath ?? file.oldPath ?? '' })), [files])
   const tree = useMemo(() => (view === 'tree' ? buildTree(entries, (entry) => entry.path) : null), [entries, view])
+  // Counted once per patch, since the mark re-renders the list as the diff scrolls.
+  const counts = useMemo(() => files.map(countLines), [files])
+  const blockRef = useRef<HTMLDivElement>(null)
+  const inView = useActiveFile(activeFiles)?.path ?? null
+  useKeepInView(blockRef, inView === null ? null : `${view}:${inView}`)
   if (!files.length) return null
-  const counts = files.map(countLines)
   const insertions = counts.reduce((sum, count) => sum + count.adds, 0)
   const deletions = counts.reduce((sum, count) => sum + count.dels, 0)
   const chooseView = (next: View) => {
@@ -46,7 +52,7 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
     const { adds, dels } = counts[index]
     const label = file.status === 'renamed' && file.oldPath && file.oldPath !== path ? `${file.oldPath} → ${path}` : path
     return (
-      <button className={className} onClick={() => onSelect(path)} title={label} aria-label={`Show diff for ${label}, ${file.status}`}>
+      <button className={`${className}${inView === path ? ' in-view' : ''}`} onClick={() => onSelect(path)} title={label} aria-label={`Show diff for ${label}, ${file.status}`}>
         <FileIcon name={name} />
         <span className="path">
           <span className="path-name">{name}</span>
@@ -65,7 +71,7 @@ export function CommitStat({ files, onSelect }: { files: DiffFile[]; onSelect: (
     )
   }
   return (
-    <div className="commit-stat-block">
+    <div className="commit-stat-block" ref={blockRef}>
       <div className="commit-stat-head">
         <span className="file-list-title">Files</span>
         <div className="changes-view-toggle" role="group" aria-label="Commit file layout">

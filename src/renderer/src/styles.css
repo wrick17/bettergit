@@ -410,9 +410,20 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 }
 /* Inset the whole Changes tree, preserving its caret, guide, and nested-row columns. */
 .group > .tree { padding-left: 8px; }
-/* Staging: each file row starts with a compact + (stage) or − (unstage) button on the row's centre line. */
-.icon-button.stage-toggle { flex: none; width: 20px; height: 20px; color: var(--muted-on); }
+/* Staging: the status badge's slot holds a + (stage) or − (unstage) button that replaces the badge on row hover or keyboard
+   focus. Mouse focus left on a clicked row would otherwise keep the badge hidden after the pointer leaves. */
+.kind-slot { position: relative; display: inline-grid; flex: none; }
+.icon-button.stage-toggle {
+  position: absolute; left: 50%; top: 50%; margin: -10px 0 0 -10px; width: 20px; height: 20px; color: var(--muted-on);
+  opacity: 0; pointer-events: none; transition: opacity 120ms var(--ease);
+}
 .icon-button.stage-toggle svg { width: 14px; height: 14px; }
+.kind-slot > .kind { transition: opacity 120ms var(--ease); }
+.kind-slot > .icon-button.stage-toggle.blocked:not(.busy) { opacity: 0; }
+:is(.tree-row:hover, .tree-row:has(:focus-visible), .group li:hover, .group li:has(:focus-visible), [role='treeitem']:focus-visible > .tree-row) > .kind-slot > .icon-button.stage-toggle,
+.kind-slot > .icon-button.stage-toggle.busy { opacity: 1; pointer-events: auto; }
+:is(.tree-row:hover, .tree-row:has(:focus-visible), .group li:hover, .group li:has(:focus-visible), [role='treeitem']:focus-visible > .tree-row) > .kind-slot > .kind,
+.kind-slot:has(> .icon-button.busy) > .kind { opacity: 0; }
 .tree-row .file { flex: 1; min-width: 0; align-items: center; }
 .file-with-action { display: flex; flex: 1; min-width: 0; }
 /* The action overlays the 14px leading icon; only its hit area extends 3px around it. */
@@ -835,6 +846,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-stat-list { margin: 0; padding: 0; list-style: none; }
 .commit-stat-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: var(--row-h-eff); padding: 0 4px; background: transparent; box-shadow: none; text-align: left; }
 .commit-stat-row:hover { background: var(--hover); }
+/* The file at the top of the diff pane, marked as the diff scrolls. Quieter than the selection, which it never replaces. */
+.group li.in-view:not(.active), .tree-row.in-view:not(.selected), .commit-stat-row.in-view { background: var(--accent-soft); }
 .commit-stat-row .path { flex: 1 1 auto; }
 .commit-stat-row .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .commit-stat-note { flex: none; font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
@@ -871,7 +884,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* History author filter: a button beside the search field, its checklist popover, and a removable chip per picked author. */
 .search { flex-wrap: wrap; }
 .author-anchor { position: relative; flex: none; }
-.author-trigger { width: 32px; height: 32px; border-radius: var(--radius-pill); }
+.author-trigger, .search-action { flex: none; width: 32px; height: 32px; border-radius: var(--radius-pill); }
+/* Why Show current branch could not show HEAD, under the search row. */
+.history-note {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0 16px 8px;
+  background: var(--list); color: var(--del); font-size: calc(12.5px + var(--ui-delta)); overflow-wrap: anywhere;
+}
+.history-note button { height: 24px; padding: 0 8px; color: var(--text); font-size: inherit; }
 .author-count {
   position: absolute; top: 1px; right: 0; min-width: 15px; height: 15px; padding: 0 4px; border-radius: var(--radius-pill);
   background: var(--accent-fill); color: var(--on-accent); font: 600 calc(10px + var(--ui-delta))/15px var(--font-ui); text-align: center;

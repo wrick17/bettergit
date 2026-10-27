@@ -15,8 +15,10 @@ Object.assign(globalThis, {
       working: (...args) => new Promise((resolve, reject) => requests.push({ args, resolve, reject, done: false })),
     },
   },
-  document: { activeElement: null },
+  // No layout here: no element is under any point, and frames are drawn only by the modes that queue them.
+  document: { activeElement: null, elementFromPoint: () => null },
   requestAnimationFrame: () => 0,
+  cancelAnimationFrame() {},
 })
 
 let slots, cursor, effects, dirty, mounted, props, tree, errors
@@ -783,7 +785,10 @@ if (process.env.CHECK_MODE === 'membership') {
   lists[0].onToggle(lists[0].changes[1]); await flush()
   assert.deepEqual(writes.at(-1), ['unstage', ['b.ts']])
   lists[0].onSelect(lists[0].changes[1]); render(); await respond()
-  const selected = find(tree, (p) => Array.isArray(p.files) && p.stage && p.persist?.key === 'selection')
+  // A picked file replaces both section diffs with its own, so it is the only diff on screen.
+  const diffs = findAll(tree, (p) => Array.isArray(p.files) && p.stage)
+  assert.equal(diffs.length, 1)
+  const [selected] = diffs
   assert.equal(selected.stage.staged, false)
   assert.ok(selected.edit, 'working files in Changes stay editable')
   assert.ok(selected.stage.stagedPaths.has('b.ts') && !selected.stage.stagedPaths.has('c.ts'))

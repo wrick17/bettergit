@@ -62,13 +62,31 @@ function authorArgs(authors: string[]): string[] {
   return ['--basic-regexp', ...authors.map((name) => `--author=^${name.replace(/[\\.[\]*^$]/g, '\\$&')} <`)]
 }
 
-// Commits from every local and remote ref, newest first. --date-order still lists every child before its parents but keeps
-// concurrent branches interleaved by time, like Sublime Merge, so a merge sits near the commits it brings in and the graph
-// holds few lines open at once. Pages are offset-based and count only matching commits.
-export async function readHistory(repo: string, skip: number, limit: number, authors: string[] = []): Promise<Commit[]> {
-  // Branches only: checkpoint and backup refs stay out of the list.
-  const output = await git(repo, ['log', '--branches', '--remotes', '--date-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
-    optionalLocks: true,
+// The tips History walks from: every local and remote branch, less those hidden in the app by full ref. Tags, stashes, a
+// detached HEAD, and checkpoint or backup refs are never tips. Hiding a branch drops only the commits no shown branch
+// reaches, so history it shares with a shown branch stays. Null when every branch is hidden. `hidden` is only compared
+// against Git's own ref list, never passed to Git.
+async function historyTips(repo: string, hidden: string[]): Promise<{ args: string[]; input?: string } | null> {
+  if (!hidden.length) return { args: ['--branches', '--remotes'] }
+  const skip = new Set(hidden)
+  const refs = (await git(repo, ['for-each-ref', '--format=%(refname)%1f%(symref)', 'refs/heads', 'refs/remotes'], { optionalLocks: true }))
+    .split('\n').flatMap((line) => {
+      const [ref, symref] = line.split('\x1f')
+      // A remote's HEAD names a branch listed on its own, as in the branch list, so hiding that branch hides it here too.
+      return ref && !skip.has(ref) && !(symref && ref.startsWith('refs/remotes/')) ? [ref] : []
+    })
+  // Read from stdin, so thousands of shown branches never meet the argument length limit.
+  return refs.length ? { args: ['--stdin'], input: `${refs.join('\n')}\n` } : null
+}
+
+// Commits from every shown local and remote branch, newest first. --date-order still lists every child before its parents
+// but keeps concurrent branches interleaved by time, like Sublime Merge, so a merge sits near the commits it brings in and
+// the graph holds few lines open at once. Pages are offset-based and count only matching commits.
+export async function readHistory(repo: string, skip: number, limit: number, authors: string[] = [], hidden: string[] = []): Promise<Commit[]> {
+  const tips = await historyTips(repo, hidden)
+  if (!tips) return []
+  const output = await git(repo, ['log', ...tips.args, '--date-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
+    optionalLocks: true, input: tips.input,
   })
   return parseLog(output)
 }
@@ -155,12 +173,14 @@ export async function fileHistory(repo: string, path: string, limit = 200): Prom
   return parseLog(output)
 }
 
-export async function searchHistory(repo: string, query: string, authors: string[] = [], limit = 200): Promise<Commit[]> {
+export async function searchHistory(repo: string, query: string, authors: string[] = [], hidden: string[] = [], limit = 200): Promise<Commit[]> {
+  const tips = await historyTips(repo, hidden)
+  if (!tips) return []
   // -F/--fixed-strings keeps user text literal; -i matches case-insensitively in messages.
   // With an author filter, the message is matched as an escaped basic regexp instead, since -F would also apply to the author patterns.
   const grep = authors.length ? ['--regexp-ignore-case', `--grep=${query.replace(/[\\.[\]*^$]/g, '\\$&')}`, ...authorArgs(authors)] : ['-i', '-F', `--grep=${query}`]
-  const output = await git(repo, ['log', '--branches', '--remotes', ...grep, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
-    optionalLocks: true,
+  const output = await git(repo, ['log', ...tips.args, ...grep, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
+    optionalLocks: true, input: tips.input,
   })
   return parseLog(output)
 }

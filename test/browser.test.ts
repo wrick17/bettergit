@@ -194,6 +194,52 @@ test.skipIf(!playwright)('file headers match the Files pane fill and remain full
   await page.evaluate(() => { document.documentElement.style.cssText = ''; document.documentElement.dataset.theme = 'dark' })
 })
 
+test.skipIf(!playwright)('scrolling a diff marks the file at its top in the flat and tree file list and keeps its row on screen', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, ActiveDiff, StrictMode } = w.under
+    localStorage.setItem('bettergit.commitFilesView', 'list')
+    document.getElementById('root')!.innerHTML = '<div id="active"></div>'
+    const files = Array.from({ length: 30 }, (_, index) => `${index < 15 ? 'a' : 'b'}/file-${String(index).padStart(2, '0')}.txt`).map(path => ({
+      oldPath: path, newPath: path, status: 'modified', binary: false,
+      hunks: [{ header: '@@ -1,20 +1,20 @@', lines: Array.from({ length: 20 }, (_, index) => ({ type: 'context', text: `line ${index + 1}`, oldNo: index + 1, newNo: index + 1 })) }],
+    }))
+    w.activeRoot = createRoot(document.getElementById('active'))
+    // StrictMode, as the app renders: its extra effect cleanup must not leave the probe stuck.
+    flushSync(() => w.activeRoot.render(createElement(StrictMode, null, createElement(ActiveDiff, { files }))))
+  })
+  const marked = (path: string) => page.waitForFunction((path: string) => {
+    const rows = document.querySelectorAll<HTMLElement>('.commit-stat-row.in-view')
+    if (rows.length !== 1 || rows[0].title !== path) return false
+    // On screen within its scroller, whichever box that is in this layout.
+    let box = rows[0].parentElement
+    while (box && !(box.scrollHeight > box.clientHeight)) box = box.parentElement
+    const row = rows[0].getBoundingClientRect(), list = box!.getBoundingClientRect()
+    return row.top >= list.top - 1 && row.bottom <= list.bottom + 1
+  }, path, { timeout: 3000 })
+  // Files off screen lay out at estimated heights, so the scroll is repeated until rows above have settled.
+  const scrollTo = (path: string) => page.evaluate(async (path: string) => {
+    const pane = document.querySelector<HTMLElement>('.diff-pane')!
+    for (let pass = 0; pass < 3; pass++) {
+      const file = Array.from(pane.querySelectorAll<HTMLElement>('[data-path]')).find((element) => element.dataset.path === path)!
+      pane.scrollTop += file.getBoundingClientRect().top - pane.getBoundingClientRect().top
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    }
+  }, path)
+  await marked('a/file-00.txt')
+  await scrollTo('b/file-27.txt')
+  await marked('b/file-27.txt')
+  await page.click('[aria-label^="Tree view"]')
+  await marked('b/file-27.txt')
+  await scrollTo('a/file-03.txt')
+  await marked('a/file-03.txt')
+  await page.click('[aria-label^="List view"]')
+  await marked('a/file-03.txt')
+  // Marking never selects: no row takes the selection's look or state.
+  expect(await page.evaluate(() => document.querySelectorAll('.selected, [aria-selected="true"]').length)).toBe(0)
+  await page.evaluate(() => (window as any).activeRoot.unmount())
+})
+
 test.skipIf(!playwright)('primary buttons keep readable theme colours on hover in light, dark and custom light themes', async () => {
   for (const theme of ['light', 'dark', 'custom-light']) {
     await page.evaluate((theme: string) => {

@@ -14,6 +14,11 @@ export interface Branch {
   current: boolean
   upstream: string | null
   hash: string
+  // Commits to push and to pull, counted from refs already fetched. Both are 0 without an upstream or when it is gone.
+  ahead: number
+  behind: number
+  // The configured upstream ref no longer exists, as after its remote branch was deleted and pruned.
+  gone: boolean
 }
 
 // Only identities returned by readBranches, or a displayed HEAD snapshot for creation, cross IPC.
@@ -109,6 +114,27 @@ export async function discardPaths(repo: string, paths: string[]): Promise<void>
   if (paths.length) await git(repo, ['--literal-pathspecs', 'restore', '--', ...paths])
 }
 
+// Deletes one untracked file. Callers must confirm with the user first. It is checked again here, under the repo lock:
+// the path must still be exactly one untracked file in Git's list, reached through real folders, and be a file or a
+// symlink. unlink removes a symlink itself, never its target, and never removes a folder.
+export async function deleteUntracked(repo: string, file: string): Promise<void> {
+  if (typeof file !== 'string' || !file || file.includes('\0') || path.isAbsolute(file)) throw new Error('Invalid file path.')
+  // Git lists normalised relative paths, so anything else (./a, a/../b, ../a) is refused, never resolved.
+  const relative = path.relative(repo, path.resolve(repo, file))
+  if (relative !== file || relative === '..' || relative.startsWith(`..${path.sep}`)) throw new Error(`Not a file path inside this repository: ${file}`)
+  const listed = await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', '--', file])
+  if (listed !== `${file}\0`) throw new Error(`${file} is no longer an untracked file. Nothing was deleted.`)
+  let dir = repo
+  for (const part of path.dirname(file).split(path.sep).filter((name) => name !== '.')) {
+    dir = path.join(dir, part)
+    if (!(await fs.lstat(dir)).isDirectory()) throw new Error(`${file} is behind a symbolic link. Nothing was deleted.`)
+  }
+  const target = path.join(repo, file)
+  const info = await fs.lstat(target)
+  if (!info.isFile() && !info.isSymbolicLink()) throw new Error(`${file} is not a file. Nothing was deleted.`)
+  await fs.unlink(target)
+}
+
 export async function commit(repo: string, message: string, amend = false): Promise<void> {
   const args = ['commit', '--cleanup=strip', '-F', '-']
   if (amend) args.push('--amend')
@@ -116,16 +142,19 @@ export async function commit(repo: string, message: string, amend = false): Prom
 }
 
 export async function readBranches(repo: string): Promise<Branch[]> {
-  const format = '%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(objectname)%1f%(refname)%1f%(upstream)%1f%(symref)'
+  // The track field reads "ahead 1, behind 2", "gone" or nothing. Git counts it from local refs, so it never fetches.
+  const format = '%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(objectname)%1f%(refname)%1f%(upstream)%1f%(symref)%1f%(upstream:track,nobracket)'
   const output = await git(repo, ['for-each-ref', `--format=${format}`, 'refs/heads', 'refs/remotes'])
   return output.split('\n').filter(Boolean).flatMap((line) => {
-    const [, head, upstream, hash, fullRef, upstreamRef, symref] = line.split('\x1f')
+    const [, head, upstream, hash, fullRef, upstreamRef, symref, track = ''] = line.split('\x1f')
+    const count = (word: string) => Number(new RegExp(`\\b${word} (\\d+)`).exec(track)?.[1] ?? 0)
     const remote = fullRef.startsWith('refs/remotes/')
     if (remote && symref) return []
     return [{
       // Strip the namespace, so ambiguous short-ref formatting never changes the displayed branch name.
       name: fullRef.slice(remote ? 'refs/remotes/'.length : 'refs/heads/'.length),
       fullRef, upstreamRef: upstreamRef || null, remote, current: head === '*', upstream: upstream || null, hash,
+      ahead: count('ahead'), behind: count('behind'), gone: track === 'gone',
     }]
   })
 }
@@ -317,8 +346,58 @@ export async function createBranch(repo: string, name: string, base: BranchSelec
   await git(repo, ['switch', '--no-guess', '--no-overwrite-ignore', '--no-track', '-c', name, base.hash, '--'])
 }
 
-export async function deleteBranch(repo: string, name: string, force = false): Promise<void> {
-  await git(repo, ['branch', force ? '-D' : '-d', name])
+// The branch menu's writes act on a local branch the picker showed, by exact ref and commit, so a branch moved or replaced
+// since is refused. Names Git would read another way (HEAD, a leading dash) are refused too.
+async function localBranch(repo: string, branches: Branch[], selection: BranchSelection): Promise<Branch> {
+  const branch = selectedBranch(branches, selection)
+  if (branch.remote) throw new Error(`${branch.name} is a remote branch. Only local branches can be changed here.`)
+  await assertBranchName(repo, branch.name)
+  return branch
+}
+
+// Never forced and never pushed. Git's -d itself refuses a branch with commits not merged into its upstream, or into HEAD
+// when it has none, so no work is lost.
+export async function deleteBranch(repo: string, selection: BranchSelection): Promise<void> {
+  const branch = await localBranch(repo, await readBranches(repo), selection)
+  if (branch.current) throw new Error(`${branch.name} is checked out. Switch to another branch before deleting it.`)
+  const elsewhere = (await readWorktrees(repo)).find((worktree) => worktree.branch === branch.name)
+  if (elsewhere) throw new Error(`${branch.name} is checked out in ${elsewhere.path}. Nothing was deleted.`)
+  await git(repo, ['branch', '--delete', '--', branch.name])
+}
+
+// --move never overwrites an existing branch (that is -M). Git moves settings only in the repository config, so refuse
+// tracking from other config sources rather than silently dropping it. The new name gets the same checks as a created branch.
+export async function renameBranch(repo: string, selection: BranchSelection, name: string): Promise<void> {
+  const branches = await readBranches(repo)
+  const branch = await localBranch(repo, branches, selection)
+  await assertNewBranch(repo, name, branches)
+  await assertNoUpstreamConfig(repo, branch.name, undefined, true)
+  for (const key of [`branch.${branch.name}.remote`, `branch.${branch.name}.merge`]) {
+    const read = (scope: string[]) => git(repo, ['config', ...scope, '--null', '--get-all', key]).catch((error) => {
+      if (error instanceof GitError && error.code === 1 && !error.stderr) return ''
+      throw error
+    })
+    const [effective, local] = await Promise.all([read([]), read(['--local', '--no-includes'])])
+    if (effective !== local) {
+      throw new Error(`Branch ${branch.name} has upstream settings outside the repository config. Move them to the repository config before renaming it.`)
+    }
+  }
+  await git(repo, ['branch', '--move', '--', branch.name, name])
+}
+
+// The upstream is a branch from the same refreshed list, passed by full ref so Git cannot resolve a look-alike name.
+export async function setUpstream(repo: string, selection: BranchSelection, upstream: BranchSelection): Promise<void> {
+  const branches = await readBranches(repo)
+  const branch = await localBranch(repo, branches, selection)
+  const target = selectedBranch(branches, upstream)
+  if (target.fullRef === branch.fullRef) throw new Error(`${branch.name} cannot track itself. Choose another branch.`)
+  await git(repo, ['branch', `--set-upstream-to=${target.fullRef}`, '--', branch.name])
+}
+
+export async function unsetUpstream(repo: string, selection: BranchSelection): Promise<void> {
+  const branch = await localBranch(repo, await readBranches(repo), selection)
+  if (!branch.upstreamRef) throw new Error(`${branch.name} has no upstream to unset.`)
+  await git(repo, ['branch', '--unset-upstream', '--', branch.name])
 }
 
 // Newest version first, which is the order a tag picker is read in.

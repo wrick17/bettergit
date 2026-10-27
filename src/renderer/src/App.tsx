@@ -508,6 +508,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         titlebar,
       )}
       {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
+        conflicts={status?.changes.filter((change) => change.conflicted).length ?? 0}
         onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} onOpenRepo={onOpenRepo} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
       <div className="tab-row">
@@ -530,8 +531,10 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         </nav>
         <div className="pane-toggles">
           <IconButton icon="panelLeft" label={paneLabel('Sidebar', sidebarOpen)} active={sidebarOpen} onClick={onToggleSidebar} />
-          <IconButton icon="paneList" label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
-          <IconButton icon="panelRight" label={paneLabel(tab === 'changes' ? 'Diff' : 'Commit files', tab === 'changes' ? detailOpen && diffOpen : detailOpen)} active={tab === 'changes' ? detailOpen && diffOpen : detailOpen} onClick={onToggleDetail} />
+          {/* One button per pane, left to right in the panes' order. Changes has no commit files pane: its file list is the
+              list, and the code diff is its detail. */}
+          <IconButton icon={tab === 'changes' ? 'paneFiles' : 'paneCommits'} label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
+          {tab === 'history' && <IconButton icon="paneFiles" label={paneLabel('Commit files', detailOpen)} active={detailOpen} onClick={onToggleDetail} />}
           <IconButton icon="diff" label={paneLabel('Code diff', tab === 'changes' ? detailOpen && diffOpen : diffOpen)} active={tab === 'changes' ? detailOpen && diffOpen : diffOpen} onClick={onToggleDiff} />
         </div>
       </div>

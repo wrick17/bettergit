@@ -3,7 +3,8 @@ import { flushSync } from 'react-dom'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, DiffHunk, MovedBlock } from '../../main/git/diff'
 import type { HunkAction, HunkRequest } from '../../main/git/hunks'
-import { DiffView, fileKey, hunkKey } from './DiffView'
+import { DiffView, fileKey, hunkKey, type FileChoices } from './DiffView'
+import { useActiveFile, useActiveFiles, useKeepInView, type ActiveFiles } from './active-file'
 import { DiffRail } from './DiffRail'
 import { confirmOverBlur } from './confirm'
 import { confirmDropEdits, type EditBridge } from './DiffEditor'
@@ -16,7 +17,7 @@ import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
-import { loadSession, savePlace, useScrollMemory } from './session'
+import { loadSession, savedView, savePlace, saveView, useScrollMemory } from './session'
 import { orderFiles, shareFiles, swapFile } from './widen'
 import { ConflictView, type ConflictViewProps } from './ConflictView'
 import type { Choice, ConflictDocument, ConflictFingerprint, ConflictSave } from '../../shared/conflict'
@@ -87,6 +88,8 @@ interface SectionProps {
   onToggleAll?: () => void
   // The write running in this repo, or null. Conflicting controls stay blocked until it settles.
   busy: string | null
+  // The file at the top of the diff pane. Its row is marked, apart from the selection, and kept on screen.
+  activeFiles: ActiveFiles
 }
 
 const VIEW_KEY = 'bettergit.changesView'
@@ -102,6 +105,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const [message, setMessage] = useState(() => loadSession().places[repo]?.draft ?? '')
   const paneRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const activeFiles = useActiveFiles(paneRef)
+  // A render can move the files under a still pane (a load, a stage, a view switch), so each one reads the pane again.
+  useEffect(() => activeFiles.probe())
   // The file picked last. The pane scrolls to it once its diff loads. A file restored at launch is revealed only when it has no saved scroll position.
   const revealRef = useRef<{ path: string; from: string } | null>(null)
   const [diff, setDiff] = useState<Working | null>(null)
@@ -118,6 +124,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }, [context])
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
+  // Each file's open or closed choice by path, shared by every working diff (all, staged, unstaged and selected), so a
+  // file keeps its choice when a stage, discard, delete or refresh moves it to another diff. Only this view saves it.
+  const [choices, setChoices] = useState<Record<string, boolean>>(() => savedView(`${repo}|changes-files`, 'working', {}))
+  useEffect(() => { saveView(`${repo}|changes-files`, 'working', choices) }, [repo, choices])
+  const fileChoices = useMemo<FileChoices>(() => ({ choices, setChoices }), [choices])
   const ignoreWhitespace = useIgnoreWhitespace()
   const { size: listWidth, handle: listHandle } = useResizable('bettergit.changesListWidth', 340, 220, 1100)
   // The view and options each loaded result belongs to. Only a result loaded for the view on screen is ready for its scroll position.
@@ -166,6 +177,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const hiddenFor = useRef<string | null>(null)
   // A view still rendering in (onScreen, below) is not what the pane shows yet, so its scroll events are not its position.
   const onPaneScroll = (event: UIEvent<HTMLDivElement>) => {
+    activeFiles.probe()
     if (!diffReady || !onScreen) return
     paneTop.current = { key: scrollKey, top: event.currentTarget.scrollTop }
     onDiffScroll(event)
@@ -214,6 +226,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const onDiffScroll = useScrollMemory(paneRef, `${repo}|changes-diff`, scrollKey, diffReady && onScreen,
     selection ? (pane) => revealFile(pane, selection.path, false, true, true) : undefined, { onScreen: true, skip: !!revealRef.current })
   const stats = useMemo(() => countStats(allShown), [allShown])
+  // From the status, never from a diff's added status: a tracked addition (git add -N) diffs the same way.
+  const untrackedPaths = useMemo(() => new Set(shownStatus.changes.filter((change) => change.kind === 'untracked').map((change) => change.path)) as ReadonlySet<string>, [shownStatus])
   // The position returns before the frame that first shows the view's own result again, with the rows there mounted.
   useLayoutEffect(() => {
     if (!diffReady) {
@@ -497,6 +511,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }
   const discard = (change: FileChange) => discardPath(change.path)
 
+  // An untracked file is not in Git, so nothing can bring it back. Main checks again that it is still untracked.
+  const deletePath = async (path: string) => {
+    if (busy || !(await confirmOverBlur(`Delete ${path}? It is untracked, so Git cannot restore it.`)) || !(await confirmDropEdits(repo, [path]))) return
+    void write(fileKey('delete', path), () => api.deleteUntracked(repo, path))
+  }
+
   const toggleFolder = (key: string) => setCollapsed((prev) => {
     const next = new Set(prev)
     if (next.has(key)) next.delete(key)
@@ -634,6 +654,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 onSelect={(change) => choose(change, false)}
                 onToggle={(change) => toggle(change, true)}
                 busy={busy}
+                activeFiles={activeFiles}
               />
             )}
             {/* Every changed path once, a file with unstaged changes by its unstaged entry. Stage all takes only unstaged paths. */}
@@ -650,6 +671,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               onDiscard={discard}
               onToggleAll={unstaged.length ? () => togglePaths(unstaged.map((change) => change.path), true) : undefined}
               busy={busy}
+              activeFiles={activeFiles}
             />
             <List
               title="Staged"
@@ -663,6 +685,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               onToggle={(change) => toggle(change, false)}
               onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
               busy={busy}
+              activeFiles={activeFiles}
             />
           </div>
           <div className="commit-box">
@@ -716,11 +739,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 <DiffView
                   files={unstagedFiles}
                   moves={unstagedShown?.moves ?? NO_FILES.moves}
-                  stage={{ staged: false, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: stagedOnly }}
+                  stage={{ staged: false, busy, onToggle: togglePath, onDiscard: discardPath, onDelete: deletePath, untrackedPaths, onHunk, stagedPaths: stagedOnly }}
                   edit={edit}
                   onExpand={(file) => expandChange(file)}
                   contextFor={(file) => extra[levelKey(stagedOnly.has(pathOf(file)), pathOf(file))] ?? context}
-                  persist={{ id: `${repo}|changes-unstaged`, key: 'all' }}
+                  fileChoices={fileChoices}
+                  section="unstaged"
                   refreshOf={`${repo} unstaged`}
                   onShown={shownHandlers.unstaged}
                   emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
@@ -735,7 +759,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   stage={{ staged: true, busy, onToggle: togglePath, onHunk }}
                   onExpand={(file) => expandFile('staged', file)}
                   contextFor={(file) => extra[levelKey(true, pathOf(file))] ?? context}
-                  persist={{ id: `${repo}|changes-staged`, key: 'all' }}
+                  fileChoices={fileChoices}
+                  section="staged"
                   refreshOf={`${repo} staged`}
                   onShown={shownHandlers.staged}
                   emptyHint={stagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : stagedShown ? undefined : LOADING_HINT}
@@ -748,11 +773,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
             <DiffView
               files={selectedFiles}
               moves={selectedShown?.moves ?? NO_FILES.moves}
-              stage={{ staged: listed.selection?.staged ?? selection.staged, busy, onToggle: togglePath, onDiscard: discardPath, onHunk, stagedPaths: (listed.selection?.staged ?? selection.staged) ? undefined : stagedOnly }}
+              stage={{ staged: listed.selection?.staged ?? selection.staged, busy, onToggle: togglePath, onDiscard: discardPath, onDelete: deletePath, untrackedPaths, onHunk, stagedPaths: (listed.selection?.staged ?? selection.staged) ? undefined : stagedOnly }}
               edit={(listed.selection?.staged ?? selection.staged) ? undefined : edit}
               onExpand={(file) => (selection.staged ? expandFile('staged', file, true) : expandChange(file, true))}
               contextFor={(file) => extra[levelKey(selection.staged || stagedOnly.has(pathOf(file)), pathOf(file))] ?? context}
-              persist={{ id: `${repo}|changes-selected`, key: 'selection' }}
+              fileChoices={fileChoices}
+              section={(listed.selection?.staged ?? selection.staged) ? 'staged' : 'unstaged'}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
               onShown={shownHandlers.selection}
               emptyHint={diffShown === LOAD_FAILED ? LOAD_FAILED_HINT : diffShown ? undefined : LOADING_HINT}
@@ -915,16 +941,19 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
+function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
+  const sectionRef = useRef<HTMLElement>(null)
+  const inView = useInView(activeFiles, staged)
+  useKeepInView(sectionRef, inView)
   if (!changes.length) return null
   return (
-    <section className="group">
+    <section className="group" ref={sectionRef}>
       <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <ul>
         {changes.map((change) => {
           const active = selection?.path === change.path && selection.staged === staged
           return (
-            <li key={`${staged}-${change.path}`} className={active ? 'active' : ''}>
+            <li key={`${staged}-${change.path}`} className={`${active ? 'active' : ''}${inView === change.path ? ' in-view' : ''}`}>
               <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
             </li>
           )
@@ -935,27 +964,37 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy }: SectionProps) {
+function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
   const folder = useMemo(() => buildTree(changes), [changes])
+  const sectionRef = useRef<HTMLElement>(null)
+  const inView = useInView(activeFiles, staged)
+  useKeepInView(sectionRef, inView)
   if (!changes.length) return null
   const renderFile = (change: FileChange) => {
     const active = selection?.path === change.path && selection.staged === staged
     return (
       <div key={change.path} role="treeitem" aria-selected={active}>
-        <div className={`tree-row${active ? ' selected' : ''}`}>
+        <div className={`tree-row${active ? ' selected' : ''}${inView === change.path ? ' in-view' : ''}`}>
           <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
         </div>
       </div>
     )
   }
   return (
-    <section className="group">
+    <section className="group" ref={sectionRef}>
       <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
       <div className="tree" role="tree">
         <TreeLevel folder={folder} section={title} collapsed={collapsed} onToggleFolder={onToggleFolder} renderFile={renderFile} />
       </div>
     </section>
   )
+}
+
+// The path of the file at the top of the diff pane when it belongs to this list section, else null. A file with only
+// staged changes is in the Changes diff, so it marks its Changes row, and a conflict marks its Conflicts row.
+function useInView(activeFiles: ActiveFiles, staged: boolean): string | null {
+  const active = useActiveFile(activeFiles)
+  return active && (active.section === 'staged') === staged ? active.path : null
 }
 
 // The section title with its count. The header button stages every file in an unstaged section, or unstages a staged one.
@@ -1073,7 +1112,7 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
   )
 }
 
-// The stage button, name, counts, and status shared by both views. Tree rows drop the folder part of the path.
+// The name, counts, and status (which doubles as the stage button) shared by both views. Tree rows drop the folder part of the path.
 function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
   change: FileChange
   staged: boolean
@@ -1091,14 +1130,6 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
   const counts = stats.get(`${staged ? 'staged' : 'unstaged'}:${change.path}`)
   return (
     <>
-      <IconButton
-        icon={staged ? 'minus' : 'plus'}
-        label={busy === stageKey ? `${staged ? 'Unstaging' : 'Staging'} ${change.path}…` : `${staged ? 'Unstage' : 'Stage'} ${change.path}`}
-        busy={busy === stageKey}
-        blocked={busy !== null && busy !== stageKey ? blockedReason(busy) : undefined}
-        className="stage-toggle"
-        onClick={() => onToggle(change)}
-      />
       <span className={`file-with-action${discardAction ? ' has-row-action' : ''}`}>
         <button className="file" onClick={() => onSelect(change)}>
           <FileIcon name={name} />
@@ -1124,7 +1155,18 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
           <span className="del">−{counts.del}</span>
         </span>
       )}
-      <span className={`kind kind-${change.kind}`} title={change.kind}>{badge(change.kind)}</span>
+      {/* The status badge turns into the stage (+) or unstage (−) button while the row is hovered or focused. */}
+      <span className="kind-slot">
+        <span className={`kind kind-${change.kind}`} title={change.kind}>{badge(change.kind)}</span>
+        <IconButton
+          icon={staged ? 'minus' : 'plus'}
+          label={busy === stageKey ? `${staged ? 'Unstaging' : 'Staging'} ${change.path}…` : `${staged ? 'Unstage' : 'Stage'} ${change.path}`}
+          busy={busy === stageKey}
+          blocked={busy !== null && busy !== stageKey ? blockedReason(busy) : undefined}
+          className="stage-toggle"
+          onClick={() => onToggle(change)}
+        />
+      </span>
     </>
   )
 }
