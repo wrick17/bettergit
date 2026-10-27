@@ -851,7 +851,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-stat-row .path { flex: 1 1 auto; }
 .commit-stat-row .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .commit-stat-note { flex: none; font: 500 calc(12px + var(--ui-delta))/1 var(--font-code); color: var(--text-3); }
-.commit-stat-summary { margin: 0; font: 500 calc(12px + var(--ui-delta))/1.4 var(--font-code); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.commit-stat-summary { display: flex; flex-wrap: wrap; column-gap: 8px; margin: 0; font: 500 calc(12px + var(--ui-delta))/1.4 var(--font-code); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.commit-stat-summary > span { white-space: nowrap; }
 .commit-stat-summary .add { color: var(--add); }
 .commit-stat-summary .del { color: var(--del); }
 

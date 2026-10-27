@@ -92,9 +92,10 @@ export function CommitStat({ files, onSelect, activeFiles }: { files: DiffFile[]
           {entries.map((entry) => <li key={`${entry.index}-${entry.path}`}>{row(entry, 'commit-stat-row', true)}</li>)}
         </ul>
       )}
-      <p className="commit-stat-summary">
-        {plural(files.length, 'file')} changed, <span className="add">{plural(insertions, 'insertion')}(+)</span>,{' '}
-        <span className="del">{plural(deletions, 'deletion')}(-)</span>
+      <p className="commit-stat-summary" title={`${plural(files.length, 'file')} changed, ${plural(insertions, 'insertion')}, ${plural(deletions, 'deletion')}`}>
+        <span>{plural(files.length, 'file')}</span>
+        <span className="add">+{insertions}</span>
+        <span className="del">−{deletions}</span>
       </p>
     </div>
   )
