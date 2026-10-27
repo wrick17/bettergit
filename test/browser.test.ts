@@ -37,6 +37,83 @@ beforeAll(async () => {
 
 afterAll(async () => { await browser?.close() })
 
+test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff rows and the visible scroll anchor', async () => {
+  await page.setViewportSize({ width: 1400, height: 800 })
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, ChangesView, setContextLines, setDiffLayout } = w.under
+    setContextLines(3); setDiffLayout('unified')
+    const paths = ['a.txt', 'b.txt', 'c.txt']
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}${i === 29 || i === 169 ? ' changed' : ''}`)
+    const files = paths.map(path => ({ oldPath: path, newPath: path, status: 'modified', binary: false,
+      hunks: [30, 170].map(line => ({ header: `@@ -${line - 3},7 +${line - 3},7 @@`, id: `${path}:${line}`,
+        lines: Array.from({ length: 7 }, (_, i) => line - 3 + i).flatMap<object>(n => n === line
+          ? [{ type: 'del', text: `line ${n}`, oldNo: n, newNo: null }, { type: 'add', text: `line ${n} changed`, oldNo: null, newNo: n }]
+          : [{ type: 'context', text: `line ${n}`, oldNo: n, newNo: n }]) })) }))
+    let staged = false, revision = 0
+    w.stageErrors = []
+    Object.assign(w.bettergit, {
+      readFile: async () => lines.join('\n'),
+      working: async (_repo: string, cached: boolean) => ({ files: structuredClone(files.filter(f => cached ? staged && f.newPath === 'a.txt' : !staged || f.newPath !== 'a.txt')), moves: [] }),
+      stage: async () => { staged = true }, unstage: async () => { staged = false },
+    })
+    document.getElementById('root')!.style.cssText = 'height:760px;width:1400px'
+    w.stageRoot = createRoot(document.getElementById('root'))
+    const render = () => flushSync(() => w.stageRoot.render(createElement(ChangesView, {
+      repo: '/stage-browser', status: { changes: paths.map(path => ({ path, kind: 'modified', staged: staged && path === 'a.txt', unstaged: !staged || path !== 'a.txt', conflicted: false })) },
+      revision: revision++, listOpen: true, detailOpen: true, onChanged: render, onError: (error: unknown) => w.stageErrors.push(String(error)),
+    })))
+    render()
+  })
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('[data-section="unstaged"] .ed-preview').length === 3, undefined, { timeout: 3000 }).catch(async (error: Error) => {
+      throw new Error(`${error.message}\n${await page.evaluate(() => JSON.stringify({ errors: (window as any).stageErrors, text: document.getElementById('root')?.innerText.slice(0, 1500), previews: document.querySelectorAll('.ed-preview').length }))}`)
+    })
+    await page.locator('.diff-pane').evaluate((pane: HTMLElement) => {
+      const file = pane.querySelector<HTMLElement>('[data-section="unstaged"] [data-path="b.txt"]')!
+      pane.scrollTop = file.offsetTop + 80
+    })
+    // Settle the observer work before sampling frames through the stage and reverse transition.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    for (const action of ['Stage', 'Unstage']) {
+      await page.evaluate(() => {
+        const w = window as any
+        const pane = document.querySelector('.diff-pane')!
+        const file = pane.querySelector('[data-section="unstaged"] [data-path="b.txt"]')!
+        w.stageNeighbour = file.querySelector('.ed-preview')
+        w.stageSamples = []
+        w.stageSampling = true
+        const sample = () => {
+          if (!w.stageSampling) return
+          const current = pane.querySelector('[data-section="unstaged"] [data-path="b.txt"]')
+          w.stageSamples.push({ same: current?.querySelector('.ed-preview') === w.stageNeighbour,
+            top: current?.getBoundingClientRect().top, blank: !current?.querySelector('code')?.textContent,
+            // The toggled file stays in Changes either way, so it keeps its rows instead of re-rendering as separate hunks.
+            kept: !!pane.querySelector('[data-section="unstaged"] [data-path="a.txt"] .ed-preview') })
+          requestAnimationFrame(sample)
+        }
+        sample()
+      })
+      const button = page.locator('.file-list').getByRole('button', { name: `${action} a.txt`, exact: true }).first()
+      await button.locator('xpath=ancestor::li').hover({ timeout: 1500 })
+      await button.click({ timeout: 1500 })
+      await page.waitForFunction((staged: boolean) => !!document.querySelector('[data-section="staged"] [data-path="a.txt"]') === staged, action === 'Stage', { timeout: 1500 }).catch(async (error: Error) => {
+        throw new Error(`${action}: ${error.message}\n${await page.evaluate(() => JSON.stringify({ errors: (window as any).stageErrors, text: document.getElementById('root')?.innerText.slice(0, 1500) }))}`)
+      })
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const samples = await page.evaluate(() => { const w = window as any; w.stageSampling = false; return w.stageSamples })
+      expect(samples.every((sample: any) => sample.same), `${action} replaced an unchanged neighbour's preview`).toBe(true)
+      expect(samples.every((sample: any) => !sample.blank), `${action} exposed an empty neighbour`).toBe(true)
+      expect(samples.every((sample: any) => sample.kept), `${action} re-rendered the toggled file's rows`).toBe(true)
+      expect(Math.max(...samples.map((sample: any) => sample.top)) - Math.min(...samples.map((sample: any) => sample.top)), `${action} moved the visible neighbour between frames`).toBeLessThanOrEqual(2)
+    }
+    expect(await page.evaluate(() => (window as any).stageErrors)).toEqual([])
+  } finally {
+    await page.evaluate(() => { const w = window as any; w.stageSampling = false; w.stageRoot.unmount() })
+    await page.setViewportSize({ width: 800, height: 600 })
+  }
+})
+
 test.skipIf(!playwright)('Changes context controls update previews and the same unsaved editor in both layouts', async () => {
   await page.setViewportSize({ width: 1200, height: 800 })
   const choose = async (value: number) => {

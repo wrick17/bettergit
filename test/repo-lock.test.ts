@@ -1,5 +1,6 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, symlinkSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { cleanup } from './helpers'
@@ -50,6 +51,65 @@ function deferred() {
   const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
   return { promise, resolve, reject }
 }
+
+test('a stalled fetch helper reaches its deadline and releases the fetching state and repository lock', async () => {
+  const repo = lockPath('stalled-fetch')
+  const helpers = path.join(lockRoot, 'helpers')
+  mkdirSync(helpers)
+  const marker = path.join(helpers, 'started')
+  const helper = path.join(helpers, 'git-remote-stall')
+  writeFileSync(helper, '#!/bin/sh\necho $$ > "$BETTERGIT_TEST_MARKER"\nexec sleep 30\n')
+  chmodSync(helper, 0o755)
+  git(repo, ['remote', 'add', 'origin', 'stall::fixture'])
+  const children: ChildProcess[] = []
+  const stderr: string[] = []
+  const deadlines: number[] = []
+  const exec = await load('../src/main/git/exec.ts', {
+    'node:fs': { existsSync },
+    'node:child_process': { spawn: (command: string, args: string[], options: any) => {
+      const child = spawn(command, args, { ...options, env: { ...options.env, PATH: `${helpers}:${options.env.PATH}`, BETTERGIT_TEST_MARKER: marker } })
+      children.push(child)
+      child.stderr?.on('data', (chunk) => stderr.push(String(chunk)))
+      return child
+    } },
+  }, '', { process, Buffer, clearTimeout, setTimeout: (callback: () => void, ms: number) => {
+    deadlines.push(ms)
+    if (ms < 60_000) return setTimeout(callback, ms)
+    // The accelerated deadline fires only once the helper runs, so it never races Git starting it.
+    const started = Date.now()
+    const poll = setInterval(() => {
+      if (!existsSync(marker) && Date.now() - started < 3000) return
+      clearInterval(poll)
+      callback()
+    }, 10)
+    return poll
+  } })
+  const ops = await load('../src/main/git/ops.ts', { './exec': exec }) as typeof import('../src/main/git/ops')
+  const busy = await load('../src/renderer/src/repo-busy.ts', {}) as typeof import('../src/renderer/src/repo-busy')
+  const errors: unknown[] = []
+  const off = busy.connectRepoLocks({ snapshot: async () => repoLockSnapshot(), subscribe: subscribeRepoLocks }, (error) => errors.push(error))
+  const running = busy.runRepoWrite(repo, 'fetch', () => withRepoLock(repo, 'repo:fetch', () => ops.fetchAll(repo)), {
+    onError: (error) => errors.push(error), reload: () => {},
+  })
+  try {
+    expect(busy.workingLabel(busy.busyKey(repo)!)).toContain('Fetching')
+    const result = await Promise.race([running, new Promise((resolve) => setTimeout(() => resolve('still fetching'), 2000))])
+    expect(existsSync(marker), `${String(errors[0])} ${stderr.join('')}`).toBe(true)
+    expect(result).toBe(false)
+    expect(deadlines[0]).toBeGreaterThanOrEqual(60_000)
+    expect(String(errors[0])).toContain('timed out')
+    expect(repoLockHolder(repo)).toBeNull()
+    expect(busy.busyKey(repo)).toBeNull()
+    expect(await withRepoLock(repo, 'repo:stage', () => 'available')).toBe('available')
+  } finally {
+    if (existsSync(marker)) {
+      try { process.kill(Number(readFileSync(marker, 'utf8').trim()), 'SIGKILL') } catch {}
+    }
+    for (const child of children) child.kill('SIGKILL')
+    await running
+    off()
+  }
+})
 
 test('a second operation is refused while one holds the repo, and the holder is visible at once', async () => {
   const first = deferred()

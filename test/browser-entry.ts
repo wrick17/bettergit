@@ -10,6 +10,7 @@ import { typeKeys } from '../src/renderer/src/cm-editor'
 import { SettingsDialog } from '../src/renderer/src/Dialogs'
 import { applyAppearance } from '../src/renderer/src/appearance'
 import { DiffView, setDiffLayout } from '../src/renderer/src/DiffView'
+import { ChangesView } from '../src/renderer/src/ChangesView'
 import { setContextLines } from '../src/renderer/src/prefs'
 import { CommitStat, inListOrder, useFilesView } from '../src/renderer/src/CommitStat'
 import { useActiveFiles } from '../src/renderer/src/active-file'
@@ -35,5 +36,5 @@ function ActiveDiff({ files: patchFiles }: { files: DiffFile[] }) {
 }
 
 Object.assign(window, {
-  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, setDiffLayout, setContextLines, ActiveDiff, StrictMode },
+  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, ActiveDiff, StrictMode },
 })

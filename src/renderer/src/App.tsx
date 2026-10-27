@@ -418,19 +418,25 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
 
   // The revision the status on screen was read for. Changes reloads on it, after the status, so its rows and diffs land together.
   const [statusRevision, setStatusRevision] = useState(revision)
+  const loadId = useRef(0)
   const load = useCallback(async (loading: number) => {
+    const id = ++loadId.current
     try {
       const [nextStatus, nextBranches] = await Promise.all([api.status(repo.path), api.branches(repo.path)])
+      if (id !== loadId.current) return
       // An unchanged answer keeps the old object, so the views under it do not reload for nothing.
       setStatus((prev) => JSON.stringify(prev) === JSON.stringify(nextStatus) ? prev : nextStatus)
       setBranches((prev) => JSON.stringify(prev) === JSON.stringify(nextBranches) ? prev : nextBranches)
+    } catch (failure) {
+      if (id === loadId.current) throw failure
     } finally {
-      setStatusRevision((prev) => Math.max(prev, loading))
+      if (id === loadId.current) setStatusRevision((prev) => Math.max(prev, loading))
     }
   }, [repo.path])
 
   useEffect(() => {
     load(revision).catch(onError)
+    return () => { loadId.current++ }
   }, [load, revision])
 
   // A clean repo opens on History, and Changes hands over to History when its last change goes (after a commit, say).
@@ -481,9 +487,9 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
               <Icon name="chevronDown" className="chevron-down" />
             </button>
             {status?.upstream && (
-              <span className="sync" title={`Ahead/behind ${status.upstream}`}>
-                <span><b>{status.ahead}</b> ahead</span>
-                <span><b>{status.behind}</b> behind</span>
+              <span className="sync">
+                <span role="img" title={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`} aria-label={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`}><Icon name="arrowUp" /><b>{status.ahead}</b></span>
+                <span role="img" title={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`} aria-label={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`}><Icon name="arrowDown" /><b>{status.behind}</b></span>
               </span>
             )}
           </div>

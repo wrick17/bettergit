@@ -2,6 +2,18 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.4] - 2026-10-27
+
+### Improved
+
+- The toolbar shows commits to push and to pull with ↑ and ↓ arrows next to the branch name.
+
+### Fixed
+
+- A fetch or pull that gets no response for two minutes now stops with an error, instead of showing **Fetching…** forever and blocking other Git actions.
+- The toolbar no longer loses the ↑ and ↓ counts, or shows an older status, when an earlier refresh finishes after a newer one.
+- Staging or unstaging a file no longer redraws its diff in Changes. The file keeps its rows, and the files below it stay in place.
+
 ## [0.1.3] - 2026-10-27
 
 ### New
