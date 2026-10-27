@@ -8,3 +8,6 @@
 - Every change reaches master through a GitHub pull request against master. Never merge locally into master or push directly to master.
 - Push the work branch, open the PR with `gh pr create`, wait for PR checks, then merge with `gh pr merge --merge --delete-branch`, which keeps the repo's "Merge pull request #N" history.
 - After the merge, fast-forward local master, then remove the finished worktree and local branch.
+
+## Releases
+- Before pushing a `v<version>` tag, add a `## [<version>] - <date>` section to CHANGELOG.md in the release PR. List user-visible changes under New, Improved, Changed or Fixed. The Release workflow publishes that section as the GitHub Release notes and fails without it.
