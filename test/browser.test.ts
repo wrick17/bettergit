@@ -269,7 +269,7 @@ test.skipIf(!playwright)('primary buttons keep readable theme colours on hover i
   await page.evaluate(() => { document.documentElement.style.cssText = ''; document.documentElement.dataset.theme = 'dark' })
 })
 
-// The native window is transparent with no material behind it, so any page pixel with alpha shows other apps through.
+// The native window has only a plain opaque backing and no material, so the page paints its own opaque --window behind the panes.
 test.skipIf(!playwright)('built-in and extension themes paint an opaque window behind the translucent panes', async () => {
   for (const theme of ['light', 'dark', 'extension-dark']) {
     const panes = await page.evaluate(async (theme: string) => {

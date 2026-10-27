@@ -132,6 +132,7 @@ react.useMemo = (factory, deps) => {
   if (!slots[index] || changed(slots[index].deps, deps)) slots[index] = { deps, value: factory() }
   return slots[index].value
 }
+react.useCallback = (callback, deps) => react.useMemo(() => callback, deps)
 react.useEffect = (effect, deps) => {
   const index = cursor++
   const previous = slots[index]
@@ -873,7 +874,8 @@ test('History compares only the selected commit, restores a saved compare, and s
 })
 
 // The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old
-// path, and the view choice remembered. Rendered from the real CommitStat with the renderer globals stubbed.
+// path, and the view choice remembered. The diff takes the list's order in both views, as History passes it.
+// Rendered from the real CommitStat with the renderer globals stubbed.
 const STAT_TREE = String.raw`
 const assert = require('node:assert/strict')
 const stored = new Map()
@@ -885,7 +887,7 @@ Object.assign(globalThis, {
 const react = require('react')
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 const { renderToStaticMarkup } = await import('react-dom/server')
-const { CommitStat } = await import('./src/renderer/src/CommitStat')
+const { CommitStat, inListOrder } = await import('./src/renderer/src/CommitStat')
 const file = (oldPath, newPath, status) => ({ oldPath, newPath, status, binary: false, hunks: [] })
 const files = [
   file('src/old/a.ts', 'src/lib/a.ts', 'renamed'),
@@ -894,8 +896,21 @@ const files = [
   file(null, 'src/lib/b.ts', 'added'),
   file('src/z.ts', 'src/z.ts', 'modified'),
 ]
-const labels = () => [...renderToStaticMarkup(react.createElement(CommitStat, { files, onSelect() {} }))
+const view = () => stored.get('bettergit.commitFilesView') === 'tree' ? 'tree' : 'list'
+const labelsOf = (patch) => [...renderToStaticMarkup(react.createElement(CommitStat, { files: inListOrder(patch, view()).files, view: view(), onView() {}, onSelect() {} }))
   .matchAll(/aria-label="([^"]*)"/g)].map((match) => match[1]).filter((label) => !/view|layout|Changed files/.test(label))
+const labels = () => labelsOf({ files, moves: [] })
+// The diff's files, as History hands them to DiffView, named the way the list's file rows name them.
+const diffOrder = (patch) => inListOrder(patch, view()).files.map((file) => file.newPath ?? file.oldPath)
+const rowOrder = (patch) => labelsOf(patch).filter((label) => label.startsWith('Show diff for '))
+  .map((label) => label.slice('Show diff for '.length).replace(/, \w+$/, '').replace(/^.* → /, ''))
+// As reported: a root file first in the patch, and src folders that the tree draws above it.
+const reported = { files: [
+  file('package.json', 'package.json', 'modified'),
+  file('src/renderer/src/App.tsx', 'src/renderer/src/App.tsx', 'modified'),
+  file('src/main/index.ts', 'src/main/index.ts', 'modified'),
+  file('src/main/git/diff.ts', 'src/main/git/diff.ts', 'modified'),
+], moves: [{ from: [{ file: 0, line: 1 }], to: [{ file: 2, line: 1 }] }] }
 
 assert.deepEqual(labels(), [
   'Show diff for src/old/a.ts → src/lib/a.ts, renamed',
@@ -904,6 +919,9 @@ assert.deepEqual(labels(), [
   'Show diff for src/lib/b.ts, added',
   'Show diff for src/z.ts, modified',
 ], 'list view keeps the patch order')
+stored.set('bettergit.commitFilesView', 'list')
+assert.equal(inListOrder(reported, 'list'), reported, 'the flat list and its diff keep the patch as it is')
+assert.deepEqual(diffOrder(reported), rowOrder(reported), 'flat: the diff follows the list')
 stored.set('bettergit.commitFilesView', 'tree')
 assert.deepEqual(labels(), [
   'docs, 1 file',
@@ -915,6 +933,12 @@ assert.deepEqual(labels(), [
   'Show diff for src/z.ts, modified',
   'Show diff for README.md, modified',
 ], 'tree view nests folders before files')
+assert.deepEqual(diffOrder(reported), ['src/main/git/diff.ts', 'src/main/index.ts', 'src/renderer/src/App.tsx', 'package.json'],
+  'tree: depth first, folders before files, the root file last')
+assert.deepEqual(diffOrder(reported), rowOrder(reported), 'tree: the diff follows the list')
+assert.deepEqual(diffOrder({ files, moves: [] }), rowOrder({ files, moves: [] }), 'tree: renames and deletions keep their row')
+// Moves name files by index, so they follow package.json and index.ts to their new places.
+assert.deepEqual(inListOrder(reported, 'tree').moves, [{ from: [{ file: 3, line: 1 }], to: [{ file: 1, line: 1 }] }])
 console.log('commit tree cases passed')
 `
 

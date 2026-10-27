@@ -448,9 +448,9 @@ function createWindow() {
     title: 'BetterGit',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
-    // Transparent, but the page paints an opaque --window behind its glass panels. No native vibrancy: with the
-    // under-window material, swiping between Spaces lagged on an external display, and the user found it much smoother without it.
-    transparent: true,
+    // Opaque native backing in the built-in --window color; the page still paints its own opaque --window behind the glass panels.
+    // No native vibrancy: with the under-window material, swiping between Spaces lagged on an external display.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1d23' : '#e6e8ee',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

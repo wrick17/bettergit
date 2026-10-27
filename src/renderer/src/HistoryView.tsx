@@ -5,7 +5,7 @@ import type { Commit, CommitDetails } from '../../main/git/history'
 import { Avatar } from './Avatar'
 import type { DiffFile, MovedBlock } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
-import { CommitStat } from './CommitStat'
+import { CommitStat, inListOrder, useFilesView } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
 import { DiffRail } from './DiffRail'
 import { Icon } from './Icons'
@@ -411,6 +411,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   // The diff on screen: the compare, or else the commit's own diff, each only for the whitespace option it was fetched with.
   // After a toggle the heading and toolbar stay, and the diff shows loading until its reply.
   const patch = compare ?? (current?.ignoreWhitespace === ignoreWhitespace ? current : cached ?? null)
+  // The file list and the diff share one order, so the file marked at the diff's top walks the list top to bottom.
+  // Sorted once per patch and layout, never per scroll.
+  const [filesView, setFilesView] = useFilesView()
+  const shown = useMemo(() => patch && inListOrder(patch, filesView), [patch, filesView])
   const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', patch !== null)
   // The diff's last scroll position for the commit on screen, and the view it was in: the commit's own diff or a compare.
   // A whitespace reload shows no hunks, so the pane clamps to the top. The position waits for the reply with the same view,
@@ -663,7 +667,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   </button>
                 )}
                 {!diffOpen && compareBar}
-                <CommitStat files={patch?.files ?? []} onSelect={showFile} activeFiles={activeFiles} />
+                <CommitStat files={shown?.files ?? []} view={filesView} onView={setFilesView} onSelect={showFile} activeFiles={activeFiles} />
                 {!patch?.files.length && <p className="hint" tabIndex={-1}>{!selected ? 'Pick a commit to see its files.' : emptyHint ?? 'No changed files.'}</p>}
               </div>
               <div className={`splitter${details.collapsed || code.collapsed ? ' off' : ''}`} aria-label="Commit files width" {...detailHandle} {...details.splitterHandlers} />
@@ -686,7 +690,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   {body && <pre className="commit-body">{body}</pre>}
                   </header>
                   {compareBar}
-                  <DiffView files={patch?.files ?? []} moves={patch?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
+                  <DiffView files={shown?.files ?? []} moves={shown?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
                   </>}
                 </div>
               </DiffRail>

@@ -13,6 +13,7 @@ import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { EmptyState } from './EmptyState'
 import { splitPath } from './paths'
+import { buildTree, treeOrder, type Folder } from './commit-tree'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
@@ -194,7 +195,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const { staged, unstaged, changes, stagedOnly } = sections
   // Each section's paths in the order its file list shows them, so the diffs list their files the same way.
   const order = useMemo(() => {
-    const paths = (list: FileChange[]) => (view === 'tree' ? treeOrder(buildTree(list)) : list).map((change) => change.path)
+    const paths = (list: FileChange[]) => (view === 'tree' ? treeOrder(changeTree(list)) : list).map((change) => change.path)
     return { staged: paths(staged), changes: paths(changes), conflicts: paths(conflicted) }
   }, [staged, changes, conflicted, view])
   // The Changes section is the working diff with the staged diff of each file that has only staged changes.
@@ -965,7 +966,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
 function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
-  const folder = useMemo(() => buildTree(changes), [changes])
+  const folder = useMemo(() => changeTree(changes), [changes])
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
   useKeepInView(sectionRef, inView)
@@ -1024,49 +1025,12 @@ function SectionHeader({ title, count, staged, onToggleAll, busy }: {
   )
 }
 
-interface Folder {
-  name: string
-  path: string
-  folders: Map<string, Folder>
-  files: FileChange[]
-  // Changed files beneath this folder, so a collapsed folder still shows how many there are.
-  count: number
-}
+// Folders first, then files, each alphabetical, as History's tree. The file list draws this order and the diffs follow it.
+const changeTree = (changes: FileChange[]) => buildTree(changes, (change) => change.path)
 
-function buildTree(changes: FileChange[]): Folder {
-  const root: Folder = { name: '', path: '', folders: new Map(), files: [], count: 0 }
-  for (const change of changes) {
-    let folder = root
-    root.count += 1
-    for (const part of change.path.split('/').slice(0, -1)) {
-      let child = folder.folders.get(part)
-      if (!child) {
-        child = { name: part, path: folder.path ? `${folder.path}/${part}` : part, folders: new Map(), files: [], count: 0 }
-        folder.folders.set(part, child)
-      }
-      folder = child
-      folder.count += 1
-    }
-    folder.files.push(change)
-  }
-  return sortTree(root)
-}
-
-// Folders first, then files, each alphabetical. The file list draws this order and the diffs follow it.
-function sortTree(folder: Folder): Folder {
-  folder.folders = new Map([...folder.folders].sort(([a], [b]) => a.localeCompare(b)))
-  folder.folders.forEach(sortTree)
-  folder.files.sort((a, b) => splitPath(a.path).name.localeCompare(splitPath(b.path).name))
-  return folder
-}
-
-function treeOrder(folder: Folder): FileChange[] {
-  return [...[...folder.folders.values()].flatMap(treeOrder), ...folder.files]
-}
-
-// In buildTree's order. A collapsed folder's contents are not rendered.
+// In changeTree's order. A collapsed folder's contents are not rendered.
 function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
-  folder: Folder
+  folder: Folder<FileChange>
   section: string
   collapsed: Set<string>
   onToggleFolder: (key: string) => void
