@@ -286,14 +286,48 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .tree-row.drop-before::after { top: -1px; }
 .tree-row.drop-after::after { bottom: -2px; }
 
-/* Sits in the tab row, between the toolbar and the diff toolbar, so it covers neither. */
-.banner {
-  position: absolute; top: 48px; left: 50%; transform: translateX(-50%); z-index: 20;
-  max-width: min(560px, 80%); padding: 9px 16px; border-radius: var(--radius);
-  background: var(--raised); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+/* The notification hub: a bell in the bottom-right corner while failures are unread, its list above it, and a brief
+   announcement of the newest failure. Above a dialog's scrim, since the failure may come from the dialog. */
+.notify-layer { position: fixed; right: 16px; bottom: 16px; z-index: 55; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+.notify-layer > * { pointer-events: auto; }
+.notify-toast-region:empty { display: none; }
+.notify-toast, .notify-panel, .notify-trigger {
+  border-radius: var(--radius); background: var(--raised); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset 0 0 0 0.5px var(--glass-outline), inset 0 1px 0 var(--glass-edge), var(--glass-shadow);
-  color: var(--del); font-size: calc(13px + var(--ui-delta)); animation: rise 180ms var(--ease);
+  font-size: calc(13px + var(--ui-delta));
 }
+.notify-toast { display: flex; align-items: flex-start; gap: 8px; max-width: 420px; padding: 8px 8px 8px 12px; animation: fade 160ms var(--ease); }
+.notify-toast > svg { flex: none; margin-top: 2px; color: var(--del); }
+.notify-toast > span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); }
+.notify-toast strong { color: var(--del); }
+.notify-panel { display: flex; flex-direction: column; width: min(420px, calc(100vw - 32px)); max-height: min(520px, calc(100vh - 120px)); outline: none; }
+.notify-panel header { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-bottom: 0.5px solid var(--glass-outline); }
+.notify-panel h2 { flex: 1; margin: 0; font-size: inherit; font-weight: 600; }
+.notify-panel ul { margin: 0; padding: 4px 0; list-style: none; overflow: auto; }
+.notify-panel li { display: grid; gap: 3px; padding: 8px 14px; }
+.notify-panel li + li { border-top: 0.5px solid var(--glass-outline); }
+.notify-head { display: flex; align-items: baseline; gap: 6px; }
+.notify-head strong { flex: 1; color: var(--del); overflow-wrap: anywhere; }
+.notify-head time, .notify-count, .notify-repo, .notify-panel em { color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-style: normal; }
+.notify-panel p { margin: 0; color: var(--text-2); white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
+.notify-actions { display: flex; gap: 6px; margin-top: 3px; }
+.notify-actions button, .notify-panel header > button:not(.icon-button), .notify-toast button { flex: none; padding: 1px 8px; font-size: calc(12px + var(--ui-delta)); }
+.notify-trigger { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 10px; color: var(--del); }
+.notify-trigger.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.notify-badge { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* A sidebar batch's progress or result, under the tree. Its live region stays mounted so each change is announced. */
+.batch-status:empty { display: none; }
+.batch-status {
+  flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 8px;
+  margin: 6px 2px 0; padding: 6px 4px 6px 10px; border-radius: var(--radius); background: var(--glass-chip);
+  font-size: calc(12px + var(--ui-delta)); color: var(--text-2);
+}
+.batch-status > svg { margin-top: 2px; }
+.batch-status.failed > svg { color: var(--del); }
+.batch-status > .icon-button { width: 20px; height: 20px; }
+.batch-status ul { grid-column: 2 / 4; margin: 4px 0 0; padding: 0; list-style: none; max-height: 96px; overflow: auto; overflow-wrap: anywhere; user-select: text; }
+.batch-status-text { overflow-wrap: anywhere; min-height: 20px; line-height: 20px; }
 
 .toolbar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -810,6 +844,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .row-more { flex: none; display: inline-flex; margin-left: auto; opacity: 0; transition: opacity 120ms var(--ease); }
 .row-more > .icon-button { width: 20px; height: 20px; }
 :is(.tree-row:hover, .tree-row:focus-within, [role='treeitem']:focus > .tree-row) > .row-more { opacity: 1; }
+/* The folder whose Refresh, Fetch All or Pull All is running keeps its spinner in view. */
+.row-more:has(.busy) { opacity: 1; }
 
 /* Repo dirty count */
 .repo-dirty { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 calc(11px + var(--ui-delta))/1.4 var(--font-code); font-variant-numeric: tabular-nums; }

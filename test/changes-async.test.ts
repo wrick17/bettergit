@@ -284,7 +284,8 @@ if (process.env.CHECK_MODE === 'hunk-context') {
   assert.deepEqual(body, [])
   assert.deepEqual(resets[0].args, ['/repo', 'c.ts', { fingerprint: fingerprint('a') }])
   resets[0].reject(new Error('refused')); await flush()
-  assert.deepEqual(errors, ['Error: refused'])
+  // A refused write reaches onError named with its action, for the notification hub.
+  assert.deepEqual(errors, ['ActionError: refused'])
   assert.equal(view().model, first)
   assert.deepEqual(view().choices, ['current'])
 

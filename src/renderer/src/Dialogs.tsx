@@ -6,9 +6,11 @@ import type { InstalledExtension, ThemeChoice } from '../../shared/themes'
 import { cachedAppIcon, cachedApps, fetchApps, loadAppIcon, storeApps } from './app-icons'
 import { CODE_FONTS, CODE_FONT_SIZES, UI_FONT_SIZES, applyAppearance, isFontInstalled, resolveAppearance } from './appearance'
 import { confirmOverBlur } from './confirm'
+import { failureReason } from './repo-busy'
+import { notifyFailure } from './notifications'
 import { ExtensionDetailsContent, ExtensionSettings, type ExtensionDetailRequest } from './ExtensionSettings'
 import { Icon, type IconName } from './Icons'
-import { forgetThemes, isThemeBroken, preloadThemes, useAppliedThemes, warmThemes } from './themes'
+import { forgetThemes, isThemeBroken, preloadThemes, themeFailure, useAppliedThemes, warmThemes } from './themes'
 
 const api = window.bettergit
 
@@ -24,7 +26,9 @@ export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {
     const top = () => [...document.querySelectorAll('[role="dialog"]')].at(-1) === dialog.current
     covered.forEach((element) => element.toggleAttribute('inert', true))
     // Only Tab stops: roving tabIndex=-1 items (inactive tabs, radios) are skipped, so the first stop is the selected tab.
-    const focusable = () => [...(dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((item) => item.tabIndex >= 0)
+    // The notification hub sits outside the inert root and stays in the Tab cycle, so its failures are reachable here too.
+    const focusable = () => [...(dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []), ...document.querySelectorAll<HTMLElement>('.notify-layer button')]
+      .filter((item) => item.tabIndex >= 0)
     root.toggleAttribute('inert', true)
     focusable()[0]?.focus()
     const wrap = (event: KeyboardEvent) => {
@@ -115,14 +119,21 @@ export function CloneDialog({ defaultParent, onClose, onCloned }: {
       const destination = await api.clone(url.trim(), parent)
       onCloned(String(destination))
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure))
+      setError(failureReason(failure))
+      notifyFailure('Cloning a repository', failure)
       setBusy(false)
     }
   }
 
+  // A closed picker gives null, which keeps the folder. A failure shows here, under the form.
   const choose = async () => {
-    const picked = await api.pickFolder()
-    if (picked) setParent(picked)
+    try {
+      const picked = await api.pickFolder()
+      if (picked) setParent(picked)
+    } catch (failure) {
+      setError(`Choosing a folder failed: ${failureReason(failure)}`)
+      notifyFailure('Choosing a clone folder', failure)
+    }
   }
 
   return (
@@ -263,7 +274,12 @@ function AppPicker({ kind, label, value, onChange }: {
   useEffect(() => {
     let live = true
     // A rescan also updates the toolbar's list, so an app installed since it loaded shows there too.
-    fetchApps(kind).then((list) => { if (live) setApps(list) }, () => { if (live) setApps([]) })
+    fetchApps(kind).then((list) => { if (live) setApps(list) }, (failure: unknown) => {
+      if (!live) return
+      setApps([])
+      setError(`Could not list installed apps: ${failureReason(failure)}`)
+      notifyFailure(`Listing installed ${kind} apps`, failure)
+    })
     return () => { live = false }
   }, [kind])
 
@@ -312,7 +328,8 @@ function AppPicker({ kind, label, value, onChange }: {
       storeApps(kind, withPicked(cachedApps(kind)))
       onChange(picked.id)
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure))
+      setError(failureReason(failure))
+      notifyFailure(`Choosing a ${kind} app`, failure)
     }
   }
 
@@ -443,7 +460,7 @@ function ThemeSelect({ id, kind, value, wanted, builtIn, extensions, themes, onC
   const listed = !value || groups.some((group) => group.choices.some((choice) => choice.ref === value))
   const preload = () => preloadThemes(kind, groups.flatMap((group) => group.choices.map((choice) => choice.ref)))
   const loading = wanted !== value
-  const status = loading ? 'Loading theme…' : value && isThemeBroken(kind, value) ? 'This theme could not be loaded.' : ''
+  const status = loading ? 'Loading theme…' : value && isThemeBroken(kind, value) ? `This theme could not be loaded${themeFailure(value) ? `: ${themeFailure(value)}` : '.'}` : ''
   return (
     <span className="theme-picker">
       <span className={`theme-status${loading ? '' : ' broken'}`} role={status ? 'img' : undefined} aria-label={status || undefined} title={status || undefined}>
@@ -515,7 +532,12 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
   // Installed extensions, for the theme pickers and installation in the Themes section.
   const [extensions, setExtensions] = useState<InstalledExtension[] | null>(null)
   const [details, setDetails] = useState<ExtensionDetailRequest | null>(null)
-  const listExtensions = () => api.listExtensions().then(setExtensions, () => setExtensions([]))
+  const [extensionsError, setExtensionsError] = useState<string | null>(null)
+  const listExtensions = () => api.listExtensions().then((list: InstalledExtension[]) => { setExtensions(list); setExtensionsError(null) }, (failure: unknown) => {
+    setExtensions([])
+    setExtensionsError(`Could not list installed extensions: ${failureReason(failure)}`)
+    notifyFailure('Listing installed extensions', failure)
+  })
   useEffect(() => { void listExtensions() }, [])
   // The installed themes load one at a time while idle, so most picks apply at once. Caps in main bound each load.
   useEffect(() => extensions ? warmThemes(extensions.flatMap((extension) => [
@@ -674,6 +696,7 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
                 </Row>
               </div>
             </section>
+            {extensionsError && <p className="dialog-error" role="alert">{extensionsError}</p>}
             <ExtensionSettings extensions={extensions} onChanged={extensionChanged} onDetails={setDetails} />
           </>
         )}

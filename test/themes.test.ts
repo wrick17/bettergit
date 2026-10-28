@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { DEFAULT_APPEARANCE } from '../src/shared/editors'
-import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
+import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, listExtensions, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
 import * as shared from '../src/shared/themes'
 import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
 
@@ -176,6 +176,25 @@ test('custom light themes keep the app diff fills while their other colours and 
   expect(css).toContain('--text: #1f2328;')
   expect(themeVariables(colors, true)).toMatchObject({ '--add-bg': '#aceebb4d', '--del-bg': '#ffcecb4d' })
   expect(themeCss(null, { ...theme, dark: true })).toContain('--add-bg: #aceebb4d; --del-bg: #ffcecb4d;')
+})
+
+test('an unreadable extension is named and left out, the readable ones still list, and no folder means none', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-list-'))
+  try {
+    mkdirSync(path.join(dir, 'acme.good'))
+    writeFileSync(path.join(dir, 'acme.good', 'package.json'), JSON.stringify({ name: 'good', publisher: 'acme', version: '1.0.0', contributes: {} }))
+    mkdirSync(path.join(dir, 'acme.bad'))
+    writeFileSync(path.join(dir, 'acme.bad', 'package.json'), '{ not json')
+    const broken: string[] = []
+    const listed = await listExtensions(dir, (id) => broken.push(id))
+    expect(listed.map((entry) => entry.id)).toEqual(['acme.good'])
+    expect(broken).toEqual(['acme.bad'])
+    // Without a callback, the failure names the extension instead of dropping it silently.
+    await expect(listExtensions(dir)).rejects.toThrow(/^Extension acme\.bad could not be read: /)
+    expect(await listExtensions(path.join(dir, 'missing'))).toEqual([])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('JSONC keeps comment-like text in strings and drops comments and trailing commas', () => {
@@ -392,6 +411,42 @@ test('icon caps are checked from the map and file sizes before any image is read
   } finally {
     fsPromises.readFile = original
   }
+})
+
+test('broken theme retries notify again after deselection or cache invalidation while warming stays quiet', async () => {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/themes.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  expect(compiled.success).toBe(true)
+  const notices: unknown[] = []
+  let requests = 0
+  const imports: Record<string, unknown> = {
+    react: { useSyncExternalStore: (_: unknown, get: () => unknown) => get() }, '../../shared/themes': shared,
+    './highlight': { setSyntaxThemes() {} }, './notifications': { notify: (entry: unknown) => notices.push(entry) },
+  }
+  const module = { exports: {} as typeof import('../src/renderer/src/themes') }
+  runInNewContext(await compiled.outputs[0].text(), {
+    module, exports: module.exports, console: { warn() {} }, require: (id: string) => imports[id] ?? {},
+    window: { bettergit: { iconTheme: async () => { requests++; throw new Error('theme unreadable') } } },
+    document: { getElementById: () => null }, localStorage: { setItem() {}, removeItem() {} },
+  })
+  const themes = module.exports
+  const ref = 'broken.theme/icons.json'
+  const pick = (iconTheme: string) => themes.applyThemes({ ...DEFAULT_APPEARANCE, iconTheme })
+  const settle = () => Bun.sleep(0)
+  themes.preloadThemes('icons', [ref])
+  await settle()
+  expect(notices).toHaveLength(0)
+  pick(ref)
+  expect(notices).toHaveLength(1)
+  pick('')
+  notices.length = 0
+  pick(ref)
+  expect(notices).toHaveLength(1)
+  themes.forgetThemes('broken.theme')
+  notices.length = 0
+  pick(ref)
+  await settle()
+  expect(requests).toBe(2)
+  expect(notices).toHaveLength(1)
 })
 
 test('the last theme pick applies once it loads, an earlier slower load never covers it, and nothing shows applied early', async () => {

@@ -29,7 +29,8 @@ export class BackgroundFetcher {
   start() {
     this.stop()
     if (!this.options.enabled) return
-    this.timer = setInterval(() => void this.runOnce(), this.options.intervalMinutes * 60_000)
+    // runOnce reports its own failures; one that escapes (the report send) must not become an unhandled rejection.
+    this.timer = setInterval(() => void this.runOnce().catch((failure) => console.error('Background fetch failed:', failure)), this.options.intervalMinutes * 60_000)
   }
 
   stop() {
@@ -46,7 +47,12 @@ export class BackgroundFetcher {
     this.running = true
     const report: FetchReport = { fetched: [], skipped: [], failed: [] }
     try {
-      for (const repo of await this.options.repos()) {
+      // A failed scan is reported like a failed repo, under '*', so the run still ends with a report.
+      const repos = await this.options.repos().catch((failure: unknown) => {
+        report.failed.push({ repo: '*', reason: `Could not list repositories: ${failure instanceof Error ? failure.message : String(failure)}` })
+        return [] as string[]
+      })
+      for (const repo of repos) {
         try {
           const canonical = canonicalRepoPath(repo)
           // The check and claim are synchronous, including through a symlink alias.

@@ -7,6 +7,7 @@ import { Icon, IconButton, toggleLabel } from './Icons'
 import { FolderIcon } from './FileIcon'
 import { useScrollMemory } from './session'
 import type { FoldHold } from './fold'
+import { dismissBatch, useBatchStatus, type BatchStatus } from './batch-status'
 import { loadTreeOrder, moveSibling, orderTree, REORDER_TYPE, saveTreeOrder, type TreeOrder } from './tree-order'
 
 interface SidebarProps {
@@ -22,8 +23,8 @@ interface SidebarProps {
   onRemoveSource: (path: string) => void
   onReveal: (path: string) => void
   onDrop: (event: DragEvent) => void
-  // Rescans the sources, for a repo added or deleted while the watcher could not see it.
-  onRefresh: () => void
+  // Rescans the sources, for a repo added or deleted while the watcher could not see it. The folder shows the progress.
+  onRefresh: (folder: FolderNode) => void
   // Fetch All or Pull All for the shown repos in a folder.
   onSyncFolder: (folder: FolderNode, kind: 'fetch' | 'pull') => void
   dirty?: Record<string, RepoCounts>
@@ -61,6 +62,7 @@ export function Sidebar(props: SidebarProps) {
   const tree = useMemo(() => orderTree(props.tree, order), [props.tree, order])
   const dragRow = useRef<DragRow | null>(null)
   const [dropAt, setDropAt] = useState<{ path: string; after: boolean } | null>(null)
+  const batch = useBatchStatus()
 
   // Saves the whole sibling list, which also drops paths that no longer exist under that parent.
   const reorder = (parent: string, siblings: string[], from: string, to: string, after: boolean) => {
@@ -172,10 +174,21 @@ export function Sidebar(props: SidebarProps) {
         {props.tree.length === 0 && <p className="tree-empty">Drop a projects folder here, or use + to add one.</p>}
         {tree.map((node) => (
           <TreeItem
-            key={node.path} {...props} node={node} depth={0} showHidden={showHidden} onContext={openContext} tabStop={tabStop} onFocusRow={setFocusPath}
+            key={node.path} {...props} batch={batch} node={node} depth={0} showHidden={showHidden} onContext={openContext} tabStop={tabStop} onFocusRow={setFocusPath}
             parent="" siblings={tree.map((sibling) => sibling.path)} onReorder={reorder} dragRow={dragRow} dropAt={dropAt} onDropAt={setDropAt}
           />
         ))}
+      </div>
+
+      <div className={`batch-status${batch?.failed ? ' failed' : ''}`} role="status" aria-live="polite">
+        {batch && (
+          <>
+            <Icon name={batch.running ? 'loader' : batch.failed ? 'warning' : 'done'} className={batch.running ? 'action-spin' : undefined} />
+            <span className="batch-status-text">{batch.text}</span>
+            {!batch.running && <IconButton icon="close" label="Dismiss status" onClick={dismissBatch} />}
+            {batch.problems.length > 0 && <ul>{batch.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>}
+          </>
+        )}
       </div>
 
       {/* Portalled to the body: the sidebar's backdrop filter would otherwise clip and offset the fixed menu. */}
@@ -185,9 +198,10 @@ export function Sidebar(props: SidebarProps) {
             const folder = context.node
             return (
               <>
-                <button role="menuitem" onClick={pick(props.onRefresh)}>Refresh</button>
-                <button role="menuitem" onClick={pick(() => props.onSyncFolder(folder, 'fetch'))}>Fetch All</button>
-                <button role="menuitem" onClick={pick(() => props.onSyncFolder(folder, 'pull'))}>Pull All</button>
+                {/* One batch at a time: these wait while a Refresh, Fetch All or Pull All runs. */}
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onRefresh(folder))}>Refresh</button>
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'fetch'))}>Fetch All</button>
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'pull'))}>Pull All</button>
                 <div className="popover-sep" role="separator" />
               </>
             )
@@ -228,6 +242,7 @@ function focusParent(item: HTMLElement) {
 }
 
 type ItemProps = SidebarProps & {
+  batch: BatchStatus | null
   node: TreeNode
   depth: number
   showHidden: boolean
@@ -308,6 +323,7 @@ function TreeItem(props: ItemProps) {
 
   if (node.kind === 'folder') {
     const collapsed = config.collapsed.includes(node.path)
+    const running = props.batch?.running && props.batch.folder === node.path ? props.batch.text : null
     return (
       <div
         role="treeitem"
@@ -359,7 +375,7 @@ function TreeItem(props: ItemProps) {
             const rect = event.currentTarget.getBoundingClientRect()
             props.onContext(node, rect.left, rect.bottom)
           }}>
-            <IconButton icon="more" label={`${node.name} actions`} tabIndex={node.path === props.tabStop ? 0 : -1} onClick={() => {}} />
+            <IconButton icon="more" label={running ? `${node.name} actions. ${running}` : `${node.name} actions`} busy={!!running} tabIndex={node.path === props.tabStop ? 0 : -1} onClick={() => {}} />
           </span>
         </div>
         {!collapsed && (

@@ -105,7 +105,7 @@ const api = {
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),
   // Main-process events (file changes, background fetch reports) arrive here; returns an unsubscribe.
-  onEvent: (channel: 'repo:locks' | 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action', listener: (payload: unknown) => void) => {
+  onEvent: (channel: 'repo:locks' | 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action' | 'app:error', listener: (payload: unknown) => void) => {
     const handler = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channel, handler)
     return () => { ipcRenderer.removeListener(channel, handler) }

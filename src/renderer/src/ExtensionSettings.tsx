@@ -7,6 +7,7 @@ import type { Definition, Nodes } from 'mdast'
 import type { ExtensionDetails, ExtensionMetadata, ExtensionResult, InstalledExtension } from '../../shared/themes'
 import { Code } from './DiffView'
 import { Icon, IconButton } from './Icons'
+import { notifyFailure } from './notifications'
 import { languageFor, tokenize, type Segment } from './highlight'
 import { useLanguageOverrides } from './prefs'
 
@@ -33,7 +34,7 @@ function safeUrl(value: string, base?: string | null): string | null {
   } catch { return null }
 }
 
-function ExtensionImage({ source, alt, logo = false, inline = false, width }: { source?: string | null; alt: string; logo?: boolean; inline?: boolean; width?: number }) {
+function ExtensionImage({ source, alt, logo = false, inline = false, width, onError }: { source?: string | null; alt: string; logo?: boolean; inline?: boolean; width?: number; onError?: (error: unknown) => void }) {
   const [loaded, setLoaded] = useState<{ source: string; data: string | null } | null>(null)
   useEffect(() => {
     if (!source) return
@@ -46,7 +47,7 @@ function ExtensionImage({ source, alt, logo = false, inline = false, width }: { 
   if (data) return <img className={logo ? 'extension-logo' : `extension-readme-image${inline ? ' inline' : ''}`} src={data} alt={alt} width={width} onError={() => setLoaded({ source: source!, data: null })} />
   if (logo) return <span className="extension-logo extension-logo-fallback" role="img" aria-label={`${alt} logo unavailable`}><Icon name="extensions" /></span>
   const url = source && safeUrl(source)
-  return url ? <a href={url} onClick={(event) => { event.preventDefault(); void api.openExternal(url).catch(() => {}) }}>{alt || 'View image'}</a> : <span>{alt || 'Image unavailable'}</span>
+  return url ? <a href={url} onClick={(event) => { event.preventDefault(); void api.openExternal(url).catch((failure: unknown) => onError?.(new Error(`Opening ${url} failed: ${message(failure)}`))) }}>{alt || 'View image'}</a> : <span>{alt || 'Image unavailable'}</span>
 }
 
 function ExtensionStats({ value }: { value: Pick<InstalledExtension, 'downloads' | 'averageRating' | 'reviewCount'> }) {
@@ -101,7 +102,7 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
         const image = (element: Element, key: number, selected?: string) => {
           const size = element.getAttribute('width') ?? ''
           const width = /^\d{1,4}$/.test(size) && Number(size) > 0 && Number(size) <= 4096 ? Number(size) : undefined
-          return <ExtensionImage key={key} source={safeUrl(selected ?? element.getAttribute('src') ?? '', base)} alt={element.getAttribute('alt') || 'README image'} width={width} inline />
+          return <ExtensionImage key={key} source={safeUrl(selected ?? element.getAttribute('src') ?? '', base)} alt={element.getAttribute('alt') || 'README image'} width={width} inline onError={onError} />
         }
         const visit = (node: ChildNode, key: number, depth = 0): ReactNode => {
           if (depth > 128) throw new Error('README HTML nesting limit exceeded')
@@ -167,8 +168,8 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
           case 'tableCell': return <td key={key}>{children()}</td>
           case 'link': return link(node.url, children(), key)
           case 'linkReference': return link(definitions.get(node.identifier)?.url ?? '', children(), key)
-          case 'image': return <ExtensionImage key={key} source={safeUrl(node.url, base)} alt={node.alt || 'README image'} />
-          case 'imageReference': return <ExtensionImage key={key} source={safeUrl(definitions.get(node.identifier)?.url ?? '', base)} alt={node.alt || 'README image'} />
+          case 'image': return <ExtensionImage key={key} source={safeUrl(node.url, base)} alt={node.alt || 'README image'} onError={onError} />
+          case 'imageReference': return <ExtensionImage key={key} source={safeUrl(definitions.get(node.identifier)?.url ?? '', base)} alt={node.alt || 'README image'} onError={onError} />
           case 'thematicBreak': return <hr key={key} />
           case 'break': return <br key={key} />
           case 'html': return <Fragment key={key}>{html(node.value)}</Fragment>
@@ -188,7 +189,11 @@ export function ExtensionDetailsContent({ namespace, name }: { namespace: string
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let live = true
-    api.extensionDetails(namespace, name).then((value) => { if (live) setDetails(value) }, (failure: unknown) => { if (live) setError(message(failure)) })
+    api.extensionDetails(namespace, name).then((value) => { if (live) setDetails(value) }, (failure: unknown) => {
+      if (!live) return
+      setError(message(failure))
+      notifyFailure(`Loading details for ${namespace}.${name}`, failure)
+    })
     return () => { live = false }
   }, [namespace, name])
   return <>
@@ -199,7 +204,7 @@ export function ExtensionDetailsContent({ namespace, name }: { namespace: string
         <ExtensionImage source={details.icon} alt={details.displayName} logo />
         <div><h3>{details.displayName}</h3><p>{details.description}</p><p>{details.namespace}.{details.name} · v{details.version}</p><ExtensionStats value={details} /></div>
       </div>
-      {details.readme?.trim() ? <ExtensionReadme source={details.readme} base={details.readmeBaseUrl} onError={(failure) => setError(message(failure))} /> : <p>No README is available for this extension.</p>}
+      {details.readme?.trim() ? <ExtensionReadme source={details.readme} base={details.readmeBaseUrl} onError={(failure) => { setError(message(failure)); notifyFailure(`Opening a link in ${namespace}.${name}`, failure) }} /> : <p>No README is available for this extension.</p>}
     </>}
   </>
 }
@@ -248,33 +253,36 @@ export function ExtensionSettings({ extensions, onChanged, onDetails }: {
       if (!live) return
       setPopular([])
       setError(message(failure))
+      notifyFailure('Loading popular extensions', failure)
     })
     return () => { live = false }
   }, [])
 
-  const run = async (key: string, action: () => Promise<void>) => {
+  // `label` names the action for the notification hub, such as "Installing acme.night".
+  const run = async (key: string, label: string, action: () => Promise<void>) => {
     setBusy(key)
     setError(null)
     try {
       await action()
     } catch (failure) {
       setError(message(failure))
+      notifyFailure(label, failure)
     } finally {
       setBusy(null)
     }
   }
   const search = (event: FormEvent) => {
     event.preventDefault()
-    if (query.trim()) void run('search', async () => setResults(await api.searchExtensions(query)))
+    if (query.trim()) void run('search', 'Searching extensions', async () => setResults(await api.searchExtensions(query)))
   }
-  const install = (result: ExtensionResult) => run(`install:${result.namespace}.${result.name}`, async () => {
+  const install = (result: ExtensionResult) => run(`install:${result.namespace}.${result.name}`, `Installing ${result.namespace}.${result.name}`, async () => {
     onChanged((await api.installExtension(result.namespace, result.name)).id, false)
   })
-  const installFile = () => run('file', async () => {
+  const installFile = () => run('file', 'Installing an extension file', async () => {
     const installed = await api.installExtensionFile()
     if (installed) onChanged(installed.id, false)
   })
-  const remove = (extension: InstalledExtension) => run(`remove:${extension.id}`, async () => {
+  const remove = (extension: InstalledExtension) => run(`remove:${extension.id}`, `Removing ${extension.id}`, async () => {
     await api.removeExtension(extension.id)
     onChanged(extension.id, true)
   })

@@ -76,11 +76,26 @@ export async function runRepoAction(
     await action()
     return true
   } catch (failure) {
-    onError(failure)
+    onError(failure instanceof ActionError ? failure : new ActionError(`${workingLabel(key).replace('…', '')} in ${repo.split('/').pop()}`, failure, repo))
     return false
   } finally {
     running.delete(repo)
     notify()
+  }
+}
+
+// IPC failures arrive as "Error invoking remote method '…': Error: <reason>". The reason alone is what the user reads.
+export function failureReason(failure: unknown): string {
+  return (failure instanceof Error ? failure.message : String(failure)).replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
+}
+
+// A failure with the action it belongs to, such as "Pulling in bettergit", so the error popup can say what failed and why.
+// `repo` is the sidebar path of the repo it happened in, for the popup's Go to repository. The message stays the bare
+// reason, for callers that show it inline.
+export class ActionError extends Error {
+  constructor(readonly action: string, failure: unknown, readonly repo?: string) {
+    super(failureReason(failure))
+    this.name = 'ActionError'
   }
 }
 

@@ -7,7 +7,8 @@ import { useDialogFocus } from './Dialogs'
 import { Icon } from './Icons'
 import { ActionMenu, type BarItem } from './OverflowBar'
 import { hiddenBranches, setHiddenBranches, useHiddenBranches } from './prefs'
-import { blockedReason, busyKey, runRepoWrite, useRepoBusy, workingLabel } from './repo-busy'
+import { blockedReason, busyKey, failureReason, runRepoWrite, useRepoBusy, workingLabel } from './repo-busy'
+import { notifyFailure } from './notifications'
 import './branch-picker.css'
 
 const api = window.bettergit
@@ -241,7 +242,8 @@ export function BranchPicker({ repo, branches, headHash, conflicts, onRefresh, o
       (value) => setExtras((prev) => ({ ...prev, [key]: value })),
       (failure) => {
         setExtras((prev) => ({ ...prev, [key]: [] }))
-        setError(`Could not read ${label}: ${failure instanceof Error ? failure.message : String(failure)}`)
+        setError((message) => message ?? `Could not read ${label}: ${failureReason(failure)}`)
+        notifyFailure(`Reading ${label}`, failure, repo)
       },
     )
     return Promise.all([read('tags', 'tags', () => api.tags(repo)), read('stashes', 'stashes', () => api.stashes(repo)),
@@ -286,7 +288,7 @@ export function BranchPicker({ repo, branches, headHash, conflicts, onRefresh, o
     setError(null)
     let failed = false
     const ok = await runRepoWrite(repo, key, action, {
-      onError: (failure) => { failed = true; setError(failure instanceof Error ? failure.message : String(failure)) },
+      onError: (failure) => { failed = true; setError(failureReason(failure)); notifyFailure('A branch action', failure, repo) },
       reload: onChanged,
     })
     if (ok && !done) return onClose()
@@ -294,7 +296,8 @@ export function BranchPicker({ repo, branches, headHash, conflicts, onRefresh, o
     else if (!failed) setError(blockedReason(busyKey(repo)) ?? 'The branch action could not start. Try again.')
     // Refusals may mean the selection became stale. Keep the name and selected identity until the user picks again.
     try { await Promise.all([onRefresh(), (mode === 'switch' || !!done) && loadExtras()]) } catch (failure) {
-      setError((message) => `${message ?? ''} Could not refresh branches: ${failure instanceof Error ? failure.message : String(failure)}`)
+      setError((message) => `${message ?? ''} Could not refresh branches: ${failureReason(failure)}`)
+      notifyFailure('Refreshing branches', failure, repo)
     } finally {
       inFlight.current = false
       setSubmitting(false)
@@ -374,7 +377,7 @@ export function BranchPicker({ repo, branches, headHash, conflicts, onRefresh, o
       ...(hidden.length ? [{ key: 'show-all', group: 'visibility', icon: 'eye', label: 'Show All Hidden Branches',
         detail: 'In this picker and History', onClick: () => setHiddenBranches(repo, []) } satisfies BarItem] : []),
       { key: 'copy', group: 'find', icon: 'copy', label: `Copy '${branch.name}'`,
-        onClick: () => { navigator.clipboard.writeText(branch.name).catch((failure) => setError(`Could not copy: ${failure instanceof Error ? failure.message : String(failure)}`)) } },
+        onClick: () => { navigator.clipboard.writeText(branch.name).catch((failure) => { setError(`Could not copy: ${failureReason(failure)}`); notifyFailure('Copying the branch name', failure, repo) }) } },
       { key: 'search', group: 'find', icon: 'search', label: 'Search…', onClick: () => searchFor(branch) },
     ]
   }

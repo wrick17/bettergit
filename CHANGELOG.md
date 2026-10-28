@@ -2,6 +2,25 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.6] - 2026-10-28
+
+### New
+
+- Failed actions now collect in a notification list. A bell in the bottom-right corner shows how many are unread. Each entry says what failed, in which repository and why. **Go to repository** opens that repository, and **Mark as read** or **Mark all as read** clears entries. Unread entries are kept after you restart BetterGit.
+- A short message announces each new failure without taking focus, including while a dialog is open.
+- Failures inside dialogs, such as cloning, choosing apps, installing extensions and branch actions, still show in the dialog and also go to the notification list, so they stay after the dialog closes.
+
+### Improved
+
+- A folder's **Refresh**, **Fetch All** and **Pull All** show their progress. The folder's **⋯** button spins while the action runs. The bottom of the sidebar shows how many repositories are done and which one is running, then a summary of how many succeeded, were skipped or failed. **Fetch All Repositories** in the app menu shows the same status.
+- When **Fetch All** or **Pull All** fails in several repositories, each repository gets its own notification.
+- Error messages no longer start with "Error invoking remote method".
+
+### Fixed
+
+- A second Refresh, Fetch All or Pull All can no longer start while one is running.
+- Background fetch failures, a failed refresh from the app menu, choosing a clone folder, copying from menus, failing to list installed apps or extensions, an installed extension that cannot be read, a chosen theme that does not load, and changing the appearance from the app menu now report the error. Before, they failed silently.
+
 ## [0.1.5] - 2026-10-28
 
 ### New
