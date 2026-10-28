@@ -3,6 +3,7 @@ import { PullFromDialog, StashDialog, type StashMode } from './StashDialog'
 import type { BarItem } from './OverflowBar'
 import { confirmOverBlur } from './confirm'
 import { ActionError, blockedReason, workingLabel } from './repo-busy'
+import type { FetchMode, PullMode } from '../../main/git/ops'
 
 const api = window.bettergit
 
@@ -46,10 +47,22 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     void run('reset', async () => onNote(`Backup kept at ${await api.resetToUpstream(repo)}`))
   }
 
-  // The Fetch dropdown offers the two syncs the button stands for: the same fetch as the button, and Pull and Merge.
+  const pullOption = (key: string, label: string, mode: PullMode, detail: string): BarItem => ({
+    key, icon: mode.startsWith('rebase') ? 'pullRebase' : 'pullMerge', ...state(key, label), detail, group: 'pull',
+    onClick: () => void run(key, () => api.pull(repo, mode)),
+  })
+  const fetchOption = (key: string, label: string, mode: FetchMode, detail: string): BarItem => ({
+    key, icon: 'refresh', ...state(key, label), detail, group: 'fetch', onClick: () => void run(key, () => api.fetch(repo, mode)),
+  })
+  // The dropdowns name each option by the git command it runs, as Sublime Merge does.
   const fetchMenu: BarItem[] = [
-    { key: 'fetch', icon: 'refresh', ...state('fetch', 'fetch', ['background-fetch']), detail: 'Retrieves changes from every remote', group: 'fetch', onClick: () => void run('fetch', () => api.fetch(repo)) },
-    { key: 'pull-merge', icon: 'pullMerge', ...state('pull-merge', 'pull'), detail: 'Retrieves changes from the remote and merges them into the current branch', group: 'fetch', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
+    fetchOption('fetch-plain', 'fetch', 'fetch', 'Retrieves changes from the remote'),
+    fetchOption('fetch-tags', 'fetch --tags', 'tags', 'Retrieves changes from the remote including all tags'),
+    fetchOption('fetch-prune', 'fetch --prune', 'prune', 'Retrieves changes from the remote and removes deleted remote branches'),
+    pullOption('pull-merge', 'pull', 'merge', 'Retrieves changes from the remote and merges them into the current branch'),
+    pullOption('pull-ff', 'pull --ff-only', 'ff-only', 'Retrieves changes from the remote and fast-forwards the current branch'),
+    pullOption('pull-rebase', 'pull --rebase', 'rebase', 'Retrieves changes from the remote and rebases the current branch onto them'),
+    pullOption('pull-autostash', 'pull --rebase --autostash', 'rebase-autostash', 'Stashes any uncommitted changes before running pull --rebase'),
   ]
 
   // A force push replaces the upstream branch, so it names both and asks first. Main refuses it if either changed since.
@@ -73,7 +86,7 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
   return [
     { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick: () => onTab('history') },
     { key: 'copy', icon: 'copy', label: 'Copy Branch Name', group: 'view', disabled: !status?.head, onClick: copyBranch },
-    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch', ['background-fetch']), group: 'sync', shortcut: '⇧⌘F', menu: fetchMenu, onClick: () => void run('fetch', () => api.fetch(repo)) },
+    { key: 'fetch', icon: 'refresh', ...state('fetch', 'Fetch', ['background-fetch', ...fetchMenu.map((item) => item.key)]), group: 'sync', shortcut: '⇧⌘F', menu: fetchMenu, onClick: () => void run('fetch', () => api.fetch(repo)) },
     { key: 'pullMerge', icon: 'pullMerge', ...state('pull-merge', 'Pull and Merge'), group: 'sync', shortcut: '⇧⌘L', onClick: () => void run('pull-merge', () => api.pull(repo, 'merge')) },
     { key: 'pullRebase', icon: 'pullRebase', ...state('pull-rebase', 'Pull and Rebase'), group: 'sync', onClick: () => void run('pull-rebase', () => api.pull(repo, 'rebase')) },
     { key: 'pullFrom', icon: 'pullFrom', ...state('pull', 'Pull from…'), group: 'sync', onClick: () => onDialog('pull-from') },

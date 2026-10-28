@@ -335,10 +335,12 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
     busy.applyRepoLockSnapshot({ seq: ++seq, holders: { [repo]: 'background-fetch' }, identities })
     for (const selected of [repo, alias]) {
       const items = itemsFor(selected)
-      expect(items.filter((item) => item.busy).map((item) => item.key)).toEqual(['pullRebase'])
+      // pull --rebase sits in the Fetch dropdown, so the shared Fetch button spins for it too.
+      expect(items.filter((item) => item.busy).map((item) => item.key)).toEqual(['fetch', 'pullRebase'])
       expect(items.find((item) => item.key === 'pullRebase')!.label).toBe('Pulling…')
-      expect(items.find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: 'Another action is running: Pulling…' })
-      expect(fetchMarkup(selected)).not.toContain('action-spin')
+      expect(items.find((item) => item.key === 'fetch')).toMatchObject({ label: 'Pulling…', busy: true, blocked: undefined })
+      expect(items.find((item) => item.key === 'push')!.blocked).toBe('Another action is running: Pulling…')
+      expect(fetchMarkup(selected)).toContain('action-spin')
     }
     busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
     expect(itemsFor(repo).find((item) => item.key === 'pullRebase')!.busy).toBe(true)
@@ -406,17 +408,25 @@ test('native menu shortcuts do not collide after Electron role defaults and modi
 })
 
 test('title-bar Actions menu keeps the sync icons and lists every repo action with groups, danger, and shortcuts', async () => {
+  const calls: unknown[][] = []
+  const bettergit = {
+    fetch: async (...args: unknown[]) => { calls.push(['fetch', ...args]) },
+    pull: async (...args: unknown[]) => { calls.push(['pull', ...args]) },
+  }
   const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
     'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './repo-busy': repoBusy,
-  }, '', { window: { bettergit: {} } }) as typeof import('../src/renderer/src/RepoMenu')
+  }, '', { window: { bettergit } }) as typeof import('../src/renderer/src/RepoMenu')
   const bar = await loadEntry('../src/renderer/src/OverflowBar.tsx', {
     react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './Icons': await import('../src/renderer/src/Icons'),
   }) as typeof import('../src/renderer/src/OverflowBar')
   const noop = () => {}
-  const items = menu.repoItems({
-    repo: '/repo', status: { head: 'main', upstream: 'origin/main' } as never, busy: null, run: async () => true,
+  const runs: string[] = []
+  const itemsWith = (busy: string | null) => menu.repoItems({
+    repo: '/repo', status: { head: 'main', upstream: 'origin/main' } as never, busy,
+    run: async (key, action) => { runs.push(key); await action(); return true },
     onTab: noop, onNote: noop, onError: noop, onDialog: noop,
   })
+  const items = itemsWith(null)
 
   const toolbar = renderToStaticMarkup(React.createElement(bar.ActionsMenu, { items }))
   expect(toolbar).toContain('aria-haspopup="menu"')
@@ -424,10 +434,26 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   // The Actions trigger is an icon button like the sync actions, so it shows no text.
   expect(toolbar).not.toContain('>Actions<')
   expect(toolbar).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*class="icon-button"[^>]*aria-label="Actions"/)
-  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options', 'Actions'])
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Push', 'Push options', 'Actions'])
   // Fetch and Push open dropdowns of git commands; the force pushes are marked dangerous.
   const options = (key: string) => items.find((item) => item.key === key)!.menu!
-  expect(options('fetch').map((item) => item.label)).toEqual(['fetch', 'pull'])
+  expect(options('fetch').map((item) => item.label)).toEqual(['fetch', 'fetch --tags', 'fetch --prune', 'pull', 'pull --ff-only', 'pull --rebase', 'pull --rebase --autostash'])
+  expect(options('fetch').map((item) => item.group)).toEqual(['fetch', 'fetch', 'fetch', 'pull', 'pull', 'pull', 'pull'])
+  // The button keeps its one-click fetch of every remote; each option passes its own mode.
+  items.find((item) => item.key === 'fetch')!.onClick()
+  for (const item of options('fetch')) item.onClick()
+  await Promise.resolve()
+  expect(runs).toEqual(['fetch', 'fetch-plain', 'fetch-tags', 'fetch-prune', 'pull-merge', 'pull-ff', 'pull-rebase', 'pull-autostash'])
+  expect(calls).toEqual([
+    ['fetch', '/repo'], ['fetch', '/repo', 'fetch'], ['fetch', '/repo', 'tags'], ['fetch', '/repo', 'prune'],
+    ['pull', '/repo', 'merge'], ['pull', '/repo', 'ff-only'], ['pull', '/repo', 'rebase'], ['pull', '/repo', 'rebase-autostash'],
+  ])
+  // Every option spins the shared Fetch button and blocks the other writes.
+  for (const key of runs) {
+    const running = itemsWith(key)
+    expect(running.find((item) => item.key === 'fetch')).toMatchObject({ busy: true, label: repoBusy.workingLabel(key), blocked: undefined })
+    expect(running.find((item) => item.key === 'push')!.blocked).toBe(`Another action is running: ${repoBusy.workingLabel(key)}`)
+  }
   expect(options('push').map((item) => item.label)).toEqual(['push', 'push --force', 'push --force-with-lease', 'push --no-verify'])
   expect(options('push').filter((item) => item.danger).map((item) => item.key)).toEqual(['push-force', 'push-lease'])
   expect([...options('fetch'), ...options('push')].every((item) => item.detail)).toBe(true)
