@@ -73,7 +73,9 @@ async function applyRuntime() {
 function installMenu() {
   Menu.setApplicationMenu(buildMenu({
     send: (action) => sendToRenderer('menu:action', action),
-    setTheme: (theme) => persist({ ...config, settings: { ...config.settings, theme } }),
+    // A menu click has no caller to reject to, so a failed save goes to the renderer's error popup.
+    setTheme: (theme) => persist({ ...config, settings: { ...config.settings, theme } }).catch((failure: unknown) =>
+      sendToRenderer('app:error', { action: 'Changing the appearance', reason: failure instanceof Error ? failure.message : String(failure) })),
     currentTheme: () => config.settings.theme,
   }))
 }
@@ -379,7 +381,8 @@ function registerIpc() {
     await persist({ ...config, settings: { ...config.settings, customApps: [...(config.settings.customApps ?? []), chosen] } })
     return chosen
   })
-  ipcMain.handle('extensions:list', () => listExtensions(extensionsDir()))
+  ipcMain.handle('extensions:list', () => listExtensions(extensionsDir(), (id, reason) =>
+    sendToRenderer('app:error', { action: `Reading installed extension ${id}`, reason })))
   ipcMain.handle('extensions:search', (_event, query: unknown) => searchOpenVsx(query))
   ipcMain.handle('extensions:metadata', (event, namespace: unknown, name: unknown) => {
     assertMainFrame(event)

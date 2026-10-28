@@ -1031,3 +1031,271 @@ test.skipIf(!playwright)('clearing find while a reveal waits for a removed row i
   expect(await run(0)).toEqual({ calls: ['unfold'], scrollTop: 0, highlighted: false })
   expect(await run(5000)).toEqual({ calls: ['unfold'], scrollTop: 0, highlighted: false })
 })
+
+// Folder Refresh, Fetch All and Pull All run while the menu that started them is gone. Each IPC call here waits for the
+// test to settle it, so the sidebar must show the run, its progress and its result, and refuse a second batch meanwhile.
+// Failures go to the notification hub, one entry per failure, each kept until marked read and able to open its repo.
+test.skipIf(!playwright)('folder batches show progress and a result, and failures wait in the notification hub with their repo', async () => {
+  await page.setViewportSize({ width: 1700, height: 800 })
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, App, markAllRead } = w.under
+    markAllRead()
+    const repos = ['a', 'b', 'c'].map((name) => ({ kind: 'repo', path: `/p/${name}`, name, branch: 'main' }))
+    const tree = [{ kind: 'folder', path: '/p', name: 'projects', children: repos }, { kind: 'folder', path: '/e', name: 'empty', children: [] }]
+    w.sync = { tree, calls: [] as string[], pending: [] as any[], listeners: {} as Record<string, (payload: unknown) => void>, holdTree: false, confirm: false, confirms: 0 }
+    const hold = (call: string) => new Promise((resolve, reject) => { w.sync.calls.push(call); w.sync.pending.push({ call, resolve, reject }) })
+    Object.assign(w.bettergit, {
+      getConfig: async () => ({ sources: ['/p', '/e'], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null,
+        settings: { theme: 'dark', appearance: {}, languages: {}, editorApp: 'none', terminalApp: 'none', customApps: [] } }),
+      getTree: () => (w.sync.holdTree ? hold('getTree') : Promise.resolve(tree)),
+      repoLocks: async () => ({ seq: 0, holders: {} }),
+      onEvent: (name: string, listener: (payload: unknown) => void) => { w.sync.listeners[name] = listener; return () => undefined },
+      fetch: (path: string) => hold(`fetch ${path}`),
+      pull: (path: string, mode: string) => hold(`pull ${path} ${mode}`),
+      clone: async () => '/p/new',
+      pickFolder: async () => { throw new Error("Error invoking remote method 'folder:pick': Error: no access") },
+      listExtensions: async () => { throw new Error('disk unreadable') },
+      searchExtensions: async () => [{ namespace: 'acme', name: 'theme', displayName: 'Fixture', description: 'Fixture theme', version: '1', downloads: 1, averageRating: null, reviewCount: null, icon: null }],
+      installExtension: async () => { throw new Error("Error invoking remote method 'extensions:install': Error: network down") },
+    })
+    // An opened repo's pane asks for more than this test answers; those reads stay pending.
+    Object.setPrototypeOf(w.bettergit, new Proxy({}, { get: () => () => new Promise(() => undefined) }))
+    window.confirm = () => { w.sync.confirms++; return w.sync.confirm }
+    document.getElementById('root')!.style.cssText = 'height:780px;width:1700px'
+    w.syncRoot = createRoot(document.getElementById('root'))
+    w.syncRoot.render(createElement(App))
+  })
+  const statusText = () => page.evaluate(() => document.querySelector('.sidebar [role="status"]')?.textContent ?? '')
+  // Waits for the sidebar status to include `text`, and reports what it showed instead on a timeout.
+  const shows = (text: string) => page.waitForFunction((text: string) => (document.querySelector('.sidebar [role="status"]')?.textContent ?? '').includes(text), text, { timeout: 2000 })
+    .catch(async () => { throw new Error(`status never showed "${text}"; it shows "${await statusText()}"`) })
+  const actions = page.getByRole('button', { name: /^projects actions/ })
+  const settle = (index: number, error?: string) => page.evaluate(([index, error]: [number, string | undefined]) => {
+    const pending = (window as any).sync.pending[index]
+    // A held getTree answers with the tree; a Git write answers with nothing.
+    if (error) pending.reject(new Error(error)); else pending.resolve(pending.call === 'getTree' ? (window as any).sync.tree : undefined)
+  }, [index, error])
+  const calls = () => page.evaluate(() => (window as any).sync.calls)
+  const reset = () => page.evaluate(() => { const w = window as any; w.sync.calls = []; w.sync.pending = [] })
+  const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  const menu = async (item: string) => {
+    await page.locator('.tree-row.folder', { hasText: item === 'Fetch All in empty' ? 'empty' : 'projects' }).locator('.row-more').click({ force: true })
+    return page.getByRole('menuitem', { name: item === 'Fetch All in empty' ? 'Fetch All' : item, exact: true })
+  }
+  // The hub's entries, opening it if needed; the bell's name; the brief announcement.
+  const hub = async () => {
+    await frames()
+    if (!(await page.locator('.notify-panel').count())) {
+      if (!(await page.locator('.notify-trigger').count())) return []
+      await page.locator('.notify-trigger').click()
+    }
+    return page.evaluate(() => [...document.querySelectorAll('.notify-panel li')].map((li) => [
+      li.querySelector('strong')!.textContent, li.querySelector('p')!.textContent, li.querySelector('.notify-repo')?.textContent ?? '', li.querySelector('.notify-count')?.textContent ?? '',
+    ].join(' | ')))
+  }
+  const bell = async () => { await frames(); return page.evaluate(() => document.querySelector('.notify-trigger')?.getAttribute('aria-label') ?? null) }
+  const closeHub = async () => { if (await page.locator('.notify-panel').count()) await page.keyboard.press('Escape') }
+  const selected = () => page.evaluate(() => document.querySelector('[role="treeitem"][aria-selected="true"]')?.textContent ?? null)
+  try {
+    await page.waitForSelector('.tree-row.folder', { timeout: 3000 })
+
+    // Refresh shows the rescan until getTree answers, then the result. A failed rescan says so and ends the spinner.
+    await page.evaluate(() => { (window as any).sync.holdTree = true })
+    await (await menu('Refresh')).click()
+    await shows('Refreshing repositories…')
+    expect(await actions.getAttribute('aria-busy')).toBe('true')
+    await settle(0)
+    await shows('Refreshed repositories')
+    expect(await actions.getAttribute('aria-busy')).toBeNull()
+    expect(await bell()).toBeNull()
+    await (await menu('Refresh')).click()
+    await settle(1, 'scan failed')
+    await shows('Refresh failed: scan failed')
+    expect(await actions.getAttribute('aria-busy')).toBeNull()
+    // The failure is announced without taking focus, and waits in the hub.
+    await page.waitForFunction(() => document.querySelector('.notify-toast-region')?.textContent?.includes('Refresh failed scan failed'), undefined, { timeout: 2000 })
+    expect(await page.evaluate(() => !!document.activeElement?.closest('.notify-layer'))).toBe(false)
+    expect(await bell()).toBe('Notifications: 1 unread')
+    await page.evaluate(() => { (window as any).sync.holdTree = false })
+    await reset()
+
+    // Fetch All runs one repo at a time with the count and the repo in flight, after its menu has closed.
+    await (await menu('Fetch All')).click()
+    expect(await page.locator('.context-menu').count()).toBe(0)
+    await shows('Fetch All in projects: 0 of 3, fetching a')
+    expect(await actions.getAttribute('aria-busy')).toBe('true')
+    // A second batch is refused while one runs: the folder actions are disabled and the app menu's Fetch All starts nothing.
+    for (const item of ['Refresh', 'Fetch All', 'Pull All']) expect(await (await menu(item)).isDisabled()).toBe(true)
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => { (window as any).sync.holdTree = true })
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)))
+    expect(await calls()).toEqual(['fetch /p/a'])
+    await page.evaluate(() => { (window as any).sync.holdTree = false })
+    await settle(0)
+    await shows('Fetch All in projects: 1 of 3, fetching b')
+    await settle(1, 'no remote')
+    await shows('Fetch All in projects: 2 of 3, fetching c')
+    await settle(2)
+    await shows('Fetch All in projects done: 2 succeeded, 1 failed')
+    await shows('b: no remote')
+    expect(await actions.getAttribute('aria-busy')).toBeNull()
+    expect(await hub()).toEqual([
+      'Fetch All in projects: b failed | no remote | b | ',
+      'Starting Fetch All failed | Wait for the running Refresh, Fetch All or Pull All to finish. |  | ',
+      'Refresh failed | scan failed |  | ',
+    ])
+    await closeHub()
+
+    // A cancelled Pull All starts nothing and claims nothing.
+    await reset()
+    await (await menu('Pull All')).click()
+    await page.waitForFunction(() => (window as any).sync.confirms === 1, undefined, { timeout: 2000 })
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)))
+    expect(await calls()).toEqual([])
+    expect(await statusText()).not.toContain('Pull All')
+    expect(await actions.getAttribute('aria-busy')).toBeNull()
+
+    // A confirmed Pull All fast-forwards each repo; one busy elsewhere is skipped and named, but is not a failure.
+    await page.evaluate(() => { const w = window as any; w.sync.confirm = true; w.sync.listeners['repo:locks']({ seq: 1, holders: { '/p/c': 'push' } }) })
+    await (await menu('Pull All')).click()
+    await shows('Pull All in projects: 0 of 3, pulling a')
+    await settle(0)
+    await settle(1)
+    await shows('Pull All in projects done: 2 succeeded, 1 skipped')
+    await shows('c: skipped, another action was running')
+    expect(await calls()).toEqual(['pull /p/a ff-only', 'pull /p/b ff-only'])
+    expect(await bell()).toBe('Notifications: 3 unread')
+    await page.evaluate(() => (window as any).sync.listeners['repo:locks']({ seq: 2, holders: {} }))
+
+    // A folder with no repos finishes at once and says so.
+    await (await menu('Fetch All in empty')).click()
+    await shows('Fetch All in empty: no repositories')
+
+    // The app menu's Fetch All uses the same status, so it does not finish silently.
+    await reset()
+    await page.evaluate(() => { (window as any).sync.holdTree = true })
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
+    expect(await calls()).toEqual(['getTree'])
+    await settle(0)
+    await page.evaluate(() => { (window as any).sync.holdTree = false })
+    await shows('Fetch All: 0 of 3, fetching a')
+    for (const index of [1, 2, 3]) await page.waitForFunction((index: number) => (window as any).sync.pending.length > index, index).then(() => settle(index))
+    await shows('Fetch All done: 3 succeeded')
+
+    // Marked read, an entry leaves the hub and the store; nothing clears on its own.
+    await page.evaluate(() => (window as any).under.markAllRead())
+    expect(await bell()).toBeNull()
+    expect(await page.evaluate(() => localStorage.getItem('bettergit.notifications'))).toBe('[]')
+
+    // A menu command names its action and why it could not run. The same failure again counts instead of stacking.
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('pull'))
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('pull'))
+    expect(await hub()).toEqual(['Pulling failed | Select a repository first. |  | ×2'])
+    expect(JSON.parse(await page.evaluate(() => localStorage.getItem('bettergit.notifications')))).toHaveLength(1)
+    await page.getByRole('button', { name: 'Mark "Pulling failed" as read' }).click()
+    expect(await bell()).toBeNull()
+
+    // A dialog failure shows in the dialog. A background failure while the dialog is open waits in the hub, which stays
+    // usable above the inert app; the same failure again raises its count.
+    await page.evaluate(() => (window as any).sync.listeners['menu:action']('clone'))
+    await page.getByRole('button', { name: 'Choose…' }).click()
+    await page.waitForFunction(() => document.querySelector('.dialog-error')?.textContent === 'Choosing a folder failed: no access', undefined, { timeout: 2000 })
+    expect(await hub()).toEqual(['Choosing a clone folder failed | no access |  | '])
+    await closeHub()
+    expect(await page.locator('[role="dialog"]').count()).toBe(1)
+    const report = { fetched: [], skipped: [{ repo: '*', reason: 'user idle' }], failed: [{ repo: '/p/a', reason: "Error invoking remote method 'x': Error: offline" }] }
+    await page.evaluate((report: unknown) => { const w = window as any; w.sync.listeners['fetch:report'](report); w.sync.listeners['fetch:report'](report) }, report)
+    expect(await page.evaluate(() => !!document.querySelector('.notify-trigger')?.closest('[inert]'))).toBe(false)
+    expect(await hub()).toEqual(['Background fetch: a failed | offline | a | ×2', 'Choosing a clone folder failed | no access |  | '])
+    await page.getByRole('button', { name: 'Mark "Background fetch: a failed" as read' }).click()
+    expect(await bell()).toBe('Notifications: 1 unread')
+    await closeHub()
+    expect(await page.locator('[role="dialog"]').count()).toBe(1)
+
+    // Keyboard input must not wait for an animation frame to move focus out of the dialog.
+    await page.evaluate(() => {
+      const w = window as any
+      w.savedNotificationRaf = window.requestAnimationFrame
+      window.requestAnimationFrame = () => 0
+    })
+    await page.locator('.notify-trigger').click()
+    await page.keyboard.press('Tab')
+    expect(await page.evaluate(() => !!document.activeElement?.closest('.notify-layer'))).toBe(true)
+    await page.keyboard.press('Escape')
+    expect(await page.locator('[role="dialog"]').count()).toBe(1)
+    expect(await page.locator('.notify-panel').count()).toBe(0)
+    await page.evaluate(() => { window.requestAnimationFrame = (window as any).savedNotificationRaf })
+
+    // A clone that succeeds but whose sidebar rescan fails says both.
+    await page.evaluate(() => { (window as any).sync.holdTree = true })
+    await reset()
+    await page.getByLabel('Repository URL').fill('https://example.com/new.git')
+    await page.getByRole('button', { name: 'Clone', exact: true }).click()
+    await page.waitForFunction(() => (window as any).sync.pending.length === 1, undefined, { timeout: 2000 })
+    await settle(0, 'scan failed')
+    await page.waitForSelector('.notify-trigger', { timeout: 2000 })
+    expect(await page.locator('[role="dialog"]').count()).toBe(0)
+    // The clone dialog's own failure is still waiting after the dialog closed.
+    expect(await hub()).toEqual(['Cloned into /p/new, but showing it in the sidebar failed | scan failed |  | ', 'Choosing a clone folder failed | no access |  | '])
+    await page.getByRole('button', { name: 'Mark "Choosing a clone folder failed" as read' }).click()
+    expect(await bell()).toBe('Notifications: 1 unread')
+    await closeHub()
+    await page.evaluate(() => { const w = window as any; w.sync.holdTree = false; w.under.markAllRead() })
+
+    // Settings failures show in the dialog and also wait in the hub after it closes.
+    await page.evaluate(() => { sessionStorage.setItem('bettergit.settingsSection', 'themes'); (window as any).sync.listeners['menu:action']('open-settings') })
+    await page.waitForFunction(() => document.querySelector('.dialog-error')?.textContent === 'Could not list installed extensions: disk unreadable', undefined, { timeout: 2000 })
+    await page.getByRole('button', { name: 'Install Fixture' }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.dialog-error')].some((element) => element.textContent === 'network down'), undefined, { timeout: 2000 })
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('[role="dialog"]'), undefined, { timeout: 2000 })
+    expect(await hub()).toEqual(['Installing acme.theme failed | network down |  | ', 'Listing installed extensions failed | disk unreadable |  | '])
+    await page.getByRole('button', { name: 'Mark "Installing acme.theme failed" as read' }).click()
+    expect(await hub()).toEqual(['Listing installed extensions failed | disk unreadable |  | '])
+    await closeHub()
+    await page.evaluate(() => (window as any).under.markAllRead())
+
+    // A failure that lands after the user moved to another repo still goes to its own repo, as does each repo's entry.
+    await page.locator('.tree-row.repo', { hasText: 'b' }).click()
+    expect(await selected()).toBe('bmain')
+    await reset()
+    await (await menu('Fetch All')).click()
+    await page.locator('.tree-row.repo', { hasText: 'c' }).click()
+    await settle(0, 'denied a')
+    await page.waitForFunction(() => (window as any).sync.pending.length > 1).then(() => settle(1))
+    await page.waitForFunction(() => (window as any).sync.pending.length > 2).then(() => settle(2, 'denied c'))
+    await shows('done: 1 succeeded, 2 failed')
+    expect(await selected()).toBe('cmain')
+    expect(await hub()).toEqual(['Fetch All in projects: c failed | denied c | c | ', 'Fetch All in projects: a failed | denied a | a | '])
+    await page.getByRole('button', { name: 'Go to repository a' }).click()
+    expect(await selected()).toBe('amain')
+    await page.getByRole('button', { name: 'Go to repository c' }).click()
+    expect(await selected()).toBe('cmain')
+    // Going to a repo does not mark its entry read.
+    expect(await bell()).toBe('Notifications: 2 unread')
+
+    // A repo that has left the sidebar is named instead of opened.
+    await page.evaluate(() => (window as any).under.notify({ action: 'Pushing in gone', reason: 'rejected', repo: '/p/gone' }))
+    await page.getByRole('button', { name: 'Go to repository gone' }).click()
+    await page.waitForFunction(() => document.querySelector('.notify-panel em')?.textContent === 'gone is no longer in the sidebar.', undefined, { timeout: 2000 })
+    expect(await selected()).toBe('cmain')
+    // Mark all as read clears every entry, the bell and the stored list in one go.
+    expect(await bell()).toBe('Notifications: 3 unread')
+    expect(JSON.parse(await page.evaluate(() => localStorage.getItem('bettergit.notifications')))).toHaveLength(3)
+    await page.getByRole('button', { name: 'Mark all as read' }).click()
+    expect(await bell()).toBeNull()
+    expect(await page.locator('.notify-panel').count()).toBe(0)
+    expect(await page.evaluate(() => localStorage.getItem('bettergit.notifications'))).toBe('[]')
+
+    // A damaged store loads as checked entries: bad fields fall back, and entries without an action are dropped.
+    expect(await page.evaluate(() => (window as any).under.parseNotifications('[{"id":"x","action":"A","reason":5,"repo":"rel","time":1,"count":-1},{"id":"y"},3,null]')))
+      .toEqual([{ id: 'x', action: 'A', reason: '', time: 1, count: 1 }])
+    expect(await page.evaluate(() => (window as any).under.parseNotifications('{not json'))).toEqual([])
+  } finally {
+    await page.evaluate(() => { const w = window as any; w.syncRoot.unmount(); Object.setPrototypeOf(w.bettergit, Object.prototype); w.under.markAllRead() })
+    await page.setViewportSize({ width: 800, height: 600 })
+  }
+}, 30000)

@@ -589,10 +589,11 @@ test('App supplies the working-copy editor bridge and Open in buttons independen
     },
   }
   const app = await loadEntry('../src/renderer/src/App.tsx', imports, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: api } })
+  const opened: unknown[] = []
   const props = {
     titlebar: {}, repo: { kind: 'repo', name: 'repo', path: '/repo' }, editorApp: 'cursor', tab: 'history',
     onTab: () => {}, sidebarOpen: true, onToggleSidebar: () => {}, listOpen: true, onToggleList: () => {},
-    detailOpen: true, onToggleDetail: () => {}, revision: 0, onChanged: () => {}, onError: () => {}, onCleanChange: () => {},
+    detailOpen: true, onToggleDetail: () => {}, revision: 0, onChanged: () => {}, onError: (failure: unknown) => { opened.push(failure) }, onCleanChange: () => {},
   }
   renderToStaticMarkup(React.createElement(app.RepoPane, props))
   expect(bridge).not.toBeNull()
@@ -600,7 +601,9 @@ test('App supplies the working-copy editor bridge and Open in buttons independen
   // File open buttons name the app chosen in Settings, the same one the toolbar shows.
   expect(current.app).toEqual({ name: 'editor:cursor', icon: null })
   expect(current.source).toBe('commit')
-  expect(current.onError).toBe(props.onError)
+  // A failed open reaches the app's error handler named with the action and repo, for the notification hub.
+  current.onError(new Error('not installed'))
+  expect(opened[0]).toMatchObject({ action: 'Opening a file from repo', repo: '/repo', message: 'not installed' })
   await current.openFile('src/app.ts')
   expect(launches).toEqual([['/repo', 'src/app.ts']])
   expect(items.some((item) => item.key === 'openEditor')).toBe(false)

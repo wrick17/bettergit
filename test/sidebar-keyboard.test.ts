@@ -22,6 +22,7 @@ beforeAll(async () => {
     './Icons': { Icon: () => null, IconButton: () => null, toggleLabel: (state: string, action: string) => `${state} — click to ${action}` },
     './FileIcon': { FolderIcon: () => null },
     './session': { useScrollMemory: () => () => {} },
+    './batch-status': { useBatchStatus: () => null, dismissBatch: () => {} },
     './tree-order': treeOrder,
   }
   runInNewContext(await compiled.outputs[0].text() + '\nmodule.exports.TreeItem = TreeItem', {

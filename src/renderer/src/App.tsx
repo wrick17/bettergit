@@ -13,6 +13,7 @@ import type { Branch } from '../../main/git/ops'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { Sidebar } from './Sidebar'
 import type { MenuAction } from '../../main/menu'
+import type { FetchReport } from '../../main/background'
 import { ChangesView } from './ChangesView'
 import { HistoryView } from './HistoryView'
 import { ActionsMenu } from './OverflowBar'
@@ -21,7 +22,10 @@ import { CloneDialog, SettingsDialog } from './Dialogs'
 import { BranchPicker } from './BranchPicker'
 import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
-import { blockedReason, busyKey, connectRepoLocks, repoIdentity, runRepoWrite, useRepoBusy, type RepoLockSnapshot } from './repo-busy'
+import { ActionError, blockedReason, busyKey, connectRepoLocks, failureReason, repoIdentity, runRepoWrite, useRepoBusy, workingLabel, type RepoLockSnapshot } from './repo-busy'
+import { runBatch, runRefresh } from './batch-status'
+import { notify, notifyFailure } from './notifications'
+import { NotificationHub } from './NotificationHub'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 import { FindBar } from './FindBar'
@@ -37,7 +41,6 @@ export function App() {
   const [tree, setTree] = useState<TreeNode[]>([])
   const [selected, setSelected] = useState<string | null>(initial.selected)
   const [tab, setTab] = useState<'changes' | 'history'>(initial.tab)
-  const [error, setError] = useState<string | null>(null)
   // Uncommitted-file and ahead/behind counts by repo path. The main process fills these in the background.
   const [dirty, setDirty] = useState<Record<string, RepoCounts>>({})
   const [revision, setRevision] = useState(0)
@@ -79,16 +82,28 @@ export function App() {
   }
 
   const refreshTree = useCallback(async () => setTree(await api.getTree()), [])
-  const reportError = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))
+  // Failures go to the notification hub. `action` names what the user tried and `repo` where, for a failure that does not
+  // carry its own (see ActionError).
+  const reportError = (failure: unknown, action = 'An action', repo?: string) => notifyFailure(action, failure, repo)
   const reportErrorRef = useRef(reportError)
   reportErrorRef.current = reportError
+  // A refused sidebar batch, or each repo that failed in one. Its per-repo detail stays in the sidebar status too.
+  const reportBatch = (title: string, failures: { repo: string; reason: string }[] | null) => {
+    if (failures === null) reportError(new Error('Wait for the running Refresh, Fetch All or Pull All to finish.'), `Starting ${title}`)
+    else for (const { repo, reason } of failures) notify({ action: `${title}: ${repo.split('/').pop()}`, reason, repo })
+  }
+  const reportBatchRef = useRef(reportBatch)
+  reportBatchRef.current = reportBatch
 
-  // The banner clears itself, so an old failure does not stay over the pane.
+  // A promise nobody handled is still a failure the user should see. Aborts are cancellations, not failures.
   useEffect(() => {
-    if (!error) return
-    const timer = window.setTimeout(() => setError(null), 8000)
-    return () => window.clearTimeout(timer)
-  }, [error])
+    const onRejection = (event: PromiseRejectionEvent) => {
+      if (event.reason instanceof DOMException && event.reason.name === 'AbortError') return
+      reportErrorRef.current(event.reason)
+    }
+    window.addEventListener('unhandledrejection', onRejection)
+    return () => window.removeEventListener('unhandledrejection', onRejection)
+  }, [])
 
   useEffect(() => {
     saveSession({ selected, tab, sidebarOpen, listOpen, detailOpen, diffOpen, panelPins })
@@ -100,7 +115,7 @@ export function App() {
   }, reportError), [])
 
   useEffect(() => {
-    api.getConfig().then(setConfig).then(refreshTree).catch(reportError)
+    api.getConfig().then(setConfig).then(refreshTree).catch((failure: unknown) => reportError(failure, 'Loading repositories'))
   }, [refreshTree])
 
   const selectedRef = useRef<string | null>(null)
@@ -109,12 +124,24 @@ export function App() {
     // Live file changes and background fetch results both mean "the open repo may have new data".
     const offChanged = api.onEvent('repos:changed', (payload) => {
       const event = payload as { repos: string[]; tree: boolean }
-      if (event.tree) refreshTree().catch(reportError)
+      if (event.tree) refreshTree().catch((failure: unknown) => reportErrorRef.current(failure, 'Rescanning repositories'))
       // A path is a repo root, or a sources root when a working file changed, so it covers the repos under it.
       const repo = selectedRef.current
       if (event.tree || (repo && event.repos.some((root) => repo === root || repo.startsWith(root + '/')))) setRevision((value) => value + 1)
     })
-    const offFetch = api.onEvent('fetch:report', () => setRevision((value) => value + 1))
+    // Each failed repo is its own notification. The same failure next time raises its count without announcing again.
+    const offFetch = api.onEvent('fetch:report', (payload) => {
+      setRevision((value) => value + 1)
+      for (const { repo, reason } of (payload as FetchReport).failed ?? []) {
+        // '*' is a failure to list the repos at all, so it has no repo to go to.
+        notify(repo === '*' ? { action: 'Background fetch', reason: failureReason(reason) }
+          : { action: `Background fetch: ${repo.split('/').pop()}`, reason: failureReason(reason), repo }, true)
+      }
+    })
+    const offAppError = api.onEvent('app:error', (payload) => {
+      const { action, reason } = payload as { action: string; reason: string }
+      reportErrorRef.current(new Error(reason), action)
+    })
     const offDirty = api.onEvent('repos:dirty', (payload) => {
       const { path, count, ahead, behind } = payload as RepoCounts & { path: string }
       setDirty((prev) => {
@@ -122,7 +149,7 @@ export function App() {
         return old && old.count === count && old.ahead === ahead && old.behind === behind ? prev : { ...prev, [path]: { count, ahead, behind } }
       })
     })
-    return () => { offChanged(); offFetch(); offDirty() }
+    return () => { offChanged(); offFetch(); offAppError(); offDirty() }
   }, [refreshTree])
 
   // Menu commands that need the open repo or the sidebar are handled here, where that state lives.
@@ -132,16 +159,18 @@ export function App() {
       const repo = selectedRef.current
       // Menu writes take the same repo slot as the toolbar. A refused write says what is running instead of starting.
       const runRepo = (key: string, action: () => Promise<unknown>) => {
-        if (!repo) return setError('Select a repository first.')
+        if (!repo) return reportErrorRef.current(new Error('Select a repository first.'), workingLabel(key).replace('…', ''))
         const reason = blockedReason(busyKey(repo))
-        if (reason) return reportErrorRef.current(new Error(reason))
+        if (reason) return reportErrorRef.current(new ActionError(`${workingLabel(key).replace('…', '')} in ${repo.split('/').pop()}`, reason, repo))
         return void runRepoWrite(repo, key, action, { onError: reportErrorRef.current, reload: () => setRevision((value) => value + 1) })
       }
       switch (payload as MenuAction) {
-        case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch(reportErrorRef.current)
+        case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch((failure: unknown) => reportErrorRef.current(failure, 'Adding a folder'))
         case 'clone': return setCloneOpen(true)
         case 'open-settings': return setSettingsOpen(true)
-        case 'refresh': return void refreshTree().then(() => { setRefreshes((value) => value + 1); setRevision((value) => value + 1) })
+        // While a sidebar batch runs, the views still reload but the rescan waits for the batch.
+        case 'refresh': return void runRefresh(null, refreshTree).catch((failure: unknown) => reportErrorRef.current(failure, 'Refresh'))
+          .finally(() => { setRefreshes((value) => value + 1); setRevision((value) => value + 1) })
         case 'fetch': return void runRepo('fetch', () => api.fetch(repo!))
         case 'pull': return void runRepo('pull-merge', () => api.pull(repo!))
         case 'push': return void runRepo('push', () => api.push(repo!))
@@ -151,9 +180,10 @@ export function App() {
         case 'find': return openFindRef.current()
         case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
         case 'toggle-sidebar': return toggleSidebar.current()
-        case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
-        case 'fetch-all': return void api.getTree().then((all: TreeNode[]) =>
-          runEach('Fetch All', 'fetch', flatten(all), (path) => api.fetch(path), reportErrorRef.current, () => setRevision((value) => value + 1)))
+        case 'reveal-repo': return repo ? void api.reveal(repo).catch((failure: unknown) => reportErrorRef.current(failure, `Reveal ${repo.split('/').pop()} in Finder`, repo)) : undefined
+        case 'fetch-all': return void runBatch(null, 'Fetch All', 'fetching', 'fetch', async () => flatten(await api.getTree()),
+          (path) => api.fetch(path), () => setRevision((value) => value + 1))
+          .then((failures) => reportBatchRef.current('Fetch All', failures), (failure: unknown) => reportErrorRef.current(failure, 'Fetch All'))
       }
     })
     return off
@@ -201,6 +231,16 @@ export function App() {
   const repos = useMemo(() => flatten(tree), [tree])
   const repo = repos.find((node) => node.path === selected) ?? null
 
+  // Go to repository in the notification hub opens the repo in this window, as a sidebar click does. False when the repo
+  // is no longer in the sidebar, so the hub can say so instead of opening an empty pane.
+  const goToRepo = (path: string) => {
+    const known = repos.find((node) => node.path === path || repoIdentity(node.path) === repoIdentity(path))?.path
+    if (!known) return false
+    setSelected(known)
+    setTab('changes')
+    return true
+  }
+
   // Clean state belongs to the open repo, so it resets when no repo is open.
   useEffect(() => {
     if (!repo) setRepoClean(false)
@@ -218,7 +258,7 @@ export function App() {
   const handleDrop = async (event: DragEvent) => {
     event.preventDefault()
     const paths = Array.from(event.dataTransfer.files).map((file) => api.pathForFile(file)).filter(Boolean)
-    if (paths.length) await addPaths(paths).catch(reportError)
+    if (paths.length) await addPaths(paths).catch((failure: unknown) => reportError(failure, 'Adding dropped folders'))
   }
 
   // ⌘F also opens find from the page, which matters where the app menu is absent (such as a test harness). Opening is
@@ -256,48 +296,44 @@ export function App() {
             collapsed: config.collapsed.includes(path)
               ? config.collapsed.filter((item) => item !== path)
               : [...config.collapsed, path],
-          }).catch(reportError)}
+          }).catch((failure: unknown) => reportError(failure, 'Collapsing a folder'))}
           onToggleHidden={(path) => update({
             hidden: config.hidden.includes(path)
               ? config.hidden.filter((item) => item !== path)
               : [...config.hidden, path],
-          }).catch(reportError)}
-          onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch(reportError)}
+          }).catch((failure: unknown) => reportError(failure, config.hidden.includes(path) ? 'Showing in the sidebar' : 'Hiding in the sidebar'))}
+          onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch((failure: unknown) => reportError(failure, 'Adding a folder'))}
           onClone={() => setCloneOpen(true)}
-          onReveal={(path) => api.reveal(path).catch(reportError)}
+          onReveal={(path) => api.reveal(path).catch((failure: unknown) => reportError(failure, `Reveal ${path.split('/').pop()} in Finder`, path))}
           onRemoveSource={(path) => api.removeSource(path).then(async (next: AppConfig) => {
             setConfig(next)
             if (selected === path) setSelected(null)
             await refreshTree()
-          }).catch(reportError)}
+          }).catch((failure: unknown) => reportError(failure, `Removing ${path.split('/').pop()} from the sidebar`))}
           onDrop={handleDrop}
-          onRefresh={() => refreshTree().then(() => setRevision((value) => value + 1)).catch(reportError)}
+          onRefresh={(folder: FolderNode) => void runRefresh(folder.path, refreshTree)
+            .then((started) => { if (started) setRevision((value) => value + 1); else reportBatch('Refresh', null) })
+            .catch((failure: unknown) => reportError(failure, 'Refresh'))}
           onSyncFolder={(folder: FolderNode, kind: 'fetch' | 'pull') => void (async () => {
             // Repos hidden in the sidebar, or inside a hidden folder, are left alone.
             const shown = flatten([folder]).filter((node) => !config.hidden.some((path) => node.path === path || node.path.startsWith(path + '/')))
             const reload = () => setRevision((value) => value + 1)
-            if (kind === 'fetch') return runEach(`Fetch All in ${folder.name}`, 'fetch', shown, (path) => api.fetch(path), reportError, reload)
+            const title = `${kind === 'fetch' ? 'Fetch All' : 'Pull All'} in ${folder.name}`
+            if (kind === 'fetch') return reportBatch(title, await runBatch(folder.path, title, 'fetching', 'fetch', shown, (path) => api.fetch(path), reload))
             // Fast-forward only: a bulk pull never makes merge commits or leaves conflicts. A diverged repo is refused and named.
             const message = `Pull ${shown.length} ${shown.length === 1 ? 'repository' : 'repositories'} in ${folder.name}?\n\nEach fast-forwards its current branch to its upstream. A repo that has diverged, has no upstream, or would overwrite local files is left unchanged and reported.`
-            if (await confirmOverBlur(message)) await runEach(`Pull All in ${folder.name}`, 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reportError, reload)
-          })()}
+            if (!shown.length || await confirmOverBlur(message)) reportBatch(title, await runBatch(folder.path, title, 'pulling', 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reload))
+          })().catch((failure: unknown) => reportError(failure, kind === 'fetch' ? 'Fetch All' : 'Pull All'))}
           onSettings={() => setSettingsOpen(true)}
           stripLabel={repo?.name ?? 'Repositories'}
         />
         <div className={`splitter gap${sidebarFold.collapsed ? ' off' : ''}`} {...sidebarHandle} {...sidebarFold.splitterHandlers} />
+      <NotificationHub onGo={goToRepo} />
       <main className="pane">
-        {error && (
-          <div className="banner" role="alert">
-            {error}
-            <button type="button" className="icon-button" aria-label="Dismiss error" onClick={() => setError(null)}>
-              <Icon name="close" />
-            </button>
-          </div>
-        )}
         {!repo && (
           <Empty
             hasSources={config.sources.length > 0}
-            onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch(reportError)}
+            onAddFolder={() => api.pickSources().then((next: AppConfig) => { setConfig(next); return refreshTree() }).catch((failure: unknown) => reportError(failure, 'Adding a folder'))}
             onClone={() => setCloneOpen(true)}
           />
         )}
@@ -331,14 +367,14 @@ export function App() {
             revision={revision}
             refreshes={refreshes}
             onChanged={() => setRevision((value) => value + 1)}
-            onError={reportError}
+            onError={(failure) => reportError(failure, `An action in ${repo.name}`, repo.path)}
             onCleanChange={setRepoClean}
             // A worktree picked in the branch picker opens like a sidebar repo, added as a source first if it is not one.
             // Its path is canonical, so a sidebar entry reached through a symlink is matched by identity, not added twice.
             onOpenRepo={(path) => {
               const known = repos.find((node) => node.path === path || repoIdentity(node.path) === path)?.path
               ;(known ? Promise.resolve() : addPaths([path]))
-                .then(() => { setSelected(known ?? path); setTab('changes') }).catch(reportError)
+                .then(() => { setSelected(known ?? path); setTab('changes') }).catch((failure: unknown) => reportError(failure, `Opening ${path.split('/').pop()}`))
             }}
           />
         )}
@@ -347,15 +383,15 @@ export function App() {
         <CloneDialog
           defaultParent={config.lastCloneDirectory ?? config.sources[0] ?? ''}
           onClose={() => setCloneOpen(false)}
-          onCloned={async (destination) => {
+          onCloned={(destination) => {
             setCloneOpen(false)
             setSelected(destination)
-            await refreshTree()
+            refreshTree().catch((failure: unknown) => reportError(failure, `Cloned into ${destination}, but showing it in the sidebar`))
           }}
         />
       )}
       {settingsOpen && (
-        <SettingsDialog config={config} onUpdate={(patch) => update(patch).catch(reportError)} onClose={() => setSettingsOpen(false)} />
+        <SettingsDialog config={config} onUpdate={(patch) => update(patch).catch((failure: unknown) => reportError(failure, 'Saving settings'))} onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   )
@@ -404,9 +440,14 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   onCleanChange: (clean: boolean) => void
   onOpenRepo: (path: string) => void
 }) {
+  // Names what failed for the notification hub. A write's own name (ActionError) is kept.
+  const failed = (action: string) => (failure: unknown) => onError(failure instanceof ActionError ? failure : new ActionError(action, failure, repo.path))
   // Resolved once here, so the toolbar and every file's open button name the same app with the same icon.
-  const editor = useSelectedApp('editor', editorApp, onError)
-  const terminal = useSelectedApp('terminal', terminalApp, onError)
+  const editor = useSelectedApp('editor', editorApp, failed('Listing editor apps'))
+  const terminal = useSelectedApp('terminal', terminalApp, failed('Listing terminal apps'))
+  // Stable across this pane's own renders: History reloads when its onError changes.
+  const viewErrors = useMemo(() => ({ changes: failed(`Loading changes in ${repo.name}`), history: failed(`Loading history in ${repo.name}`) }),
+    [onError, repo.path, repo.name])
   const [status, setStatus] = useState<RepoStatus | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
   // The write running in this repo, from any surface. It is held in the repo-busy store, not in this pane.
@@ -434,7 +475,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   }, [repo.path])
 
   useEffect(() => {
-    load(revision).catch(onError)
+    load(revision).catch((failure: unknown) => onError(new ActionError(`Loading ${repo.name}`, failure, repo.path)))
     return () => { loadId.current++ }
   }, [load, revision])
 
@@ -457,7 +498,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   const run = (label: string, action: () => Promise<unknown>): Promise<boolean> => {
     const reason = blockedReason(busyKey(repo.path))
     if (reason) {
-      onError(new Error(reason))
+      onError(new ActionError(`${workingLabel(label).replace('…', '')} in ${repo.name}`, reason, repo.path))
       return Promise.resolve(false)
     }
     return runRepoWrite(repo.path, label, action, { onError, reload: onChanged })
@@ -469,7 +510,7 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
     <EditorContext.Provider value={{
       app: editor,
       openFile: (path) => api.openInEditor(repo.path, path),
-      onError,
+      onError: failed(`Opening a file from ${repo.name}`),
       source: tab === 'history' ? 'commit' : 'working',
     }}>
       {/* The toolbar lives in the titlebar band beside the traffic lights, not in the pane below it. */}
@@ -498,8 +539,8 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
             })} />
             {/* Read-only launches, so they stay usable while a Git write runs. */}
             <span className="toolbar-divider" aria-hidden="true" />
-            <OpenInAppButton kind="editor" app={editor} repoPath={repo.path} onError={onError} />
-            <OpenInAppButton kind="terminal" app={terminal} repoPath={repo.path} onError={onError} />
+            <OpenInAppButton kind="editor" app={editor} repoPath={repo.path} onError={failed(`Opening ${repo.name} in ${editor?.name ?? 'the editor'}`)} />
+            <OpenInAppButton kind="terminal" app={terminal} repoPath={repo.path} onError={failed(`Opening ${repo.name} in ${terminal?.name ?? 'the terminal'}`)} />
             <RepoDialogs
               repo={repo.path}
               branch={status?.head ?? ''}
@@ -545,13 +586,13 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
       </div>
       {tab === 'changes' && (
         <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" style={PANEL_STYLE}>
-          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onChanged={onChanged} onError={onError} />}
+          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onChanged={onChanged} onError={viewErrors.changes} />}
         </div>
       )}
       {tab === 'history' && (
         <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" style={PANEL_STYLE}>
           <HistoryView repo={repo.path} head={status?.headHash ?? null} branch={status?.head ?? null} revision={revision} refreshes={refreshes}
-            listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onError={onError} onChanged={onChanged} />
+            listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onError={viewErrors.history} onChanged={onChanged} />
         </div>
       )}
     </EditorContext.Provider>
@@ -561,26 +602,6 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
 // A pane toggle's label: whether the pane shows now, and what a click does.
 function paneLabel(pane: string, shown: boolean) {
   return toggleLabel(`${pane}: ${shown ? 'expanded' : 'collapsed'}`, shown ? 'collapse to a rail' : 'pin open')
-}
-
-// Runs one write in each repo in turn. A busy repo is skipped and named, and every failure is reported with its repo.
-async function runEach(title: string, key: string, repos: RepoNode[], action: (path: string) => Promise<unknown>,
-  onError: (error: unknown) => void, reload: () => void) {
-  const failures: string[] = []
-  const skipped: string[] = []
-  for (const node of repos) {
-    if (busyKey(node.path)) {
-      skipped.push(node.name)
-      continue
-    }
-    await runRepoWrite(node.path, key, () => action(node.path), {
-      onError: (failure) => failures.push(`${node.name}: ${failure instanceof Error ? failure.message : String(failure)}`),
-      reload: () => undefined,
-    })
-  }
-  reload()
-  const problems = [...failures, ...(skipped.length ? [`skipped while busy: ${skipped.join(', ')}`] : [])]
-  if (problems.length) onError(new Error(`${title}: ${problems.join('; ')}`))
 }
 
 function flatten(nodes: TreeNode[]): RepoNode[] {

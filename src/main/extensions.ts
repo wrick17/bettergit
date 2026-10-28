@@ -203,9 +203,17 @@ async function readExtension(root: string, id: string): Promise<InstalledExtensi
   return describe(id, manifest, nls)
 }
 
-export async function listExtensions(root: string): Promise<InstalledExtension[]> {
-  const names = await fs.readdir(root).catch(() => [] as string[])
-  const found = await Promise.all(names.filter(isExtensionId).map((id) => readExtension(root, id).catch(() => null)))
+// An extension that cannot be read goes to `onBroken` and is left out, so one bad folder does not hide the rest. Without
+// `onBroken` it fails the whole list, naming the extension.
+export async function listExtensions(root: string, onBroken?: (id: string, reason: string) => void): Promise<InstalledExtension[]> {
+  // No folder yet means no extensions. Any other read failure is reported.
+  const names = await fs.readdir(root).catch((failure: NodeJS.ErrnoException) => { if (failure.code === 'ENOENT') return [] as string[]; throw failure })
+  const found = await Promise.all(names.filter(isExtensionId).map((id) => readExtension(root, id).catch((failure: unknown) => {
+    const reason = failure instanceof Error ? failure.message : String(failure)
+    if (!onBroken) throw new Error(`Extension ${id} could not be read: ${reason}`)
+    onBroken(id, reason)
+    return null
+  })))
   return found.filter((entry): entry is InstalledExtension => entry !== null).sort((a, b) => a.name.localeCompare(b.name))
 }
 

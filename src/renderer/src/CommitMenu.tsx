@@ -3,7 +3,7 @@ import type { Commit } from '../../main/git/history'
 import { confirmOverBlur } from './confirm'
 import type { BarItem } from './OverflowBar'
 import { PromptDialog } from './PromptDialog'
-import { blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
+import { ActionError, blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
 
 const api = window.bettergit
 
@@ -56,11 +56,11 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   }
 
   const run = (key: string, action: () => Promise<unknown>) => runGit(input, key, action)
-  const copy = (text: string) => navigator.clipboard.writeText(text).catch(onError)
-  const openRemote = () => api.openExternal(`${webBase}/commit/${hash}`).catch(onError)
+  const copy = (what: string, text: string) => navigator.clipboard.writeText(text).catch((failure: unknown) => onError(new ActionError(`Copying the ${what}`, failure)))
+  const openRemote = () => api.openExternal(`${webBase}/commit/${hash}`).catch((failure: unknown) => onError(new ActionError('Opening the commit on the remote', failure)))
   const compareRemote = () => { if (upstream) onCompare(upstream, upstream) }
   const compareBase = () => {
-    if (head) api.mergeBase(repo, head, hash).then((base: string) => onCompare(`merge base ${base.slice(0, 7)}`, base)).catch(onError)
+    if (head) api.mergeBase(repo, head, hash).then((base: string) => onCompare(`merge base ${base.slice(0, 7)}`, base)).catch((failure: unknown) => onError(new ActionError('Finding the merge base', failure)))
   }
   const revert = async () => {
     if (await confirmOverBlur(`Revert "${subject}"? This adds a new commit that undoes it.`)) run('revert', () => api.revertCommit(repo, hash))
@@ -70,9 +70,9 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   return [
     { key: 'changes', icon: 'diff', label: 'Show diff', group: 'open', onClick: onOpenChanges },
     { key: 'remote', icon: 'externalLink', label: 'Open Changes on Remote', disabled: !webBase, group: 'open', onClick: openRemote },
-    { key: 'hash', icon: 'hash', label: 'Copy Commit Hash', group: 'copy', onClick: () => copy(hash) },
-    { key: 'message', icon: 'copy', label: 'Copy Commit Message', group: 'copy', onClick: () => copy(message) },
-    { key: 'link', icon: 'link', label: 'Copy Commit Remote Link', disabled: !webBase, group: 'copy', onClick: () => copy(`${webBase}/commit/${hash}`) },
+    { key: 'hash', icon: 'hash', label: 'Copy Commit Hash', group: 'copy', onClick: () => copy('commit hash', hash) },
+    { key: 'message', icon: 'copy', label: 'Copy Commit Message', group: 'copy', onClick: () => copy('commit message', message) },
+    { key: 'link', icon: 'link', label: 'Copy Commit Remote Link', disabled: !webBase, group: 'copy', onClick: () => copy('commit link', `${webBase}/commit/${hash}`) },
     { key: 'compareRemote', icon: 'compare', label: 'Compare with Remote', disabled: !upstream, group: 'compare', onClick: compareRemote },
     { key: 'compareBase', icon: 'mergeBase', label: 'Compare with Merge Base', disabled: !head, group: 'compare', onClick: compareBase },
     { key: 'compareRef', icon: 'compareRef', label: 'Compare with Ref…', group: 'compare', onClick: () => ui.setPrompt('ref') },

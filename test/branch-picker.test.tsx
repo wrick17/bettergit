@@ -43,6 +43,7 @@ async function harness(api: Record<string, unknown> = {}, headHash: string | nul
     './Dialogs': { useDialogFocus() {} },
     './confirm': { confirmOverBlur: async () => { confirms++; return discard } },
     './Icons': { Icon: () => null },
+    './notifications': { notifyFailure() {} },
     './branch-tree': refs,
     './OverflowBar': { ActionMenu: () => null },
     './prefs': { useHiddenBranches: () => hidden, hiddenBranches: () => hidden, setHiddenBranches: (_repo: string, refs: string[]) => { hidden = refs } },
@@ -215,6 +216,19 @@ test('search-only cancel makes no Git call, and successful creation closes after
   expect(calls).toEqual([['/picker-test', 'new-topic', { fullRef: 'HEAD', hash }]])
   expect(h.stats().closed).toBe(2)
   expect(h.stats().changed).toBe(1)
+})
+
+test('a failed branch action keeps its error when the following tags reload also fails', async () => {
+  const h = await harness({
+    switchBranch: async () => { throw new Error('checkout denied') },
+    tags: async () => { throw new Error('tags denied') },
+    stashes: async () => [], worktrees: async () => [],
+  })
+  h.find((p) => typeof p.onPick === 'function').onPick({ kind: 'branch', branch: branches[1] })
+  await flush()
+  h.render()
+  expect(h.find((p) => p.className === 'dialog-error')?.children).toContain('checkout denied')
+  expect(h.stats().closed).toBe(0)
 })
 
 test('unborn Current HEAD disables creation while a picked fetched base remains usable', async () => {

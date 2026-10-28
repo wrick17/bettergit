@@ -3,6 +3,7 @@ import type { ThemeMode } from '../../main/config'
 import type { Appearance } from '../../shared/editors'
 import { themeCss, type ColorTheme, type IconTheme } from '../../shared/themes'
 import { setSyntaxThemes } from './highlight'
+import { notify } from './notifications'
 
 const api = window.bettergit
 const MODE_KEY = 'bettergit.themeMode'
@@ -14,6 +15,8 @@ const THEMES_KEY = 'bettergit.colorThemes'
 const colorThemes = new Map<string, ColorTheme | null>()
 const iconThemes = new Map<string, IconTheme | null>()
 const loading = new Map<string, Promise<void>>()
+// Why a theme did not load, by ref, for the picker that shows it as broken.
+const failures = new Map<string, string>()
 
 function load(kind: 'color' | 'icons', ref: string): Promise<void> {
   const key = `${kind}:${ref}`
@@ -22,6 +25,7 @@ function load(kind: 'color' | 'icons', ref: string): Promise<void> {
     const request: Promise<ColorTheme | IconTheme | null> = kind === 'color' ? api.colorTheme(ref) : api.iconTheme(ref)
     pending = request.catch((error: unknown) => {
       console.warn(`Theme ${ref} did not load:`, error)
+      failures.set(ref, (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, ''))
       return null
     }).then((theme) => {
       if (kind === 'color') colorThemes.set(ref, theme as ColorTheme | null)
@@ -52,12 +56,15 @@ export function warmThemes(themes: { kind: 'color' | 'icons'; ref: string }[]): 
 
 // A ref that was asked for and could not load: missing, refused by a cap, or broken.
 export const isThemeBroken = (kind: 'color' | 'icons', ref: string) => cacheOf(kind).get(ref) === null
+export const themeFailure = (ref: string) => failures.get(ref)
 
 // After an extension is reinstalled or removed, its themes load again on next use.
 export function forgetThemes(id: string) {
   for (const cache of [colorThemes, iconThemes]) {
     for (const ref of cache.keys()) if (ref.startsWith(`${id}/`)) cache.delete(ref)
   }
+  for (const ref of reported) if (ref.startsWith(`${id}/`)) reported.delete(ref)
+  for (const ref of failures.keys()) if (ref.startsWith(`${id}/`)) failures.delete(ref)
 }
 
 // The icon theme FileIcon draws from, and whether the first themes asked for have applied: the app holds its first frame
@@ -110,10 +117,22 @@ function publish(patch: Partial<AppliedThemes>) {
 
 // Colour themes and the icon theme apply on their own, each as soon as its themes are loaded: in the same task when
 // they are cached.
+// A chosen theme that did not load is reported once until deselected or invalidated. Idle warming stays quiet.
+const reported = new Set<string>()
+function reportBroken(kind: 'color' | 'icons', refs: string[]) {
+  for (const ref of refs) {
+    if (!ref || cacheOf(kind).get(ref) !== null || reported.has(ref)) continue
+    reported.add(ref)
+    notify({ action: `Loading theme ${ref}`, reason: failures.get(ref) ?? 'The theme could not be read.' })
+  }
+}
+
 export function applyThemes({ lightTheme, darkTheme, iconTheme }: Appearance) {
+  for (const ref of reported) if (![lightTheme, darkTheme, iconTheme].includes(ref)) reported.delete(ref)
   const colour = ++colourTurn
   whenLoaded('color', [lightTheme, darkTheme], () => {
     if (colour !== colourTurn) return
+    reportBroken('color', [lightTheme, darkTheme])
     const light = (lightTheme && colorThemes.get(lightTheme)) || null
     const dark = (darkTheme && colorThemes.get(darkTheme)) || null
     paintColours(light, dark)
@@ -130,6 +149,7 @@ export function applyThemes({ lightTheme, darkTheme, iconTheme }: Appearance) {
   const icon = ++iconTurn
   whenLoaded('icons', [iconTheme], () => {
     if (icon !== iconTurn) return
+    reportBroken('icons', [iconTheme])
     icons = (iconTheme && iconThemes.get(iconTheme)) || null
     iconsApplied = true
     publish({ iconTheme })

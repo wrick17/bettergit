@@ -2,7 +2,7 @@ import type { RepoStatus } from '../../main/git/status'
 import { PullFromDialog, StashDialog, type StashMode } from './StashDialog'
 import type { BarItem } from './OverflowBar'
 import { confirmOverBlur } from './confirm'
-import { blockedReason, workingLabel } from './repo-busy'
+import { ActionError, blockedReason, workingLabel } from './repo-busy'
 
 const api = window.bettergit
 
@@ -35,7 +35,7 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
   const resetLabel = status?.upstream ? `Reset branch to ${status.upstream}…` : 'Reset branch (no upstream set)…'
 
   const copyBranch = () => {
-    if (status?.head) navigator.clipboard.writeText(status.head).catch(onError)
+    if (status?.head) navigator.clipboard.writeText(status.head).catch((failure: unknown) => onError(new ActionError('Copying the branch name', failure)))
   }
 
   const resetToUpstream = async () => {

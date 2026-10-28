@@ -45,10 +45,11 @@ test('a failed write reports its error once, unlocks the repo, and the next writ
   const errors: unknown[] = []
   const push = runRepoAction('/repo-b', 'push', () => first.promise, (failure) => errors.push(failure))
 
-  first.reject(new Error('rejected by remote'))
+  first.reject(new Error("Error invoking remote method 'repo:push': Error: rejected by remote"))
   expect(await push).toBe(false)
   expect(errors).toHaveLength(1)
-  expect((errors[0] as Error).message).toBe('rejected by remote')
+  // The error names the action and repo for the notification hub, and keeps the bare reason for inline messages.
+  expect(errors[0]).toMatchObject({ action: 'Pushing in repo-b', repo: '/repo-b', message: 'rejected by remote' })
   expect(busyKey('/repo-b')).toBeNull()
 
   expect(await runRepoAction('/repo-b', 'fetch', async () => undefined, noop)).toBe(true)
