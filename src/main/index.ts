@@ -28,7 +28,7 @@ const configFile = () => path.join(app.getPath('userData'), 'config.json')
 let config: AppConfig
 let fetcher: BackgroundFetcher | null = null
 let mainWindow: BrowserWindow | null = null
-const dirty = new DirtyCounter((repo, count) => sendToRenderer('repos:dirty', { path: repo, count }))
+const dirty = new DirtyCounter((repo, counts) => sendToRenderer('repos:dirty', { path: repo, ...counts }))
 const watcher = new SourceWatcher((event) => {
   sendToRenderer('repos:changed', event)
   if (event.repos.length) dirty.invalidate(event.repos)
@@ -44,16 +44,27 @@ async function allRepoPaths(): Promise<string[]> {
     .filter((repoPath) => !config.hidden.includes(repoPath))
 }
 
-// Restarts the watcher and the background fetcher whenever sources or settings change.
+let fetchSchedule = ''
+
+// Restarts the watcher whenever config changes. The background fetcher restarts only when its own settings change:
+// sidebar writes such as collapsing a folder would otherwise push the next fetch back every time.
 async function applyRuntime() {
   await watcher.watch(config.sources)
+  const { backgroundFetch, fetchIntervalMinutes, idleThresholdSeconds } = config.settings
+  const schedule = JSON.stringify([backgroundFetch, fetchIntervalMinutes, idleThresholdSeconds])
+  if (fetcher && schedule === fetchSchedule) return
+  fetchSchedule = schedule
   fetcher?.stop()
   fetcher = new BackgroundFetcher({
-    enabled: config.settings.backgroundFetch,
-    intervalMinutes: config.settings.fetchIntervalMinutes,
-    idleThresholdSeconds: config.settings.idleThresholdSeconds,
+    enabled: backgroundFetch,
+    intervalMinutes: fetchIntervalMinutes,
+    idleThresholdSeconds,
     repos: allRepoPaths,
-    onReport: (report: FetchReport) => sendToRenderer('fetch:report', report),
+    onReport: (report: FetchReport) => {
+      // Every fetched repo gets fresh ahead and behind counts in the sidebar, not only the open one.
+      dirty.invalidate(report.fetched)
+      sendToRenderer('fetch:report', report)
+    },
   })
   fetcher.start()
 }
@@ -247,7 +258,15 @@ function registerIpc() {
   handleWrite('repo:set-upstream', (_event, repoPath: string, selection: ops.BranchSelection, upstream: ops.BranchSelection) =>
     ops.setUpstream(repoPath, selection, upstream))
   handleWrite('repo:unset-upstream', (_event, repoPath: string, selection: ops.BranchSelection) => ops.unsetUpstream(repoPath, selection))
-  handleWrite('repo:fetch', (_event, repoPath: string, mode?: ops.FetchMode) => ops.fetchAll(repoPath, mode))
+  handleWrite('repo:fetch', async (_event, repoPath: string, mode?: ops.FetchMode) => {
+    try {
+      await ops.fetchAll(repoPath, mode)
+    } finally {
+      // Linked worktrees can update refs outside watched sources; recount each display alias even after a partial fetch.
+      dirty.invalidate(Object.entries(repoLockSnapshot().identities ?? {})
+        .filter(([, canonical]) => canonical === repoPath).map(([display]) => display))
+    }
+  })
   handleWrite('repo:pull', (_event, repoPath: string, mode?: ops.PullMode) => ops.pull(repoPath, mode))
   handleWrite('repo:pull-from', (_event, repoPath: string, remote: string, branch: string) =>
     ops.pullFrom(repoPath, remote, branch))

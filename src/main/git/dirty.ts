@@ -1,14 +1,21 @@
 import { git } from './exec'
 
-// Counts uncommitted files per repo in the background, so a large sidebar never waits on git.
+// Uncommitted files, and commits to push and to pull against the upstream, which a fetch moves.
+export interface RepoCounts {
+  count: number
+  ahead: number
+  behind: number
+}
+
+// Counts uncommitted files and ahead/behind per repo in the background, so a large sidebar never waits on git.
 export class DirtyCounter {
-  private counts = new Map<string, number>()
+  private counts = new Map<string, RepoCounts>()
   private stale = new Set<string>()
   private queued = new Set<string>()
   private queue: string[] = []
   private running = 0
 
-  constructor(private onCount: (path: string, count: number) => void, private concurrency = 4) {}
+  constructor(private onCount: (path: string, counts: RepoCounts) => void, private concurrency = 4) {}
 
   request(paths: string[]) {
     for (const repo of paths) {
@@ -45,10 +52,15 @@ export class DirtyCounter {
 
   private async count(repo: string) {
     try {
-      const output = await git(repo, ['status', '--porcelain=v1', '--untracked-files=all'], { optionalLocks: true })
-      const count = output.split('\n').filter(Boolean).length
-      this.counts.set(repo, count)
-      this.onCount(repo, count)
+      const [branch, ...files] = (await git(repo, ['status', '--porcelain=v1', '--branch', '--untracked-files=all'], { optionalLocks: true })).split('\n')
+      // The branch line ends like "## main...origin/main [ahead 1, behind 2]".
+      const counts = {
+        count: files.filter(Boolean).length,
+        ahead: Number(/\bahead (\d+)/.exec(branch)?.[1] ?? 0),
+        behind: Number(/\bbehind (\d+)/.exec(branch)?.[1] ?? 0),
+      }
+      this.counts.set(repo, counts)
+      this.onCount(repo, counts)
     } catch {
       // A failed count emits nothing, so the sidebar keeps its last value.
     } finally {

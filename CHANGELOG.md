@@ -2,6 +2,22 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.5] - 2026-10-28
+
+### New
+
+- Each repository in the sidebar shows commits to push (↑) and to pull (↓), so a repository you have not opened shows what a fetch brought.
+- Folders in the sidebar have **Refresh**, **Fetch All** and **Pull All**. Right-click a folder or click its **⋯** button. Pull All asks first and only fast-forwards. A repository that has diverged, has no upstream, or would overwrite local files is left unchanged and named in the error.
+
+### Changed
+
+- The toolbar's Fetch dropdown now lists two choices: **fetch** and **pull**.
+
+### Fixed
+
+- Background fetch runs every 10 minutes again. Collapsing folders, hiding repositories or other sidebar changes no longer restart its timer.
+- A repository moved into or out of a sidebar folder appears or disappears without restarting BetterGit.
+
 ## [0.1.4] - 2026-10-27
 
 ### Improved

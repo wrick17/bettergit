@@ -9,6 +9,8 @@ import * as locks from '../src/main/repo-lock'
 import * as scan from '../src/main/scan'
 import * as configModule from '../src/main/config'
 import * as conflict from '../src/shared/conflict'
+import { DirtyCounter, type RepoCounts } from '../src/main/git/dirty'
+import { fetchAll } from '../src/main/git/ops'
 import { EventEmitter } from 'node:events'
 import { runInNewContext } from 'node:vm'
 import type { BetterGitApi } from '../src/preload'
@@ -479,5 +481,77 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     off()
     app.emit('will-quit')
     expect(events.listenerCount('repo:locks')).toBe(0)
+  }
+})
+
+test('manual fetch refreshes cached sidebar counts for a linked worktree without background fetch or watcher events', async () => {
+  const main = lockPath('manual-fetch/main')
+  git(main, ['commit', '--allow-empty', '-qm', 'initial'])
+  const source = path.join(lockRoot, 'manual-fetch/sidebar')
+  mkdirSync(source)
+  const linked = path.join(source, 'linked')
+  git(main, ['worktree', 'add', '-q', '-b', 'linked', linked])
+  git(linked, ['remote', 'add', 'origin', main])
+  git(linked, ['fetch', '-q', 'origin'])
+  git(linked, ['branch', '--set-upstream-to=origin/main'])
+  const counts: RepoCounts[] = []
+  const counter = new DirtyCounter((_repo, value) => counts.push(value))
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  const app = Object.assign(new EventEmitter(), { setName() {}, whenReady: () => new Promise<void>(() => {}) })
+  await load('../src/main/index.ts', {
+    electron: { app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) }, BrowserWindow: { getAllWindows: () => [] } },
+    'node:path': path, 'node:fs': { statSync }, './repo-lock': locks, './scan': scan,
+    './git/dirty': { DirtyCounter: class { constructor() { return counter } } },
+    './watch': { SourceWatcher: class {} }, './git/ops': { fetchAll },
+  }, '\nconfig = testConfig; registerIpc()', {
+    testConfig: configModule.normalizeConfig({ sources: [source], settings: { backgroundFetch: false } }),
+  })
+  const waitForCount = async (behind: number) => {
+    for (let attempt = 0; attempt < 100 && counts.at(-1)?.behind !== behind; attempt++) await Bun.sleep(10)
+    expect(counts.at(-1)?.behind).toBe(behind)
+  }
+  try {
+    await handlers.get('sources:tree')!({})
+    await waitForCount(0)
+    git(main, ['commit', '--allow-empty', '-qm', 'upstream advanced'])
+    await handlers.get('repo:fetch')!({}, linked)
+    await waitForCount(1)
+  } finally {
+    app.emit('will-quit')
+  }
+})
+
+// Real timers with a 120 ms interval: sidebar config writes every 40 ms must not keep pushing the next fetch back.
+test('background fetch keeps its schedule through config writes and fetches repos that are not open', async () => {
+  const repo = lockPath('timer-source/unopened')
+  const source = path.dirname(repo)
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  const fetched: string[] = []
+  const { BackgroundFetcher } = await load('../src/main/background.ts', {
+    electron: { powerMonitor: { getSystemIdleTime: () => 0 } }, './repo-lock': locks,
+    './git/status': { readStatus: async () => ({ upstream: 'origin/main' }) },
+    './git/ops': { fetchAll: async (canonical: string) => { fetched.push(canonical) } },
+  }, '', { setInterval, clearInterval }) as typeof import('../src/main/background')
+  const app = Object.assign(new EventEmitter(), { setName: () => {}, getPath: () => source, whenReady: () => new Promise<void>(() => {}) })
+  await load('../src/main/index.ts', {
+    electron: {
+      app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) },
+      BrowserWindow: { getAllWindows: () => [] }, Menu: { setApplicationMenu: () => {} }, nativeTheme: {},
+    },
+    'node:path': path, 'node:fs': { statSync }, './config': configModule, './repo-lock': locks, './scan': scan, './menu': { buildMenu: () => [] },
+    './git/dirty': { DirtyCounter: class { request() {} invalidate() {} } },
+    './watch': { SourceWatcher: class { async watch() {} async stop() {} } },
+    './background': { BackgroundFetcher },
+  }, '\nconfig = testConfig; registerIpc(); void applyRuntime()', {
+    testConfig: configModule.normalizeConfig({ sources: [source], settings: { fetchIntervalMinutes: 0.002 } }),
+  })
+  try {
+    for (let write = 0; write < 10 && !fetched.length; write++) {
+      await handlers.get('config:update')!({}, { collapsed: [`${source}/${write}`] })
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+    expect(fetched).toEqual([repo])
+  } finally {
+    await handlers.get('config:update')!({}, { settings: { backgroundFetch: false } })
   }
 })

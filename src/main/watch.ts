@@ -44,9 +44,11 @@ export class SourceWatcher {
     // A .git entry appearing or disappearing means a repo was added or removed in the tree.
     // A checkout moves .git/HEAD, and the sidebar shows each repo's branch, so that also rebuilds the tree.
     const headChanged = gitIndex !== -1 && parts[gitIndex + 1] === 'HEAD'
-    const tree = (gitIndex !== -1 && gitIndex === parts.length - 1) || headChanged
-    if (tree) this.isRepo.clear()
     const repoRoots = gitIndex === -1 ? this.reposOf(source, path.dirname(file)) : [path.join(source, ...parts.slice(0, gitIndex))]
+    // A folder moved in or out (mv, Finder) reports only the folder, not its .git. An entry outside every repo can be one.
+    const outsideRepos = gitIndex === -1 && !repoRoots.length && relative !== '' && !path.basename(file).startsWith('.')
+    const tree = (gitIndex !== -1 && gitIndex === parts.length - 1) || headChanged || outsideRepos
+    if (tree) this.isRepo.clear()
     const bucket = this.pending.get('batch') ?? new Set<string>()
     if (tree) bucket.add(`tree:${source}`)
     for (const root of repoRoots) bucket.add(`repo:${root}`)
