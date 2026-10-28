@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { RepoNode } from '../../main/scan'
-import { busyKey, failureReason, runRepoWrite } from './repo-busy'
+import { busyKey, describeFailure, failureReason, runRepoWrite } from './repo-busy'
 
 // The sidebar's one batch at a time: Refresh, Fetch All or Pull All. Its menu closes at once, so the sidebar shows the run
 // and its result here. `folder` is the row that started it, or null for the app menu.
@@ -24,22 +24,28 @@ const set = (next: BatchStatus | null) => {
   listeners.forEach((listener) => listener())
 }
 
+// The status text of a whole-sidebar Refresh, which the Repositories header's button spins for.
+export const REFRESHING = 'Refreshing repositories…'
+
 export const useBatchStatus = () => useSyncExternalStore(subscribe, () => status)
 export const batchRunning = () => !!status?.running
 export const dismissBatch = () => { if (!status?.running) set(null) }
 
-// Rescans the sources. Returns false when a batch is already running. A failure shows here and rejects for the error popup.
-export async function runRefresh(folder: string | null, refresh: () => Promise<unknown>): Promise<boolean> {
+// Rescans the sources. `refresh` may resolve to repos it could not read, which are named here and returned; the rest still
+// count as refreshed. Returns false when a batch is already running. A failure shows here and rejects for the error popup.
+export async function runRefresh(folder: string | null, refresh: () => Promise<{ repo: string; reason: string }[] | void>): Promise<{ repo: string; reason: string }[] | false> {
   if (batchRunning()) return false
-  set({ folder, running: true, text: 'Refreshing repositories…', problems: [], failed: false })
+  set({ folder, running: true, text: REFRESHING, problems: [], failed: false })
+  let failures: { repo: string; reason: string }[]
   try {
-    await refresh()
+    failures = (await refresh()) ?? []
   } catch (failure) {
     set({ folder, running: false, text: `Refresh failed: ${failureReason(failure)}`, problems: [], failed: true })
     throw failure
   }
-  set({ folder, running: false, text: 'Refreshed repositories', problems: [], failed: false })
-  return true
+  set({ folder, running: false, text: `Refreshed repositories${failures.length ? `, ${failures.length} failed` : ''}`, failed: failures.length > 0,
+    problems: failures.map(({ repo, reason }) => `${repo.split('/').pop()}: ${describeFailure(reason).summary}`) })
+  return failures
 }
 
 // Runs one write in each repo in turn. A busy repo is skipped and named, and every failure is kept with its repo.
@@ -77,7 +83,7 @@ export async function runBatch(folder: string | null, title: string, verb: strin
   } finally {
     const ok = repos.length - failures.length - skipped.length
     const counts = [`${ok} succeeded`, skipped.length && `${skipped.length} skipped`, failures.length && `${failures.length} failed`].filter(Boolean)
-    set({ folder, running: false, text: `${title} done: ${counts.join(', ')}`, problems: [...failures.map(({ repo, reason }) => `${repo.split('/').pop()}: ${reason}`), ...skipped], failed: failures.length > 0 })
+    set({ folder, running: false, text: `${title} done: ${counts.join(', ')}`, problems: [...failures.map(({ repo, reason }) => `${repo.split('/').pop()}: ${describeFailure(reason).summary}`), ...skipped], failed: failures.length > 0 })
     reload()
   }
   return failures

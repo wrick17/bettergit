@@ -7,8 +7,9 @@ import { customApp, installedApps, isAppBundle, mergeApps, resolveApp } from './
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
+import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
-import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withRepoLock } from './repo-lock'
+import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
 import { commitDiff, compare, detectMoves, workingDiff } from './git/diff'
 import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors } from './git/history'
 import { avatars } from './avatar'
@@ -28,6 +29,7 @@ const configFile = () => path.join(app.getPath('userData'), 'config.json')
 let config: AppConfig
 let fetcher: BackgroundFetcher | null = null
 let mainWindow: BrowserWindow | null = null
+const updater = createUpdater((state) => sendToRenderer('update:state', state))
 const dirty = new DirtyCounter((repo, counts) => sendToRenderer('repos:dirty', { path: repo, ...counts }))
 const watcher = new SourceWatcher((event) => {
   sendToRenderer('repos:changed', event)
@@ -77,6 +79,7 @@ function installMenu() {
     setTheme: (theme) => persist({ ...config, settings: { ...config.settings, theme } }).catch((failure: unknown) =>
       sendToRenderer('app:error', { action: 'Changing the appearance', reason: failure instanceof Error ? failure.message : String(failure) })),
     currentTheme: () => config.settings.theme,
+    checkForUpdates: () => void updater.check(true),
   }))
 }
 
@@ -179,6 +182,11 @@ function assertMainFrame(event: Electron.IpcMainInvokeEvent) {
 
 function registerIpc() {
   ipcMain.handle('repo:locks', () => repoLockSnapshot())
+  ipcMain.handle('update:state', () => updater.state())
+  ipcMain.handle('update:check', () => updater.check(true))
+  ipcMain.handle('update:download', () => updater.update())
+  ipcMain.handle('update:install', () => updater.install())
+  ipcMain.handle('update:page', () => updater.openPage())
   const offLocks = subscribeRepoLocks((snapshot) => sendToRenderer('repo:locks', snapshot))
   app.once('will-quit', offLocks)
   ipcMain.handle('config:get', () => config)
@@ -199,6 +207,8 @@ function registerIpc() {
     dirty.request(tree.flatMap(flattenRepos).map((repo) => repo.path))
     return tree
   })
+  // Rejects when Git cannot read the repo, so a sidebar Refresh can name it.
+  ipcMain.handle('repo:refresh', (_event, repoPath: string) => dirty.recount(assertKnownRepo(repoPath)))
   ipcMain.handle('folder:pick', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const picked = await dialog.showOpenDialog(window!, { properties: ['openDirectory', 'createDirectory'] })
@@ -409,13 +419,13 @@ function registerIpc() {
   ipcMain.handle('themes:color', (_event, ref: unknown) => loadTheme('color', ref))
   ipcMain.handle('themes:icons', (_event, ref: unknown) => loadTheme('icons', ref))
   ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
-  ipcMain.handle('clone', async (_event, url: string, parent: string) => {
+  ipcMain.handle('clone', (_event, url: string, parent: string) => withCloneActivity(async () => {
     const destination = path.join(parent, path.basename(url.replace(/\.git$/, '')))
     await ops.clone(url, destination)
     await addSource(destination)
     await persist({ ...config, lastCloneDirectory: parent })
     return destination
-  })
+  }))
 }
 
 // A saved position can point at a display that was unplugged since the last launch.
@@ -488,6 +498,7 @@ function createWindow() {
   window.on('move', save).on('resize', save).on('maximize', save).on('unmaximize', save)
   window.on('close', () => flushWindowState(window))
   window.once('closed', () => { mainWindow = null })
+  updater.watch(window.webContents)
   // Text size is a page zoom, so every row, gutter, and divider scales together and stays aligned.
   window.webContents.on('did-finish-load', () => window.webContents.setZoomFactor(config.settings.textZoom))
   if (process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -504,6 +515,7 @@ app.whenReady().then(async () => {
   installMenu()
   await applyRuntime()
   createWindow()
+  updater.start()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

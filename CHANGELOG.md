@@ -2,6 +2,22 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.8] - 2026-10-28
+
+### New
+
+- Refresh all repositories from the button in the repository list heading. The refresh updates the sidebar and the open repository without changing your selection.
+- Fetch, Pull, and Refresh an individual repository from its sidebar actions menu or right-click menu.
+- BetterGit checks for updates when it opens and once a day. Choose BetterGit > Check for Updates… to check now. Click Update to download, then Restart to Update when you are ready; BetterGit replaces itself where it is installed. It does not restart while a Git action runs or while you have unsaved edits.
+
+### Improved
+
+- Repository and folder menu items have icons. Git errors explain what happened and suggest next steps, with the original details and a retry action where available.
+
+### Fixed
+
+- Hide the toolbar's push and pull arrows when their counts are zero.
+
 ## [0.1.7] - 2026-10-28
 
 ### Fixed

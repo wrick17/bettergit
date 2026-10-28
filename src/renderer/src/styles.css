@@ -290,6 +290,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
    announcement of the newest failure. Above a dialog's scrim, since the failure may come from the dialog. */
 .notify-layer { position: fixed; right: 16px; bottom: 16px; z-index: 55; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
 .notify-layer > * { pointer-events: auto; }
+.notify-toast-region { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .notify-toast-region:empty { display: none; }
 .notify-toast, .notify-panel, .notify-trigger {
   border-radius: var(--radius); background: var(--raised); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -300,6 +301,13 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .notify-toast > svg { flex: none; margin-top: 2px; color: var(--del); }
 .notify-toast > span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); }
 .notify-toast strong { color: var(--del); }
+/* BetterGit's own update: not a failure, so its icon takes the accent and its text the normal color. */
+.update-toast { align-items: center; }
+.update-toast > svg { margin-top: 0; color: var(--accent); }
+.update-toast.failed > svg { color: var(--del); }
+.update-toast > span { color: var(--text); }
+.update-toast em { display: block; color: var(--text-2); }
+.update-toast > .icon-button { width: 20px; height: 20px; }
 .notify-panel { display: flex; flex-direction: column; width: min(420px, calc(100vw - 32px)); max-height: min(520px, calc(100vh - 120px)); outline: none; }
 .notify-panel header { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-bottom: 0.5px solid var(--glass-outline); }
 .notify-panel h2 { flex: 1; margin: 0; font-size: inherit; font-weight: 600; }
@@ -311,6 +319,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .notify-head time, .notify-count, .notify-repo, .notify-panel em { color: var(--text-3); font-size: calc(12px + var(--ui-delta)); font-style: normal; }
 .notify-panel p { margin: 0; color: var(--text-2); white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
 .notify-actions { display: flex; gap: 6px; margin-top: 3px; }
+.notify-panel .notify-hint { color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
+.notify-panel details { color: var(--text-3); font-size: calc(12px + var(--ui-delta)); }
+.notify-panel summary { width: fit-content; cursor: pointer; border-radius: 4px; }
+.notify-panel summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.notify-panel pre { max-height: 160px; margin: 4px 0 0; padding: 6px 8px; overflow: auto; border-radius: 6px; background: var(--glass-chip); color: var(--text-2); font: calc(11.5px + var(--ui-delta))/1.45 var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .notify-actions button, .notify-panel header > button:not(.icon-button), .notify-toast button { flex: none; padding: 1px 8px; font-size: calc(12px + var(--ui-delta)); }
 .notify-trigger { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 10px; color: var(--del); }
 .notify-trigger.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
@@ -846,6 +859,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 :is(.tree-row:hover, .tree-row:focus-within, [role='treeitem']:focus > .tree-row) > .row-more { opacity: 1; }
 /* The folder whose Refresh, Fetch All or Pull All is running keeps its spinner in view. */
 .row-more:has(.busy) { opacity: 1; }
+/* A repo row has no width to spare, so its button takes space only while shown, when the branch label gives it back. */
+.tree-row.repo > .row-more { display: none; }
+:is(.tree-row.repo:hover, .tree-row.repo:focus-within, [role='treeitem']:focus > .tree-row.repo) > .row-more, .tree-row.repo > .row-more:has(.busy) { display: inline-flex; }
 
 /* Repo dirty count */
 .repo-dirty { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 calc(11px + var(--ui-delta))/1.4 var(--font-code); font-variant-numeric: tabular-nums; }

@@ -98,6 +98,10 @@ const VIEW_KEY = 'bettergit.changesView'
 // Draft edits per repo. Module level, so a commit from an unmounted pane still sees edits made after a remount.
 const draftEdits = new Map<string, number>()
 
+// Whether the conflict resolver on screen holds choices not yet saved, which an update restart must not lose.
+let unsavedChoices = false
+export const hasUnsavedChoices = () => unsavedChoices
+
 export function ChangesView({ repo, status, revision, listOpen, detailOpen: detailShown, diffOpen = true, onShowDiff, onChanged, onError }: Props) {
   const detailOpen = detailShown && diffOpen
   const [selection, setSelection] = useState<Selection | null>(() => savedSelection(repo, status))
@@ -168,6 +172,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
   const conflictSelected = !!selection && !selection.staged && conflicted.some((change) => change.path === selection.path)
   const conflictFiles = conflicts.repo === repo ? conflicts.files : NO_CONFLICTS
+  // Only files still in conflict count; a saved file's old entry may linger until the next load.
+  useEffect(() => {
+    unsavedChoices = conflicted.some((change) => conflictOf(conflictFiles, change.path)?.choices.some((choice) => choice != null))
+    return () => { unsavedChoices = false }
+  }, [conflicted, conflictFiles])
   const conflictsReady = conflicted.every((change) => conflictOf(conflictFiles, change.path))
   const scrollKey = section === null ? 'all' : conflictSelected ? 'conflicts' : `${section}`
   const diffReady = conflictSelected ? conflictsReady

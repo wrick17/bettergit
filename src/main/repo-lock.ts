@@ -6,6 +6,9 @@ import { realpathSync } from 'node:fs'
 const held = new Map<string, string>()
 const identities = new Map<string, string>()
 let seq = 0
+// Set while the app quits to install an update, so no new write or fetch starts.
+let closed = false
+let clones = 0
 const listeners = new Set<(snapshot: RepoLockSnapshot) => void>()
 
 // Human names for holder IDs. An unknown ID falls back to a generic name, so a new channel never shows raw text.
@@ -105,9 +108,33 @@ function changed() {
   }
 }
 
+// Stops new claims, for an update restart. False, and still open, when a claim is held. The check and the close are one
+// synchronous step, so no claim can start between them.
+export function closeRepoLocks(): boolean {
+  if (held.size || clones) return false
+  closed = true
+  return true
+}
+
+export function reopenRepoLocks(): void {
+  closed = false
+}
+
+// A clone has no working root yet. Keep its shutdown claim until its source and settings are saved too.
+export async function withCloneActivity<T>(run: () => Promise<T>): Promise<T> {
+  if (closed) throw new Error('BetterGit is restarting to install an update.')
+  clones++
+  try {
+    return await run()
+  } finally {
+    clones--
+  }
+}
+
 export async function withRepoLock<T>(
   repo: string, operation: string, run: (canonical: string) => T | Promise<T>, displayPath = repo,
 ): Promise<T> {
+  if (closed) throw new Error('BetterGit is restarting to install an update.')
   const canonical = canonicalRepoPath(repo)
   const updated = identities.get(displayPath) !== canonical
   identities.set(displayPath, canonical)
