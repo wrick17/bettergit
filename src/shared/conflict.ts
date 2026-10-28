@@ -74,6 +74,13 @@ export interface ConflictReset {
 
 export type ConflictResetResult = Extract<ConflictDocument, { supported: true }>
 
+// Takes one whole side from Git's index: ours is the current (HEAD) side, theirs the incoming one. Like a reset, the
+// request carries only the fingerprint the user confirmed, and the main process reads the side itself.
+export interface ConflictTake {
+  fingerprint: ConflictFingerprint
+  side: 'ours' | 'theirs'
+}
+
 export interface ConflictSave {
   fingerprint: ConflictFingerprint
   choices: Choice[]
@@ -367,6 +374,12 @@ export function parseConflictSave(input: unknown): ConflictSave {
 // A reset request is the fingerprint alone. Text, stage IDs, and paths from the renderer are refused.
 export function parseConflictReset(input: unknown): ConflictReset {
   return { fingerprint: fingerprintOf(recordOf(input, 'fingerprint', 'reset').fingerprint, 'reset') }
+}
+
+export function parseConflictTake(input: unknown): ConflictTake {
+  const record = recordOf(input, 'fingerprint,side', 'side')
+  if (record.side !== 'ours' && record.side !== 'theirs') throw new Error('The side request names no side.')
+  return { fingerprint: fingerprintOf(record.fingerprint, 'side'), side: record.side }
 }
 
 function fingerprintOf(input: unknown, kind: string): ConflictFingerprint {

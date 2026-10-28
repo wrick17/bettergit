@@ -2,6 +2,17 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.9] - 2026-10-28
+
+### New
+
+- Resolve a conflicted file with one whole side using Use Ours or Use Theirs in its conflict bar. BetterGit asks first, then replaces the file with that side's version from Git. The file stays unmerged until you stage it.
+- Choose Help > Show Command Log to see each Git command and action BetterGit runs, with its exit code, timing and failure status. The log updates while commands run. It records output sizes and hides messages and credentials. Error details remain in BetterGit's notifications.
+
+### Fixed
+
+- Show a Stage button on a conflicted file once no conflict markers remain, so you can mark it resolved from the conflict view.
+
 ## [0.1.8] - 2026-10-28
 
 ### New

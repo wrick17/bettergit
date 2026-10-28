@@ -185,6 +185,7 @@ export const REPO_WORKING_LABELS: Record<string, string> = {
   resolve: 'Saving resolution…',
   'conflict-save': 'Saving resolution…',
   'conflict-reset': 'Resetting resolution…',
+  'conflict-take': 'Resolving conflict…',
   'file-save': 'Saving file…',
 }
 

@@ -24,6 +24,7 @@ interface MenuHandlers {
   setTheme: (theme: ThemeMode) => void
   currentTheme: () => ThemeMode
   checkForUpdates: () => void
+  showCommandLog: () => void
 }
 
 export function buildMenu(handlers: MenuHandlers): Menu {
@@ -120,6 +121,12 @@ export function buildMenu(handlers: MenuHandlers): Menu {
         { role: 'zoom' },
         { type: 'separator' },
         { role: 'front' },
+      ],
+    },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Show Command Log', click: handlers.showCommandLog },
       ],
     },
   ]

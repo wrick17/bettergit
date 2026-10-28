@@ -22,6 +22,12 @@ const CHOICE_NAME: Record<ChoiceKind, string> = {
   combine: 'combination',
 }
 
+// Whole-file sides, named as git names them. Ours is the current side and theirs the incoming one.
+const SIDES = [
+  { side: 'ours', text: 'Use Ours', label: 'Resolve using ours, the current side, for' },
+  { side: 'theirs', text: 'Use Theirs', label: 'Resolve using theirs, the incoming side, for' },
+] as const
+
 const NO_MOVES: MovedBlock[] = []
 const NO_CHOICES: Choice[] = []
 
@@ -35,19 +41,36 @@ export interface ConflictViewProps {
   onSave: (save: ConflictSave) => void
   // Asks, then replaces the whole file with the conflicts recreated from Git's index. The parent owns the confirmation.
   onReset: () => void
+  // Stages the file once no markers remain. The stage write checks the markers again before git add runs.
+  onStage: () => void
+  // Asks, then replaces the whole file with one side from Git's index. The file stays unmerged until it is staged.
+  onTake: (side: 'ours' | 'theirs') => void
   // The write running in this repo, or null. Every control stops while it runs, and the running one says so.
   busy: string | null
 }
 
 // No hooks here: the diff below owns them, so this stays a plain function of its props.
-export function ConflictView({ path, model, choices, onChoose, onSave, onReset, busy }: ConflictViewProps) {
+export function ConflictView({ path, model, choices, onChoose, onSave, onReset, onStage, onTake, busy }: ConflictViewProps) {
+  // A side can be taken whenever the load read the file and its stages, which a reset needs too.
+  const canTake = model.supported || model.reset.available
   // The bar shows in every state, so a file with broken markers or none left can still be reset. With a diff below, it
   // also holds that diff's layout controls, so each file's controls stay in its own sticky bar.
-  const bar = (middle: ReactNode, save?: ReactNode) => (
-    <header className="conflict-bar">
+  const bar = (middle: ReactNode, save?: ReactNode, layout = false) => (
+    <header className="conflict-bar" ref={sizeBar}>
       <span className="conflict-path" title={path}>{path}</span>
       {middle}
-      {save && <LayoutToggles />}
+      {layout && <LayoutToggles />}
+      {canTake && SIDES.map(({ side, text, label }) => (
+        <IconButton
+          key={side}
+          icon="branch"
+          text={text}
+          label={busy === `conflict-take:${side}` ? 'Resolving conflict…' : `${label} ${path}`}
+          onClick={() => onTake(side)}
+          busy={busy === `conflict-take:${side}`}
+          blocked={busy !== null && busy !== `conflict-take:${side}` ? blockedReason(busy) : undefined}
+        />
+      ))}
       <IconButton
         icon="reset"
         label="Reset resolution"
@@ -73,7 +96,16 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
   if (blocks.length === 0) {
     return (
       <section className="conflict" aria-label={`Conflict in ${path}`} data-path={path}>
-        {bar(spacer)}
+        {bar(spacer, (
+          <IconButton
+            icon="plus"
+            text="Stage"
+            label={busy === 'stage' ? 'Staging…' : `Stage ${path}`}
+            onClick={onStage}
+            busy={busy === 'stage'}
+            blocked={busy !== null && busy !== 'stage' ? blockedReason(busy) : undefined}
+          />
+        ))}
         <p className="conflict-note" role="status">No conflict markers remain in this file. Stage it to mark it resolved.</p>
       </section>
     )
@@ -90,6 +122,7 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
         <button type="button" className="conflict-save" disabled={!canSave} aria-busy={saving || undefined} onClick={() => onSave({ fingerprint, choices: Array.from({ length: blocks.length }, (_, index) => choices[index] ?? null) })}>
           {saving ? 'Saving…' : 'Save resolution'}
         </button>,
+        true,
       )}
       {!result.ok && <p className="conflict-unsupported" role="alert">{result.reason}</p>}
       <ConflictDiff
@@ -104,6 +137,16 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
       <p className="conflict-note">The saved text is not compiled or tested.</p>
     </section>
   )
+}
+
+// Wrapped controls change the sticky bar's height, so the diff header must follow its measured bottom.
+function sizeBar(bar: HTMLElement | null) {
+  if (!bar || typeof ResizeObserver === 'undefined') return
+  const measure = () => bar.parentElement?.style.setProperty('--conflict-bar-height', `${bar.offsetHeight}px`)
+  measure()
+  const observer = new ResizeObserver(measure)
+  observer.observe(bar)
+  return () => observer.disconnect()
 }
 
 // The file in the ordinary diff viewer, with each conflict's controls inline above it. Unchanged lines fold like in any

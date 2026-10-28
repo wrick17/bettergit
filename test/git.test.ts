@@ -4,6 +4,7 @@ import path from 'node:path'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git, gitRaw } from '../src/main/git/exec'
+import { logAction, openCommandLog } from '../src/main/command-log'
 import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
 import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
@@ -24,6 +25,61 @@ beforeAll(async () => {
   root = await freshSample()
 })
 afterAll(() => cleanup(root))
+
+describe('command log', () => {
+  test('logs each command as it starts and ends, with failures, but no output, input or credentials', async () => {
+    const dir = repo('work/acme/web-app')
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'bettergit-log-')), 'logs', 'git-commands.log')
+    openCommandLog(file)
+    try {
+      await git(dir, ['hash-object', '--stdin'], { input: 'secret file body' })
+      await expect(git(dir, ['rev-parse', 'https://me:hunter2@example.com/x.git', 'a\nb'])).rejects.toThrow()
+      expect((await gitRaw(dir, ['cat-file', '-e', 'ghp_' + 'a'.repeat(36)])).code).not.toBe(0)
+      await expect(logAction('repo:stage', dir, () => Promise.reject(new Error('doc.txt still has conflict markers.')))).rejects.toThrow()
+    } finally {
+      openCommandLog(null)
+    }
+    const lines = readFileSync(file, 'utf8').trimEnd().split('\n')
+    // Ids count across the process, so only their kind and the start or end of each are compared.
+    expect(lines.map((line) => line.split(' ').slice(1, 3).join(' ').replace(/#\d+/, ''))).toEqual([
+      'git start', 'git exit=0', 'git start', 'git exit=128', 'git start', 'git exit=128', 'action start', 'action failed',
+    ])
+    const log = lines.join('\n')
+    expect(log).toContain('args=["hash-object","--stdin"] in=16B')
+    expect(log).toContain('args=["rev-parse","https://***@example.com/x.git","a\\nb"]')
+    expect(log).toMatch(/err=\d+B/)
+    expect(log).toContain('start repo:stage')
+    expect(log).toMatch(/failed \d+ms err=\d+B/)
+    for (const secret of ['secret file body', 'hunter2', 'ghp_aaaa']) expect(log).not.toContain(secret)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+  })
+
+  test('keeps commit messages and failing hook output out of command and action records', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-log-private-'))
+    const file = path.join(dir, 'git-commands.log')
+    try {
+      await git(dir, ['init', '-q'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'core.hooksPath', path.join(dir, '.git/hooks')])
+      writeFileSync(path.join(dir, '.git/hooks/pre-commit'), '#!/bin/sh\nprintf "private source body\\n" >&2\nexit 1\n', { mode: 0o755 })
+      openCommandLog(file)
+      await expect(logAction('repo:commit', dir, () => git(dir, ['commit', '--allow-empty', '-m', 'private commit message']))).rejects.toThrow('private source body')
+    } finally {
+      openCommandLog(null)
+    }
+    try {
+      const log = readFileSync(file, 'utf8')
+      expect(log).toContain('"-m","***"')
+      expect(log).toContain('exit=1')
+      expect(log).toMatch(/action#\d+ failed \d+ms err=\d+B/)
+      expect(log).not.toContain('private commit message')
+      expect(log).not.toContain('private source body')
+    } finally {
+      cleanup(dir)
+    }
+  })
+})
 
 describe('status', () => {
   test('reports staged, unstaged, deleted, untracked, and paths with spaces', async () => {
