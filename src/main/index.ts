@@ -7,6 +7,7 @@ import { customApp, installedApps, isAppBundle, mergeApps, resolveApp } from './
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
 import { buildMenu } from './menu'
+import { commandLogPath, logAction, openCommandLog } from './command-log'
 import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
@@ -17,8 +18,8 @@ import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
 import { applyHunk, parseHunk } from './git/hunks'
-import { loadConflict, previewConflict, resetConflict, saveConflict } from './git/conflict'
-import { parseConflictReset, parseConflictSave } from '../shared/conflict'
+import { loadConflict, previewConflict, resetConflict, saveConflict, takeConflictSide } from './git/conflict'
+import { parseConflictReset, parseConflictSave, parseConflictTake } from '../shared/conflict'
 import { isAppKind } from '../shared/editors'
 import { extensionDetails, extensionImage, extensionMetadata, installFromOpenVsx, installVsixFile, listExtensions, loadColorTheme, loadIconTheme, removeExtension, searchOpenVsx } from './extensions'
 
@@ -80,6 +81,12 @@ function installMenu() {
       sendToRenderer('app:error', { action: 'Changing the appearance', reason: failure instanceof Error ? failure.message : String(failure) })),
     currentTheme: () => config.settings.theme,
     checkForUpdates: () => void updater.check(true),
+    // Opens in the Mac's default viewer for .log files, Console, which follows new lines while commands run.
+    showCommandLog: () => {
+      const file = commandLogPath()
+      if (!file) return sendToRenderer('app:error', { action: 'Opening the command log', reason: 'The command log could not be created.' })
+      void shell.openPath(file).then((reason) => { if (reason) sendToRenderer('app:error', { action: 'Opening the command log', reason }) })
+    },
   }))
 }
 
@@ -154,7 +161,7 @@ function assertKnownWriteRepo(repoPath: string): string {
 function handleWrite(channel: string, handler: (...args: any[]) => unknown) {
   ipcMain.handle(channel, async (event, repoPath: string, ...args: unknown[]) => {
     const repo = assertKnownWriteRepo(repoPath)
-    return withRepoLock(repo, channel, (canonical) => handler(event, canonical, ...args), path.resolve(repoPath))
+    return logAction(channel, repo, () => withRepoLock(repo, channel, (canonical) => handler(event, canonical, ...args), path.resolve(repoPath)))
   })
 }
 
@@ -342,6 +349,8 @@ function registerIpc() {
     saveConflict(repoPath, filePath, parseConflictSave(save)))
   handleWrite('repo:conflict-reset', (_event, repoPath: string, filePath: string, request: unknown) =>
     resetConflict(repoPath, filePath, parseConflictReset(request)))
+  handleWrite('repo:conflict-take', (_event, repoPath: string, filePath: string, request: unknown) =>
+    takeConflictSide(repoPath, filePath, parseConflictTake(request)))
   // The diff's inline editor. The write holds the repo lock, so it never lands in the middle of a Git write.
   // The read takes no lock, but it checks the repo's real path against the sources, as the write does through handleWrite.
   ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownWriteRepo(repoPath), filePath))
@@ -506,6 +515,11 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  try {
+    openCommandLog(path.join(app.getPath('logs'), 'git-commands.log'))
+  } catch (error) {
+    console.error('Could not open the command log:', error)
+  }
   config = await loadConfig(configFile())
   nativeTheme.themeSource = config.settings.theme
   // The renderer waits for the icon theme before its first frame, so its files start loading now, alongside the window.

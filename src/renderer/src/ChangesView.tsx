@@ -486,9 +486,22 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     })
   }
 
+  // Taking a side replaces the whole file from Git's index after the user confirms. The reload that follows loads the
+  // new file, whose fingerprint drops the old choices.
+  const takeConflictFile = async (path: string, side: 'ours' | 'theirs') => {
+    const model = conflictOf(conflictFiles, path)?.model
+    const fingerprint = model?.supported ? model.fingerprint : model?.reset.available ? model.reset.fingerprint : null
+    if (busy || !fingerprint) return
+    const name = side === 'ours' ? 'ours, the current side' : 'theirs, the incoming side'
+    if (!(await confirmOverBlur(`Resolve "${path}" using ${name}?\n\nThis replaces the whole working file with that side's version from Git's index, `
+      + 'and discards saved edits and unsaved choices for this file, including changes from the other side that merged cleanly. '
+      + 'The file stays unmerged until you stage it. Other files are unchanged.'))) return
+    void write(`conflict-take:${side}:${path}`, () => api.conflictTake(repo, path, { fingerprint, side }))
+  }
+
   // Each file's handlers keep their identity across renders and call the latest ones, so a choice re-renders only its file.
-  const conflictActions = useRef({ chooseConflict, saveConflictFile, resetConflictFile })
-  conflictActions.current = { chooseConflict, saveConflictFile, resetConflictFile }
+  const conflictActions = useRef({ chooseConflict, saveConflictFile, resetConflictFile, takeConflictFile, togglePath })
+  conflictActions.current = { chooseConflict, saveConflictFile, resetConflictFile, takeConflictFile, togglePath }
   const handlersRef = useRef(new Map<string, ConflictHandlers>())
   const handlersFor = (path: string) => {
     let handlers = handlersRef.current.get(path)
@@ -497,6 +510,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
         onChoose: (index, choice) => conflictActions.current.chooseConflict(path, index, choice),
         onSave: (save) => conflictActions.current.saveConflictFile(path, save),
         onReset: () => conflictActions.current.resetConflictFile(path),
+        onStage: () => void conflictActions.current.togglePath(path, true),
+        onTake: (side) => void conflictActions.current.takeConflictFile(path, side),
       }
       handlersRef.current.set(path, handlers)
     }
@@ -800,7 +815,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   )
 }
 
-type ConflictHandlers = Pick<ConflictViewProps, 'onChoose' | 'onSave' | 'onReset'>
+type ConflictHandlers = Pick<ConflictViewProps, 'onChoose' | 'onSave' | 'onReset' | 'onStage' | 'onTake'>
 
 const NO_CONFLICTS: Record<string, ConflictState> = {}
 
@@ -816,6 +831,8 @@ const ConflictFile = memo(ConflictView)
 function fileBusy(busy: string | null, path: string): string | null {
   if (busy === `resolve:${path}`) return 'resolve'
   if (busy === `conflict-reset:${path}`) return 'conflict-reset'
+  if (busy === fileKey('stage', path)) return 'stage'
+  for (const side of ['ours', 'theirs']) if (busy === `conflict-take:${side}:${path}`) return `conflict-take:${side}`
   return busy
 }
 

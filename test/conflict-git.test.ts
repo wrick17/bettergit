@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { loadConflict, previewConflict, resetConflict, saveConflict } from '../src/main/git/conflict'
+import { loadConflict, previewConflict, resetConflict, saveConflict, takeConflictSide } from '../src/main/git/conflict'
 import { parseDiff, workingDiff } from '../src/main/git/diff'
 import { stagePaths } from '../src/main/git/ops'
 import { conflictBlocks, type Choice, type ConflictDocument, type ConflictFingerprint } from '../src/shared/conflict'
@@ -431,6 +431,31 @@ describe('conflict resolution on real Git merges', () => {
     await stagePaths(repo, ['doc.txt'])
     expect(stagesOf(repo)).toHaveLength(0)
   })
+
+  test('resolving using ours or theirs writes that whole side, keeps the file unmerged until staged, and refuses a stale file', async () => {
+    // Theirs also edits the last line apart from the conflict, so a whole side differs from choosing in each block.
+    const sides = { base: 'top\nold\n1\n2\n3\nend\n', ours: 'top\nmine\n1\n2\n3\nend\n', theirs: 'top\nyours\n1\n2\n3\nEND\n' }
+    for (const side of ['ours', 'theirs'] as const) {
+      const repo = conflictRepo(sides)
+      const stages = stagesOf(repo)
+      const { fingerprint } = await loaded(repo)
+      writeFileSync(path.join(repo, 'doc.txt'), 'edited after load\n')
+      await expect(takeConflictSide(repo, 'doc.txt', { fingerprint, side })).rejects.toThrow('before choosing a side')
+      expect(text(repo)).toBe('edited after load\n')
+      git(repo, ['checkout', '--conflict=merge', '--', 'doc.txt'])
+      const hooks = path.join(repo, '.git', 'hooks')
+      mkdirSync(hooks, { recursive: true })
+      git(repo, ['config', 'core.hooksPath', hooks])
+      writeFileSync(path.join(hooks, 'post-checkout'), '#!/bin/sh\nprintf "hook ran" > unrelated.txt\ngit add -- doc.txt\n', { mode: 0o755 })
+      await takeConflictSide(repo, 'doc.txt', { fingerprint: (await loaded(repo)).fingerprint, side })
+      expect(existsSync(path.join(repo, 'unrelated.txt'))).toBe(false)
+      expect(text(repo)).toBe(sides[side])
+      expect(stagesOf(repo)).toEqual(stages)
+      await stagePaths(repo, ['doc.txt'])
+      expect(stagesOf(repo)).toEqual([])
+      expect(git(repo, ['show', ':doc.txt'])).toBe(sides[side].trimEnd())
+    }
+  }, 60_000)
 
   // Staging reads a file only to the loader's 2 MiB limit plus one byte. Text past the limit is refused rather than
   // taken as resolved, and a NUL byte within the read part still marks a binary file, which stages as before.

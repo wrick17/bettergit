@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { logCommand } from '../command-log'
 
 export class GitError extends Error {
   constructor(
@@ -31,6 +32,17 @@ const NETWORK_IDLE_MS = 120_000
 const PROGRESS = /^(remote: )?([\w ]+: +(\d+% \(\d+\/\d+\)|\d+, done\.)|Total \d+ \(delta)/
 
 export function git(cwd: string, args: string[], options: GitOptions = {}): Promise<string> {
+  const logged = logCommand(cwd, args, Buffer.byteLength(options.input ?? ''))
+  const run = runGit(cwd, args, options)
+  run.then((stdout) => logged(0, Buffer.byteLength(stdout)), failed(logged))
+  return run
+}
+
+// The end of a logged command that rejected. Only a GitError carries git's exit code.
+const failed = (logged: ReturnType<typeof logCommand>) => (error: unknown) =>
+  logged(error instanceof GitError ? error.code : null, 0, error instanceof Error ? error.message : String(error))
+
+function runGit(cwd: string, args: string[], options: GitOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     // Node reports a missing working folder as "spawn git ENOENT", which looks like git is missing.
     if (!existsSync(cwd)) return reject(new GitError(`Folder not found: ${cwd}`, args, null, ''))
@@ -151,6 +163,13 @@ export interface RawResult {
 // For commands whose answer is the exit code, such as merge-file, where a non-zero exit is a result, not a failure.
 // Output stays raw bytes. Spawn failures still reject.
 export function gitRaw(cwd: string, args: string[], input?: Buffer): Promise<RawResult> {
+  const logged = logCommand(cwd, args, input?.length ?? 0)
+  const run = runGitRaw(cwd, args, input)
+  run.then((result) => logged(result.code, result.stdout.length, result.code === 0 ? undefined : result.stderr), failed(logged))
+  return run
+}
+
+function runGitRaw(cwd: string, args: string[], input?: Buffer): Promise<RawResult> {
   return new Promise((resolve, reject) => {
     if (!existsSync(cwd)) return reject(new GitError(`Folder not found: ${cwd}`, args, null, ''))
     const child = spawn('git', ['-c', 'core.quotepath=off', '-c', 'color.ui=never', ...args], {

@@ -335,6 +335,29 @@ if (process.env.CHECK_MODE === 'hunk-context') {
   fileView('__proto__').onChoose(0, 'current'); render()
   assert.deepEqual(fileView('__proto__').choices, ['current'])
   unmount()
+
+  // Stage in a resolver goes through the ordinary stage write for that file alone. Taking a side asks first, then sends
+  // the confirmed fingerprint and the side, nothing else.
+  const staged = [], takes = []
+  Object.assign(window.bettergit, {
+    stage: (...args) => { staged.push(args); return Promise.resolve() },
+    conflictTake: (...args) => { takes.push(args); return Promise.resolve() },
+  })
+  loads.length = 0; slots = []; mounted = true; confirms.length = 0
+  props = { ...props, repo: '/repo', revision: 1, status: { changes: [conflicted('c.ts'), conflicted('d.ts')] } }
+  render()
+  const clean = { supported: true, fingerprint: fingerprint('e'), parts: parseConflicts('clean\n').parts, combine: [], reset: { available: true, fingerprint: fingerprint('e') } }
+  load('c.ts', clean); load('d.ts', conflictDoc('d')); await flush()
+  fileView('c.ts').onStage(); await flush()
+  assert.deepEqual(staged, [['/repo', ['c.ts']]])
+  answer = false
+  fileView('d.ts').onTake('theirs'); await answered()
+  assert.equal(takes.length, 0)
+  assert.ok(confirms.at(-1).includes('d.ts') && confirms.at(-1).includes('theirs') && confirms.at(-1).includes('stays unmerged'))
+  answer = true
+  fileView('d.ts').onTake('theirs'); await answered()
+  assert.deepEqual(takes, [['/repo', 'd.ts', { fingerprint: fingerprint('d'), side: 'theirs' }]])
+  unmount()
 }
 
 if (process.env.CHECK_MODE === 'commit-draft') {
@@ -834,4 +857,4 @@ test('a scrolled diff keeps its place through an option reload, and a file picke
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
 test('Changes lists every path once with staged-only files routed as staged, and Stage all takes only unstaged paths', () => check('membership'))
-test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target', () => check('conflict-reset'))
+test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))

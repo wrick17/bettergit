@@ -39,6 +39,7 @@ const OPERATION_NAMES: Record<string, string> = {
   'repo:restore': 'Restoring',
   'repo:conflict-save': 'Saving resolution',
   'repo:conflict-reset': 'Resetting resolution',
+  'repo:conflict-take': 'Resolving conflict',
   'repo:file-write': 'Saving file',
 }
 

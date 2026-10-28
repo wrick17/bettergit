@@ -12,6 +12,7 @@ import * as editors from '../src/shared/editors'
 import * as editorLaunch from '../src/renderer/src/editor-launch'
 import * as repoBusy from '../src/renderer/src/repo-busy'
 import * as repoLocks from '../src/main/repo-lock'
+import * as commandLog from '../src/main/command-log'
 import { IconButton } from '../src/renderer/src/Icons'
 import type { BetterGitApi } from '../src/preload'
 import { promises as fs, statSync } from 'node:fs'
@@ -177,7 +178,9 @@ async function loadEntry(file: string, imports: Record<string, unknown>, after =
   const module = { exports: {} }
   runInNewContext(await compiled.outputs[0].text() + after, {
     ...globals, module, exports: module.exports,
-    require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub } : {}),
+    // The command log is a no-op until opened, so main and exec load it for real.
+      require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub }
+        : id.endsWith('/command-log') ? commandLog : {}),
   })
   return module.exports
 }

@@ -6,7 +6,8 @@ import {
   applyChoices, BASE_REASON_TEXT, conflictBlocks, DEFAULT_MARKER_SIZE, fromMergeOutput, matchBasesAcrossRuns, MAX_CONFLICT_BLOCKS, parseConflicts,
   splitTokens, toMergeInput, withStageEnds,
   type BaseReason, type Combine, type ConflictBlock, type ConflictDocument, type ConflictFingerprint, type ConflictPreview,
-  type ConflictReset, type ConflictResetResult, type ConflictResetState, type ConflictSave, type ConflictSaved, type Part, type StageBlock,
+  type ConflictReset, type ConflictResetResult, type ConflictResetState, type ConflictSave, type ConflictSaved, type ConflictTake, type Part,
+  type StageBlock,
 } from '../../shared/conflict'
 import { gitRaw } from './exec'
 
@@ -21,6 +22,7 @@ const COMBINE_WORKERS = 8
 const REGULAR_MODES = new Set(['100644', '100755'])
 const STALE = 'The file changed after it was loaded. Reload the conflict before saving.'
 const STALE_RESET = 'The file changed after it was loaded. Reload the conflict before resetting.'
+const STALE_TAKE = 'The file changed after it was loaded. Reload the conflict before choosing a side.'
 const TOO_MANY_CONFLICTS = `This file has more than ${MAX_CONFLICT_BLOCKS} conflicts. Resolve it outside BetterGit.`
 const TOO_LARGE = 'This file is too large to resolve here.'
 
@@ -491,4 +493,15 @@ export async function resetConflict(repo: string, relPath: string, request: Conf
     if (!(await reconstruct(repo, again)).bytes.equals(bytes)) throw new ConflictRefusal(STALE_RESET)
   })
   return { supported: true, fingerprint, parts, combine, reset: { available: true, fingerprint } }
+}
+
+// Replaces the whole working file with one side from git's index, the way `git checkout --ours` or `--theirs` does,
+// so git's own checkout conversion applies. The index is only read, so the file stays unmerged until it is staged. The
+// snapshot repeats the checks a load made, and the fingerprint binds the write to the file the user confirmed.
+export async function takeConflictSide(repo: string, relPath: string, request: ConflictTake): Promise<void> {
+  const snapshot = await readSnapshot(repo, relPath)
+  if (!sameFingerprint(snapshot.fingerprint, request.fingerprint)) throw new ConflictRefusal(STALE_TAKE)
+  // A post-checkout hook could modify unrelated files or stage this file before the user chooses Stage.
+  const done = await gitRaw(repo, ['-c', 'core.hooksPath=/dev/null', '--literal-pathspecs', 'checkout', `--${request.side}`, '--', snapshot.relPath])
+  if (done.code !== 0) throw new ConflictRefusal(done.stderr || `Git could not check out ${request.side}.`)
 }

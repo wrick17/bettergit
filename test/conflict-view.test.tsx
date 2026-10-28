@@ -53,7 +53,8 @@ const { parseDiff } = await import('./src/main/git/diff')
 // Finds the first element in the tree whose props match. The save control is rendered by ConflictView itself,
 // so walking its element tree reaches the callback without a DOM.
 function find(node, match) {
-  for (const child of Array.isArray(node) ? node : [node]) {
+  // Flattened, since a mapped list is an array inside the children array.
+  for (const child of [node].flat(Infinity)) {
     if (!react.isValidElement(child)) continue
     if (match(child)) return child
     const found = find(child.props.children, match)
@@ -75,6 +76,22 @@ const resetState = (overrides) => {
 }
 let resets = 0
 resetButton({ onReset: () => resets++ })?.onClick()
+// Stage is an IconButton element once no markers remain, like reset, so its props show its busy and blocked states.
+const stageButton = (overrides) => find(ConflictView(props({ model: modelFor('clean\n'), ...overrides })), (element) => element.props.text === 'Stage')?.props
+const stageState = (overrides) => {
+  const button = stageButton(overrides)
+  return button && { busy: !!button.busy, blocked: button.blocked ?? null }
+}
+let stages = 0
+stageButton({ onStage: () => stages++ })?.onClick()
+// Ours and theirs are IconButton elements too, found by their visible text.
+const sideButton = (text, overrides) => find(ConflictView(props(overrides)), (element) => element.props.text === text)?.props
+const taken = []
+for (const model of [modelFor(twoBlocks), modelFor('clean\n')]) for (const text of ['Use Ours', 'Use Theirs']) sideButton(text, { model, onTake: (side) => taken.push(side) })?.onClick()
+const sideState = (text, overrides) => {
+  const button = sideButton(text, overrides)
+  return button ? { busy: !!button.busy, blocked: button.blocked ?? null } : null
+}
 console.log(JSON.stringify({
   markerFree: render({ model: modelFor('clean\n') }),
   otherBusy: render({ choices: ['current', null], busy: 'stage' }),
@@ -87,6 +104,14 @@ console.log(JSON.stringify({
     resetting: resetState({ busy: 'conflict-reset' }),
   },
   resets,
+  stages,
+  stageStates: { idle: stageState(), otherBusy: stageState({ busy: 'resolve' }), staging: stageState({ busy: 'stage' }) },
+  taken,
+  sideStates: {
+    brokenResettable: sideState('Use Ours', { model: modelFor('a\0b') }),
+    unreadable: sideState('Use Ours', { model: modelFor('a\0b', [], { available: false, reason: 'Not text.' }) }),
+    takingOurs: [sideState('Use Ours', { busy: 'conflict-take:ours' }), sideState('Use Theirs', { busy: 'conflict-take:ours' })],
+  },
   plain: render(),
   chosen: render({ choices: ['incoming', null] }),
   combined: render({ model: modelFor(twoBlocks, [{ state: 'ready', text: 'merged\n' }, unavailable]), choices: ['combine', null] }),
@@ -502,6 +527,32 @@ describe('ConflictView', () => {
     expect(plain.indexOf('aria-label="Reset resolution"')).toBeLessThan(plain.indexOf('Save resolution'))
     expect(markerFree).toContain('No conflict markers remain')
     expect(resets).toBe(1)
+  })
+
+  test('a file with no markers left offers Stage beside reset, which stages it and stops while a write runs', () => {
+    const { markerFree, plain, unsupported, stages, stageStates } = views()
+    expect(markerFree).toMatch(/<header class="conflict-bar">.*aria-label="Reset resolution".*aria-label="Stage src\/app.ts".*>Stage<\/span>.*<\/header>/)
+    for (const markup of [plain, unsupported]) expect(markup).not.toContain('aria-label="Stage ')
+    expect(stages).toBe(1)
+    expect(stageStates).toEqual({
+      idle: { busy: false, blocked: null },
+      otherBusy: { busy: false, blocked: 'Another action is running: Saving resolution…' },
+      staging: { busy: true, blocked: null },
+    })
+  })
+
+  test('ours and theirs show with or without markers left, hand back their side, and stop while a write runs', () => {
+    const { plain, markerFree, taken, sideStates } = views()
+    for (const markup of [plain, markerFree]) {
+      expect(markup).toMatch(/<header class="conflict-bar">.*>Use Ours<\/span>.*>Use Theirs<\/span>.*aria-label="Reset resolution".*<\/header>/)
+    }
+    expect(plain).toContain('aria-label="Resolve using theirs, the incoming side, for src/app.ts"')
+    expect(taken).toEqual(['ours', 'theirs', 'ours', 'theirs'])
+    expect(sideStates).toEqual({
+      brokenResettable: { busy: false, blocked: null },
+      unreadable: null,
+      takingOurs: [{ busy: true, blocked: null }, { busy: false, blocked: 'Another action is running: Resolving conflict…' }],
+    })
   })
 
   test('reset gives its reason when unavailable, and every control stops while a write runs', () => {

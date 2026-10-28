@@ -7,7 +7,7 @@ import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { UpdateState } from '../main/update'
 import type { AppKind, InstalledApp } from '../shared/editors'
 import type { ColorTheme, ExtensionDetails, ExtensionMetadata, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
-import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
+import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved, ConflictTake } from '../shared/conflict'
 
 // The renderer gets named functions only. It never sees ipcRenderer or Node APIs.
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
@@ -107,6 +107,8 @@ const api = {
     invoke('repo:conflict-save', repo, file, save) as Promise<ConflictSaved>,
   conflictReset: (repo: string, file: string, request: ConflictReset) =>
     invoke('repo:conflict-reset', repo, file, request) as Promise<ConflictResetResult>,
+  conflictTake: (repo: string, file: string, request: ConflictTake) =>
+    invoke('repo:conflict-take', repo, file, request) as Promise<void>,
   // The inline editor. The write sends back the text it loaded, so the main process can refuse a file changed since.
   readFile: (repo: string, file: string) => invoke('repo:file-read', repo, file) as Promise<string>,
   writeFile: (repo: string, file: string, expected: string, text: string) =>

@@ -9,6 +9,7 @@ import * as locks from '../src/main/repo-lock'
 import * as scan from '../src/main/scan'
 import * as configModule from '../src/main/config'
 import * as conflict from '../src/shared/conflict'
+import * as commandLog from '../src/main/command-log'
 import { DirtyCounter, type RepoCounts } from '../src/main/git/dirty'
 import { fetchAll } from '../src/main/git/ops'
 import { EventEmitter } from 'node:events'
@@ -44,7 +45,9 @@ async function load(file: string, imports: Record<string, unknown>, after = '', 
     const module = { exports: {} }
     runInNewContext(await compiled.outputs[0].text() + after, {
       Error, ...globals, module, exports: module.exports,
-      require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub } : {}),
+      // The command log is a no-op until opened, so main and exec load it for real.
+      require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub }
+        : id.endsWith('/command-log') ? commandLog : {}),
     })
     return module.exports
   }
@@ -409,7 +412,8 @@ test('discovered aliases share foreground, conflict-save, background and rendere
       switchBranch: (...args: unknown[]) => { branchCalls.push(args); return branchHold?.promise },
     },
     './git/conflict': { saveConflict: (canonical: string) => { written.push(canonical); return resolutionHold?.promise },
-      resetConflict: (canonical: string) => { written.push(canonical); return resetHold?.promise } },
+      resetConflict: (canonical: string) => { written.push(canonical); return resetHold?.promise },
+      takeConflictSide: (canonical: string) => { written.push(canonical) } },
     '../shared/conflict': conflict,
   }, '\nconfig = testConfig; registerIpc()', {
     testConfig: configModule.normalizeConfig({ sources: [source, alias], groups: [{ id: 'selected', name: 'Selected', repos: [alias] }] }),
@@ -450,9 +454,9 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     const writeChannels = [
       'stage', 'unstage', 'commit-changes', 'switch', 'create-branch', 'fetch', 'pull', 'pull-from', 'reset-upstream',
       'checkout-detached', 'branch-from', 'tag-from', 'cherry-pick', 'revert', 'amend-message', 'push',
-      'stash', 'stash-action', 'backup', 'restore', 'discard', 'conflict-save', 'conflict-reset',
+      'stash', 'stash-action', 'backup', 'restore', 'discard', 'conflict-save', 'conflict-reset', 'conflict-take',
     ]
-    expect(writeChannels).toHaveLength(23)
+    expect(writeChannels).toHaveLength(24)
     await withRepoLock(repo, 'repo:push', async () => {
       expect(busy.busyKey(alias)).toBe('push')
       for (const channel of writeChannels) {
@@ -510,9 +514,13 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     resetHold.reject(new Error('reset failed'))
     await expect(reset).rejects.toThrow('reset failed')
     expect(repoLockHolder(alias)).toBeNull()
+    // Taking a side gets the canonical root too, and its request is a side and the fingerprint, nothing else.
+    await expect(Promise.resolve(handlers.get('repo:conflict-take')!({}, alias, 'file.txt', { fingerprint, side: 'base' }))).rejects.toThrow('names no side')
+    await expect(Promise.resolve(handlers.get('repo:conflict-take')!({}, alias, 'file.txt', { fingerprint, side: 'ours', text: 'x' }))).rejects.toThrow('unexpected fields')
+    await handlers.get('repo:conflict-take')!({}, alias, 'file.txt', { fingerprint, side: 'theirs' })
     stageHold = null
     await api.stage(alias, [])
-    expect(written).toEqual([repo, repo, repo, repo])
+    expect(written).toEqual([repo, repo, repo, repo, repo])
 
     const selection = { fullRef: 'refs/remotes/origin/topic', hash: 'a'.repeat(40) }
     branchHold = deferred()
