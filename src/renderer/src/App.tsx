@@ -26,6 +26,7 @@ import { ActionError, blockedReason, busyKey, connectRepoLocks, failureReason, r
 import { runBatch, runRefresh } from './batch-status'
 import { notify, notifyFailure } from './notifications'
 import { NotificationHub } from './NotificationHub'
+import { UpdateStatus } from './UpdateStatus'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 import { FindBar } from './FindBar'
@@ -94,6 +95,16 @@ export function App() {
   }
   const reportBatchRef = useRef(reportBatch)
   reportBatchRef.current = reportBatch
+  // One write in one repo, from the app menu, a sidebar row or a notification. A refused write says what is running instead
+  // of starting. Resolves to whether the write ran and succeeded.
+  const runInRepo = (path: string, key: string, action: () => Promise<unknown>): Promise<boolean> => {
+    const reason = blockedReason(busyKey(path))
+    if (reason) {
+      reportErrorRef.current(new ActionError(`${workingLabel(key).replace('…', '')} in ${path.split('/').pop()}`, reason, path))
+      return Promise.resolve(false)
+    }
+    return runRepoWrite(path, key, action, { onError: reportErrorRef.current, reload: () => setRevision((value) => value + 1) })
+  }
 
   // A promise nobody handled is still a failure the user should see. Aborts are cancellations, not failures.
   useEffect(() => {
@@ -152,25 +163,40 @@ export function App() {
     return () => { offChanged(); offFetch(); offAppError(); offDirty() }
   }, [refreshTree])
 
+  // Rescans every source, recounts each repo's changes and commits to push and pull from local refs, and reloads the open
+  // repo's views. A repo Git cannot read is reported and the rest still count. While a sidebar batch runs, the views still
+  // reload but the rescan waits for the batch.
+  const refreshAll = () => void runRefresh(null, async () => {
+    const next: TreeNode[] = await api.getTree()
+    setTree(next)
+    // Four at a time, as main's own counter runs.
+    const queue = flatten(next)
+    const failures: { repo: string; reason: string }[] = []
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      for (let node = queue.shift(); node; node = queue.shift()) {
+        const { path } = node
+        await api.refreshRepo(path).catch((failure: unknown) => failures.push({ repo: path, reason: failureReason(failure) }))
+      }
+    }))
+    return failures
+  }).then((failures) => { if (failures) reportBatchRef.current('Refresh', failures) }, (failure: unknown) => reportErrorRef.current(failure, 'Refresh'))
+    .finally(() => { setRefreshes((value) => value + 1); setRevision((value) => value + 1) })
+
   // Menu commands that need the open repo or the sidebar are handled here, where that state lives.
   useEffect(() => {
     const off = api.onEvent('menu:action', (payload) => {
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
       const repo = selectedRef.current
-      // Menu writes take the same repo slot as the toolbar. A refused write says what is running instead of starting.
+      // Menu writes take the same repo slot as the toolbar.
       const runRepo = (key: string, action: () => Promise<unknown>) => {
         if (!repo) return reportErrorRef.current(new Error('Select a repository first.'), workingLabel(key).replace('…', ''))
-        const reason = blockedReason(busyKey(repo))
-        if (reason) return reportErrorRef.current(new ActionError(`${workingLabel(key).replace('…', '')} in ${repo.split('/').pop()}`, reason, repo))
-        return void runRepoWrite(repo, key, action, { onError: reportErrorRef.current, reload: () => setRevision((value) => value + 1) })
+        return void runInRepo(repo, key, action)
       }
       switch (payload as MenuAction) {
         case 'add-folder': return void api.pickSources().then(async (next: AppConfig) => { setConfig(next); await refreshTree() }).catch((failure: unknown) => reportErrorRef.current(failure, 'Adding a folder'))
         case 'clone': return setCloneOpen(true)
         case 'open-settings': return setSettingsOpen(true)
-        // While a sidebar batch runs, the views still reload but the rescan waits for the batch.
-        case 'refresh': return void runRefresh(null, refreshTree).catch((failure: unknown) => reportErrorRef.current(failure, 'Refresh'))
-          .finally(() => { setRefreshes((value) => value + 1); setRevision((value) => value + 1) })
+        case 'refresh': return refreshAll()
         case 'fetch': return void runRepo('fetch', () => api.fetch(repo!))
         case 'pull': return void runRepo('pull-merge', () => api.pull(repo!))
         case 'push': return void runRepo('push', () => api.push(repo!))
@@ -324,11 +350,25 @@ export function App() {
             const message = `Pull ${shown.length} ${shown.length === 1 ? 'repository' : 'repositories'} in ${folder.name}?\n\nEach fast-forwards its current branch to its upstream. A repo that has diverged, has no upstream, or would overwrite local files is left unchanged and reported.`
             if (!shown.length || await confirmOverBlur(message)) reportBatch(title, await runBatch(folder.path, title, 'pulling', 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reload))
           })().catch((failure: unknown) => reportError(failure, kind === 'fetch' ? 'Fetch All' : 'Pull All'))}
+          onRefreshAll={refreshAll}
+          onRepoAction={(node: RepoNode, action) => {
+            if (action === 'fetch') return void runInRepo(node.path, 'fetch', () => api.fetch(node.path))
+            // Pull merges, as the toolbar's Pull does.
+            if (action === 'pull') return void runInRepo(node.path, 'pull-merge', () => api.pull(node.path, 'merge'))
+            // A read, so it does not wait for a write: the row's counts and branch, and the views when the repo is open.
+            void Promise.all([api.refreshRepo(node.path), refreshTree()]).then(() => {
+              if (node.path !== selectedRef.current) return
+              setRefreshes((value) => value + 1)
+              setRevision((value) => value + 1)
+            }).catch((failure: unknown) => reportError(failure, `Refreshing ${node.name}`, node.path))
+          }}
           onSettings={() => setSettingsOpen(true)}
           stripLabel={repo?.name ?? 'Repositories'}
         />
         <div className={`splitter gap${sidebarFold.collapsed ? ' off' : ''}`} {...sidebarHandle} {...sidebarFold.splitterHandlers} />
-      <NotificationHub onGo={goToRepo} />
+      <NotificationHub onGo={goToRepo} onRetryFetch={(path) => runInRepo(path, 'fetch', () => api.fetch(path))}>
+        <UpdateStatus />
+      </NotificationHub>
       <main className="pane">
         {!repo && (
           <Empty
@@ -526,10 +566,11 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
               <span>{headLabel}</span>
               <Icon name="chevronDown" className="chevron-down" />
             </button>
-            {status?.upstream && (
+            {/* A zero count says nothing, as in the sidebar: only commits to push or pull show. */}
+            {status?.upstream && (status.ahead > 0 || status.behind > 0) && (
               <span className="sync">
-                <span role="img" title={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`} aria-label={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`}><Icon name="arrowUp" /><b>{status.ahead}</b></span>
-                <span role="img" title={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`} aria-label={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`}><Icon name="arrowDown" /><b>{status.behind}</b></span>
+                {status.ahead > 0 && <span role="img" title={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`} aria-label={`${status.ahead} commit${status.ahead === 1 ? '' : 's'} to push to ${status.upstream}`}><Icon name="arrowUp" /><b>{status.ahead}</b></span>}
+                {status.behind > 0 && <span role="img" title={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`} aria-label={`${status.behind} commit${status.behind === 1 ? '' : 's'} to pull from ${status.upstream}`}><Icon name="arrowDown" /><b>{status.behind}</b></span>}
               </span>
             )}
           </div>

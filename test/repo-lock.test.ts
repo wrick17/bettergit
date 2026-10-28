@@ -31,6 +31,9 @@ function lockPath(name: string): string {
   return repo
 }
 
+// Main creates its updater on load; these tests never check for updates.
+const updaterStub = { state: () => ({ kind: 'idle' }), check: async () => {}, update: async () => {}, install: () => null, openPage: async () => {}, watch: () => {}, start: () => {} }
+
 async function load(file: string, imports: Record<string, unknown>, after = '', globals: Record<string, unknown> = {}) {
     const compiled = await Bun.build({
       entrypoints: [new URL(file, import.meta.url).pathname],
@@ -41,7 +44,7 @@ async function load(file: string, imports: Record<string, unknown>, after = '', 
     const module = { exports: {} }
     runInNewContext(await compiled.outputs[0].text() + after, {
       Error, ...globals, module, exports: module.exports,
-      require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : {}),
+      require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub } : {}),
     })
     return module.exports
   }
@@ -53,6 +56,42 @@ function deferred() {
   const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
   return { promise, resolve, reject }
 }
+
+test('clone holds the update restart guard through registration and cannot start after shutdown', async () => {
+  const cloning = deferred(), registering = deferred()
+  let cloneCalls = 0, registerCalls = 0
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  const app = Object.assign(new EventEmitter(), { setName() {}, whenReady: () => new Promise<void>(() => {}) })
+  await load('../src/main/index.ts', {
+    electron: { app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) } },
+    'node:path': path, './repo-lock': locks,
+    './git/dirty': { DirtyCounter: class {} }, './watch': { SourceWatcher: class {} },
+    './git/ops': { clone: async () => { cloneCalls++; await cloning.promise } },
+  }, '\nconfig = testConfig; addSource = testAdd; persist = async () => {}; registerIpc()', {
+    testConfig: configModule.normalizeConfig({}),
+    testAdd: async () => { registerCalls++; await registering.promise },
+  })
+  const clone = handlers.get('clone')!
+  locks.reopenRepoLocks()
+  const running = clone({}, 'https://example.test/project.git', lockRoot)
+  try {
+    expect(cloneCalls).toBe(1)
+    expect(locks.closeRepoLocks()).toBe(false)
+    cloning.resolve()
+    for (let turn = 0; turn < 10 && !registerCalls; turn++) await Promise.resolve()
+    expect(registerCalls).toBe(1)
+    expect(locks.closeRepoLocks()).toBe(false)
+    registering.resolve()
+    await running
+    expect(locks.closeRepoLocks()).toBe(true)
+    await expect(clone({}, 'https://example.test/other.git', lockRoot)).rejects.toThrow('restarting')
+    expect(cloneCalls).toBe(1)
+  } finally {
+    cloning.resolve(); registering.resolve()
+    await running
+    locks.reopenRepoLocks()
+  }
+})
 
 test('a stalled fetch helper reaches its deadline and releases the fetching state and repository lock', async () => {
   const repo = lockPath('stalled-fetch')
@@ -127,6 +166,24 @@ test('a second operation is refused while one holds the repo, and the holder is 
   first.resolve()
   await running
   expect(repoLockHolder(lockPath('/lock-a'))).toBeNull()
+})
+
+test('an update restart waits for running writes, then stops new ones until it is cancelled', async () => {
+  const first = deferred()
+  const running = withRepoLock(lockPath('/lock-update'), 'repo:push', () => first.promise)
+  expect(locks.closeRepoLocks()).toBe(false)
+  first.resolve()
+  await running
+
+  expect(locks.closeRepoLocks()).toBe(true)
+  try {
+    let started = false
+    await expect(withRepoLock(lockPath('/lock-update'), 'repo:stage', async () => { started = true })).rejects.toThrow('restarting to install an update')
+    expect(started).toBe(false)
+  } finally {
+    locks.reopenRepoLocks()
+  }
+  expect(await withRepoLock(lockPath('/lock-update'), 'repo:stage', () => 'ran')).toBe('ran')
 })
 
 test('a failed operation releases the repo, so the next one runs', async () => {

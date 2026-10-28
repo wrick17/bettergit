@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { IconButton } from '../src/renderer/src/Icons'
 import {
-  applyRepoLockSnapshot, blockedReason, busyKey, connectRepoLocks, REPO_WORKING_LABELS, runRepoAction, runRepoWrite,
+  applyRepoLockSnapshot, blockedReason, busyKey, connectRepoLocks, describeFailure, REPO_WORKING_LABELS, runRepoAction, runRepoWrite,
   subscribeRepoBusy, workingLabel, type RepoLockSnapshot,
 } from '../src/renderer/src/repo-busy'
 
@@ -187,4 +187,22 @@ test('local alias claims take precedence across aliases until their own cleanup 
   expect(await local).toBe(false)
   expect(errors).toHaveLength(1)
   for (const repo of ['/selected-alias-b', '/canonical-alias-b', '/other-alias-b']) expect(busyKey(repo)).toBeNull()
+})
+
+// Git's raw text, as fetch and pull fail with it, reads as a plain summary. Only what the text shows is claimed, and an
+// unknown failure keeps its own first line.
+test('Git failures are summarised by what their text shows', () => {
+  const summary = (reason: string) => describeFailure(reason).summary
+  expect(summary('ERROR: Repository not found.\nfatal: Could not read from remote repository.')).toBe('The remote repository was not found, or this account cannot access it.')
+  expect(summary("remote: Repository not found.\nfatal: repository 'https://github.com/a/b.git/' not found")).toBe('The remote repository was not found, or this account cannot access it.')
+  expect(summary('git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.')).toBe('The remote refused this SSH key.')
+  expect(summary('Host key verification failed.\nfatal: Could not read from remote repository.')).toBe("The remote's SSH host key is not trusted on this Mac.")
+  expect(summary("fatal: could not read Username for 'https://github.com': terminal prompts disabled")).toBe('The remote did not accept your credentials.')
+  expect(summary("fatal: unable to access 'https://github.com/a/b.git/': Could not resolve host: github.com")).toBe('Could not reach the remote.')
+  expect(summary('git fetch timed out after 120 seconds without progress. Check your connection and Git credentials, then try again.')).toBe('Could not reach the remote.')
+  expect(summary("fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.")).toBe("This repository's remote is not set up correctly.")
+  expect(summary('kex_exchange_identification: read: Connection reset by peer\nfatal: Could not read from remote repository.')).toBe('Could not reach the remote.')
+  expect(summary('fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights')).toBe('Could not read from the remote repository.')
+  expect(summary('fatal: Not possible to fast-forward, aborting.\nhint: Diverging branches')).toBe('Not possible to fast-forward, aborting.')
+  expect(describeFailure('main has no upstream branch to pull from.')).toEqual({ summary: 'main has no upstream branch to pull from.' })
 })

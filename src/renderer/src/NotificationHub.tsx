@@ -1,16 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './Icons'
 import { clearLatest, markAllRead, markRead, useLatestNotification, useNotifications } from './notifications'
+import { describeFailure } from './repo-busy'
 
 const ANNOUNCE_MS = 6000
 
 // The failures the user has not marked as read. A bell with the unread count opens the list, where each failure can take
-// the user to its repo and be marked read. The newest failure is also announced briefly, without taking focus.
+// the user to its repo, retry a failed fetch there, and be marked read. Each shows a plain summary and next step, with Git's
+// own text under Details. The newest failure is also announced briefly, without taking focus.
 // Portalled out of the app root, which goes inert under a dialog, so the hub stays usable while a dialog is open.
-export function NotificationHub({ onGo }: {
+export function NotificationHub({ onGo, onRetryFetch, children }: {
   // Opens the repo in this window. False when it is no longer in the sidebar.
   onGo: (repo: string) => boolean
+  // Fetches the repo again. True when it succeeded, which marks the entry read.
+  onRetryFetch: (repo: string) => Promise<boolean>
+  // Other status that shares the corner, such as BetterGit's own update.
+  children?: ReactNode
 }) {
   const list = useNotifications()
   const latest = useLatestNotification()
@@ -65,12 +71,13 @@ export function NotificationHub({ onGo }: {
       event.stopPropagation()
       close()
     }}>
-      {/* Mounted while empty, so a new failure is announced when it fills. */}
+      {/* Mounted while empty, so a new failure or update is announced when it fills. The two stack, never overlap. */}
       <div className="notify-toast-region" role="status" aria-live="polite">
+        {children}
         {latest && !open && (
           <div className="notify-toast">
             <Icon name="warning" />
-            <span><strong>{latest.action} failed</strong> {latest.reason}</span>
+            <span><strong>{latest.action} failed</strong> {describeFailure(latest.reason).summary}</span>
             <button type="button" onClick={show}>View</button>
           </div>
         )}
@@ -92,6 +99,7 @@ export function NotificationHub({ onGo }: {
           <ul>
             {list.map((entry, index) => {
               const name = entry.repo?.split('/').pop()
+              const { summary, hint } = describeFailure(entry.reason)
               return (
                 <li key={entry.id}>
                   <div className="notify-head">
@@ -100,9 +108,14 @@ export function NotificationHub({ onGo }: {
                     <time dateTime={new Date(entry.time).toISOString()}>{time(entry.time)}</time>
                   </div>
                   {name && <span className="notify-repo">{name}</span>}
-                  <p>{entry.reason}</p>
+                  <p>{summary}</p>
+                  {hint && <p className="notify-hint">{hint}</p>}
+                  {summary !== entry.reason && <details><summary>Details</summary><pre>{entry.reason}</pre></details>}
                   {notices[entry.id] && <em>{notices[entry.id]}</em>}
                   <div className="notify-actions">
+                    {entry.repo && /^(?:Background fetch\b|Fetching\b|Fetch All\b)/i.test(entry.action) && (
+                      <button type="button" aria-label={`Retry fetch in ${name}`} onClick={() => void onRetryFetch(entry.repo!).then((ok) => { if (ok) markRead(entry.id) })}>Retry fetch</button>
+                    )}
                     {entry.repo && (
                       <button type="button" aria-label={`Go to repository ${name}`} onClick={() => {
                         if (!onGo(entry.repo!)) setNotices((prev) => ({ ...prev, [entry.id]: `${name} is no longer in the sidebar.` }))

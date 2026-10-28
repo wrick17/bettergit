@@ -4,6 +4,7 @@ import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
 import type { RepoLockSnapshot } from '../main/repo-lock'
+import type { UpdateState } from '../main/update'
 import type { AppKind, InstalledApp } from '../shared/editors'
 import type { ColorTheme, ExtensionDetails, ExtensionMetadata, ExtensionResult, IconTheme, InstalledExtension } from '../shared/themes'
 import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetResult, ConflictSave, ConflictSaved } from '../shared/conflict'
@@ -15,11 +16,20 @@ const api = {
   getConfig: () => invoke('config:get'),
   updateConfig: (patch: unknown) => invoke('config:update', patch),
   getTree: () => invoke('sources:tree'),
+  // Counts one repo's changes and commits to push and pull again, for a sidebar Refresh on that repo.
+  refreshRepo: (repo: string) => invoke('repo:refresh', repo) as Promise<void>,
   pickSources: () => invoke('sources:pick'),
   pickFolder: () => invoke('folder:pick') as Promise<string | null>,
   addSources: (paths: string[]) => invoke('sources:add', paths),
   removeSource: (path: string) => invoke('sources:remove', path),
   repoLocks: () => invoke('repo:locks') as Promise<RepoLockSnapshot>,
+  // BetterGit's own updates. Main picks the release and the install path; the renderer only asks.
+  updateState: () => invoke('update:state') as Promise<UpdateState>,
+  checkForUpdates: () => invoke('update:check') as Promise<void>,
+  downloadUpdate: () => invoke('update:download') as Promise<void>,
+  // Null when the app is quitting to install; otherwise why it cannot restart now.
+  installUpdate: () => invoke('update:install') as Promise<string | null>,
+  openUpdatePage: () => invoke('update:page') as Promise<void>,
   status: (repo: string) => invoke('repo:status', repo),
   // `hidden` lists branches hidden in the app, by full ref. History walks from every other branch.
   history: (repo: string, skip: number, limit: number, authors: string[] = [], hidden: string[] = []) => invoke('repo:history', repo, skip, limit, authors, hidden),
@@ -105,7 +115,7 @@ const api = {
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   fetchNow: () => invoke('fetch:now'),
   // Main-process events (file changes, background fetch reports) arrive here; returns an unsubscribe.
-  onEvent: (channel: 'repo:locks' | 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action' | 'app:error', listener: (payload: unknown) => void) => {
+  onEvent: (channel: 'repo:locks' | 'repos:changed' | 'repos:dirty' | 'fetch:report' | 'menu:action' | 'app:error' | 'update:state', listener: (payload: unknown) => void) => {
     const handler = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channel, handler)
     return () => { ipcRenderer.removeListener(channel, handler) }

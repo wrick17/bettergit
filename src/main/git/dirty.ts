@@ -50,15 +50,16 @@ export class DirtyCounter {
     }
   }
 
+  // Counts a repo now, for an explicit Refresh. Rejects when Git cannot read it, so the caller can say which repo failed.
+  async recount(repo: string) {
+    const counts = await read(repo)
+    this.counts.set(repo, counts)
+    this.onCount(repo, counts)
+  }
+
   private async count(repo: string) {
     try {
-      const [branch, ...files] = (await git(repo, ['status', '--porcelain=v1', '--branch', '--untracked-files=all'], { optionalLocks: true })).split('\n')
-      // The branch line ends like "## main...origin/main [ahead 1, behind 2]".
-      const counts = {
-        count: files.filter(Boolean).length,
-        ahead: Number(/\bahead (\d+)/.exec(branch)?.[1] ?? 0),
-        behind: Number(/\bbehind (\d+)/.exec(branch)?.[1] ?? 0),
-      }
+      const counts = await read(repo)
       this.counts.set(repo, counts)
       this.onCount(repo, counts)
     } catch {
@@ -69,5 +70,16 @@ export class DirtyCounter {
       if (this.stale.has(repo)) this.enqueue(repo)
       this.drain()
     }
+  }
+}
+
+// Local only: status reads the refs already fetched, so it never touches the network.
+async function read(repo: string): Promise<RepoCounts> {
+  const [branch, ...files] = (await git(repo, ['status', '--porcelain=v1', '--branch', '--untracked-files=all'], { optionalLocks: true })).split('\n')
+  // The branch line ends like "## main...origin/main [ahead 1, behind 2]".
+  return {
+    count: files.filter(Boolean).length,
+    ahead: Number(/\bahead (\d+)/.exec(branch)?.[1] ?? 0),
+    behind: Number(/\bbehind (\d+)/.exec(branch)?.[1] ?? 0),
   }
 }

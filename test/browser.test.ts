@@ -1053,6 +1053,7 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
       onEvent: (name: string, listener: (payload: unknown) => void) => { w.sync.listeners[name] = listener; return () => undefined },
       fetch: (path: string) => hold(`fetch ${path}`),
       pull: (path: string, mode: string) => hold(`pull ${path} ${mode}`),
+      refreshRepo: async (path: string) => { w.sync.calls.push(`count ${path}`) },
       clone: async () => '/p/new',
       pickFolder: async () => { throw new Error("Error invoking remote method 'folder:pick': Error: no access") },
       listExtensions: async () => { throw new Error('disk unreadable') },
@@ -1117,6 +1118,18 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     await page.waitForFunction(() => document.querySelector('.notify-toast-region')?.textContent?.includes('Refresh failed scan failed'), undefined, { timeout: 2000 })
     expect(await page.evaluate(() => !!document.activeElement?.closest('.notify-layer'))).toBe(false)
     expect(await bell()).toBe('Notifications: 1 unread')
+    // The Repositories header's Refresh rescans every source with the same status, and spins while it runs.
+    const refreshAll = page.getByRole('button', { name: /^Refresh(ing)? repositories/ })
+    await refreshAll.click()
+    await shows('Refreshing repositories…')
+    expect(await refreshAll.getAttribute('aria-busy')).toBe('true')
+    expect(await (await menu('Refresh')).isDisabled()).toBe(true)
+    await page.keyboard.press('Escape')
+    await settle(2)
+    await shows('Refreshed repositories')
+    // Then it recounts every repo's changes and commits to push and pull, without fetching.
+    expect((await calls()).filter((call: string) => !call.startsWith('getTree'))).toEqual(['count /p/a', 'count /p/b', 'count /p/c'])
+    expect([await refreshAll.getAttribute('aria-busy'), await refreshAll.getAttribute('aria-disabled')]).toEqual([null, null])
     await page.evaluate(() => { (window as any).sync.holdTree = false })
     await reset()
 
@@ -1128,6 +1141,7 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     // A second batch is refused while one runs: the folder actions are disabled and the app menu's Fetch All starts nothing.
     for (const item of ['Refresh', 'Fetch All', 'Pull All']) expect(await (await menu(item)).isDisabled()).toBe(true)
     await page.keyboard.press('Escape')
+    expect([await refreshAll.getAttribute('aria-busy'), await refreshAll.getAttribute('aria-disabled')]).toEqual([null, 'true'])
     await page.evaluate(() => { (window as any).sync.holdTree = true })
     await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)))
@@ -1299,3 +1313,265 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     await page.setViewportSize({ width: 800, height: 600 })
   }
 }, 30000)
+
+// A repo row has its own actions menu, like a folder's: Fetch, Pull and Refresh act on that row's repo without opening it.
+// The open repo's header hides a zero push or pull count. A raw Git failure reads as a summary with a next step, and the
+// raw text stays under Details.
+test.skipIf(!playwright)('repo rows fetch, pull and refresh their own repo, the header hides zero counts, and Git failures read plainly', async () => {
+  await page.setViewportSize({ width: 1700, height: 800 })
+  const raw = 'ERROR: Repository not found.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.'
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, App, markAllRead } = w.under
+    markAllRead()
+    const repos = ['a', 'b'].map((name) => ({ kind: 'repo', path: `/p/${name}`, name, branch: 'main' }))
+    const tree = [{ kind: 'folder', path: '/p', name: 'projects', children: repos }]
+    w.rows = { calls: [] as string[], pending: [] as any[], listeners: {} as Record<string, (payload: unknown) => void>,
+      status: { head: 'main', headHash: 'a'.repeat(40), upstream: 'origin/main', ahead: 0, behind: 0, detached: false, changes: [] } }
+    const hold = (call: string) => new Promise((resolve, reject) => { w.rows.calls.push(call); w.rows.pending.push({ call, resolve, reject }) })
+    Object.assign(w.bettergit, {
+      getConfig: async () => ({ sources: ['/p'], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null,
+        settings: { theme: 'dark', appearance: {}, languages: {}, editorApp: 'none', terminalApp: 'none', customApps: [] } }),
+      getTree: async () => { w.rows.calls.push('getTree'); return tree },
+      repoLocks: async () => ({ seq: 0, holders: {} }),
+      onEvent: (name: string, listener: (payload: unknown) => void) => { w.rows.listeners[name] = listener; return () => undefined },
+      status: async () => ({ ...w.rows.status }),
+      branches: async () => [],
+      fetch: (path: string) => hold(`fetch ${path}`),
+      pull: (path: string, mode: string) => hold(`pull ${path} ${mode}`),
+      refreshRepo: async (path: string) => {
+        w.rows.calls.push(`refresh ${path}`)
+        if (w.rows.countFail?.[path]) throw new Error(`Error invoking remote method 'repo:refresh': Error: ${w.rows.countFail[path]}`)
+      },
+    })
+    Object.setPrototypeOf(w.bettergit, new Proxy({}, { get: () => () => new Promise(() => undefined) }))
+    document.getElementById('root')!.style.cssText = 'height:780px;width:1700px'
+    w.rowsRoot = createRoot(document.getElementById('root'))
+    w.rowsRoot.render(createElement(App))
+  })
+  const calls = () => page.evaluate(() => (window as any).rows.calls.filter((call: string) => call !== 'getTree'))
+  const settle = (error?: string) => page.evaluate((error: string | undefined) => {
+    const pending = (window as any).rows.pending.shift()
+    if (error) pending.reject(new Error(error)); else pending.resolve()
+  }, error)
+  const selected = () => page.evaluate(() => document.querySelector('[role="treeitem"][aria-selected="true"]')?.textContent ?? null)
+  const sync = () => page.evaluate(() => [...document.querySelectorAll('.toolbar .sync [role="img"]')].map((item) => item.getAttribute('aria-label')))
+  const menu = async (name: string) => {
+    await page.locator('.tree-row.repo').filter({ has: page.locator('.tree-label', { hasText: new RegExp(`^${name}$`) }) }).hover()
+    await page.getByRole('button', { name: new RegExp(`^${name} actions`) }).click({ force: true })
+    // Every item leads with its icon, in the menu's shared 16px slot.
+    return page.evaluate(() => [...document.querySelectorAll('.context-menu [role="menuitem"]')].map((item) => {
+      const icon = item.firstElementChild?.tagName === 'svg' && getComputedStyle(item.firstElementChild).width === '16px' ? '' : ' (no icon)'
+      return `${item.textContent}${icon}${(item as HTMLButtonElement).disabled ? ' (disabled)' : ''}`
+    }))
+  }
+  const item = (name: string) => page.getByRole('menuitem', { name, exact: true })
+  try {
+    await page.waitForSelector('.tree-row.repo', { timeout: 3000 })
+    await page.locator('.tree-row.repo', { hasText: 'b' }).click()
+    await page.waitForSelector('.toolbar .repo-name', { timeout: 3000 })
+
+    // In step with its upstream, the header shows no arrows. A count of commits to pull shows alone.
+    await page.waitForFunction(() => document.querySelector('.branch-pill')?.textContent?.includes('main'), undefined, { timeout: 2000 })
+    expect(await sync()).toEqual([])
+    await page.evaluate(() => { const w = window as any; w.rows.status.behind = 3; w.rows.listeners['repos:changed']({ repos: ['/p/b'], tree: false }) })
+    await page.waitForFunction(() => document.querySelector('.toolbar .sync'), undefined, { timeout: 2000 })
+    expect(await sync()).toEqual(['3 commits to pull from origin/main'])
+
+    // The other repo's menu keeps its items and adds Fetch, Pull and Refresh. Opening it leaves the open repo open.
+    expect(await menu('a')).toEqual(['Fetch', 'Pull', 'Refresh', 'Reveal in Finder', 'Hide in Sidebar'])
+    expect(await selected()).toBe('bmain')
+
+    // Fetch runs in that repo; while it runs, its row shows the spinner and its own Fetch and Pull wait.
+    await item('Fetch').click()
+    expect(await calls()).toEqual(['fetch /p/a'])
+    expect(await page.getByRole('button', { name: /^a actions/ }).getAttribute('aria-busy')).toBe('true')
+    expect(await menu('a')).toEqual(['Fetch (disabled)', 'Pull (disabled)', 'Refresh', 'Reveal in Finder', 'Hide in Sidebar'])
+    await page.keyboard.press('Escape')
+    expect(await selected()).toBe('bmain')
+
+    // A raw Git failure is summarised with a next step; the raw text stays under Details.
+    await settle(`Error invoking remote method 'repo:fetch': GitError: ${raw}`)
+    await page.waitForFunction(() => document.querySelector('.notify-toast'), undefined, { timeout: 2000 })
+    const toast = await page.evaluate(() => document.querySelector('.notify-toast')!.textContent)
+    expect(toast).toContain('Fetching in a failed')
+    expect(toast).toContain('The remote repository was not found, or this account cannot access it.')
+    expect(toast).not.toContain('ERROR')
+    await page.locator('.notify-trigger').click()
+    const entry = () => page.evaluate(() => {
+      const li = document.querySelector('.notify-panel li')!
+      return { summary: li.querySelector('p')!.textContent, hint: li.querySelector('.notify-hint')?.textContent ?? '', details: li.querySelector('details pre')?.textContent ?? '',
+        detailsOpen: li.querySelector('details')?.open ?? null, buttons: [...li.querySelectorAll('.notify-actions button')].map((button) => button.textContent) }
+    })
+    expect(await entry()).toEqual({
+      summary: 'The remote repository was not found, or this account cannot access it.',
+      hint: 'Check the remote URL and that your Git account has access. Git hosts also report a private repository you cannot see as not found.',
+      details: raw, detailsOpen: false, buttons: ['Retry fetch', 'Go to repository', 'Mark as read'],
+    })
+    // Retry fetches the same repo again; a success marks the entry read.
+    await page.getByRole('button', { name: 'Retry fetch in a' }).click()
+    expect(await calls()).toEqual(['fetch /p/a', 'fetch /p/a'])
+    await settle()
+    await page.waitForFunction(() => !document.querySelector('.notify-trigger'), undefined, { timeout: 2000 })
+
+    // Pull merges that repo's upstream, as the toolbar's Pull does. Refresh rereads it without a Git write.
+    expect(await menu('a')).toEqual(['Fetch', 'Pull', 'Refresh', 'Reveal in Finder', 'Hide in Sidebar'])
+    await item('Pull').click()
+    await settle()
+    await menu('a')
+    await item('Refresh').click()
+    await page.waitForFunction(() => (window as any).rows.calls.includes('refresh /p/a'), undefined, { timeout: 2000 })
+    expect(await calls()).toEqual(['fetch /p/a', 'fetch /p/a', 'pull /p/a merge', 'refresh /p/a'])
+    expect(await selected()).toBe('bmain')
+
+    // The header's Refresh rescans the sidebar, recounts every repo and rereads the open repo, which stays open. A repo
+    // Git cannot read is named in the status and the hub, and the rest are still counted.
+    const notifications = async () => {
+      if (!(await page.locator('.notify-panel').count())) await page.locator('.notify-trigger').click()
+      return page.evaluate(() => [...document.querySelectorAll('.notify-panel li')].map((li) =>
+        [li.querySelector('strong')!.textContent, li.querySelector('p')!.textContent, ...[...li.querySelectorAll('.notify-actions button')].map((button) => button.textContent)].join(' | ')))
+    }
+    const notFound = 'fatal: not a git repository (or any of the parent directories): .git'
+    await page.evaluate((reason: string) => {
+      const w = window as any
+      Object.assign(w.rows, { calls: [], countFail: { '/p/a': reason } })
+      Object.assign(w.rows.status, { behind: 0, ahead: 1 })
+    }, notFound)
+    await page.getByRole('button', { name: 'Refresh repositories' }).click()
+    await page.waitForFunction(() => document.querySelector('.sidebar [role="status"]')?.textContent?.startsWith('Refreshed repositories, 1 failed'), undefined, { timeout: 2000 })
+    await page.waitForFunction(() => document.querySelector('.toolbar .sync [aria-label="1 commit to push to origin/main"]'), undefined, { timeout: 2000 })
+    expect(await page.evaluate(() => (window as any).rows.calls)).toEqual(['getTree', 'refresh /p/a', 'refresh /p/b'])
+    expect(await page.evaluate(() => document.querySelector('.sidebar [role="status"] li')?.textContent)).toBe(`a: ${notFound}`)
+    expect(await selected()).toBe('bmain')
+    expect(await notifications()).toEqual([`Refresh: a failed | ${notFound} | Go to repository | Mark as read`])
+    await page.evaluate(() => { const w = window as any; w.under.markAllRead(); w.rows.countFail = {} })
+
+    // Retry fetch is offered for fetch failures only, even when a repo's name has "fetch" in it, and marks only its own
+    // entry read.
+    await page.evaluate(() => {
+      const { notify } = (window as any).under
+      notify({ action: 'Pulling in fetch-client', reason: 'merge stopped', repo: '/p/fetch-client' })
+      notify({ action: 'Fetching in a', reason: 'offline', repo: '/p/a' })
+    })
+    expect(await notifications()).toEqual([
+      'Fetching in a failed | offline | Retry fetch | Go to repository | Mark as read',
+      'Pulling in fetch-client failed | merge stopped | Go to repository | Mark as read',
+    ])
+    await page.evaluate(() => { (window as any).rows.calls = [] })
+    await page.getByRole('button', { name: 'Retry fetch in a' }).click()
+    await settle()
+    await page.waitForFunction(() => document.querySelectorAll('.notify-panel li').length === 1, undefined, { timeout: 2000 })
+    expect(await calls()).toEqual(['fetch /p/a'])
+    expect(await notifications()).toEqual(['Pulling in fetch-client failed | merge stopped | Go to repository | Mark as read'])
+    await page.evaluate(() => (window as any).under.markAllRead())
+
+    // A background fetch failure for a repo reads the same way, and SSH, sign-in and network failures each say which.
+    const report = { fetched: [], skipped: [], failed: [{ repo: '/p/a', reason: raw }, { repo: '/p/b', reason: 'git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.' }] }
+    await page.evaluate((report: unknown) => (window as any).rows.listeners['fetch:report'](report), report)
+    expect(await notifications()).toEqual([
+      'Background fetch: b failed | The remote refused this SSH key. | Retry fetch | Go to repository | Mark as read',
+      'Background fetch: a failed | The remote repository was not found, or this account cannot access it. | Retry fetch | Go to repository | Mark as read',
+    ])
+  } finally {
+    await page.evaluate(() => { const w = window as any; w.rowsRoot.unmount(); Object.setPrototypeOf(w.bettergit, Object.prototype); w.under.markAllRead() })
+    await page.setViewportSize({ width: 800, height: 600 })
+  }
+}, 30000)
+
+// The update toast never downloads or restarts by itself, and a restart never closes over unsaved edits.
+test.skipIf(!playwright)('an update downloads only on click, and the restart is refused while edits are unsaved', async () => {
+  const render = (state: unknown) => page.evaluate(async (state: unknown) => {
+    const { createElement, flushSync, createRoot, UpdateStatus } = (window as any).under
+    const w = window as any
+    w.updateCalls = []
+    Object.assign(w.bettergit, {
+      onEvent: () => () => undefined,
+      updateState: async () => state,
+      downloadUpdate: async () => { w.updateCalls.push('download') },
+      installUpdate: async () => { w.updateCalls.push('install'); return null },
+      openUpdatePage: async () => { w.updateCalls.push('page') },
+    })
+    w.updateRoot?.unmount()
+    document.getElementById('update-host')?.remove()
+    document.body.insertAdjacentHTML('beforeend', '<div id="update-host"></div>')
+    w.updateRoot = createRoot(document.getElementById('update-host')!)
+    flushSync(() => w.updateRoot.render(createElement(UpdateStatus)))
+    for (let tries = 0; tries < 50 && !document.querySelector('.update-toast'); tries++) await new Promise((resolve) => setTimeout(resolve, 10))
+  }, state)
+  const toast = () => page.evaluate(() => ({
+    text: document.querySelector('.update-toast > span')?.textContent ?? null,
+    calls: (window as any).updateCalls,
+  }))
+
+  await render({ kind: 'available', version: '0.1.9' })
+  expect(await toast()).toEqual({ text: 'BetterGit 0.1.9 is available.', calls: [] })
+  await page.click('.update-toast button:text("Update")')
+  expect((await toast()).calls).toEqual(['download'])
+
+  await render({ kind: 'available', version: '0.1.9', blocked: 'BetterGit cannot replace itself in the folder it is installed in.' })
+  await page.click('.update-toast button:text("Download")')
+  expect((await toast()).calls).toEqual(['page'])
+
+  // An unsaved edit in a working file.
+  await page.evaluate(async () => {
+    const { createElement, flushSync, createRoot, EditableDiff } = (window as any).under
+    const w = window as any
+    w.draftRoot = createRoot(document.getElementById('root')!)
+    const edit = { repo: 'update-repo', load: async () => 'hello', save: async () => true, onError: () => undefined }
+    const hunks = [{ header: '@@ -1 +1 @@', lines: [{ type: 'context', text: 'hello', oldNo: 1, newNo: 1 }] }]
+    const fallback = createElement('div', { 'data-source-row': '0:0:0', 'data-source-side': 'new' }, createElement('code', null, 'hello'))
+    flushSync(() => w.draftRoot.render(createElement(EditableDiff, { edit, path: 'update.ts', hunks, layout: 'unified', language: null, fallback, fileIndex: 0, onExtent: () => undefined })))
+    const row = document.querySelector('[data-source-row]')!.getBoundingClientRect()
+    for (const type of ['mousedown', 'mouseup']) {
+      document.querySelector('[data-source-row]')!.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: row.left + 2, clientY: row.top + 2 }))
+    }
+    for (let tries = 0; tries < 100 && !document.querySelector('.cm-content'); tries++) await new Promise((resolve) => setTimeout(resolve, 20))
+  })
+  await page.focus('.cm-content')
+  await page.keyboard.type('x')
+
+  await render({ kind: 'ready', version: '0.1.9' })
+  await page.click('.update-toast button:text("Restart to Update")')
+  expect(await toast()).toEqual({
+    text: 'BetterGit 0.1.9 is ready to install.Save or discard your unsaved edits and conflict choices, then restart.',
+    calls: [],
+  })
+  // Without an accepted restart, closing the window is not held up.
+  expect(await page.evaluate(() => window.dispatchEvent(new Event('beforeunload', { cancelable: true })))).toBe(true)
+  await page.evaluate(() => {
+    const w = window as any
+    w.updateRoot.unmount()
+    w.draftRoot.unmount()
+    document.getElementById('update-host')?.remove()
+  })
+
+  // In the notification corner, an update and a new failure share one live region and stack without overlapping.
+  await page.evaluate(() => {
+    const { createElement, flushSync, createRoot, NotificationHub, UpdateStatus, markAllRead } = (window as any).under
+    const w = window as any
+    w.bettergit.updateState = async () => ({ kind: 'available', version: '0.1.9' })
+    markAllRead()
+    document.body.insertAdjacentHTML('beforeend', '<div id="hub-host"></div>')
+    w.hubRoot = createRoot(document.getElementById('hub-host')!)
+    flushSync(() => w.hubRoot.render(createElement(NotificationHub, { onGo: () => true, onRetryFetch: async () => true }, createElement(UpdateStatus))))
+  })
+  await page.waitForSelector('.notify-toast-region .update-toast')
+  await page.evaluate(() => (window as any).under.notify({ action: 'Fetching in a', reason: 'offline', repo: '/p/a' }))
+  await page.waitForSelector('.notify-toast-region .notify-toast:not(.update-toast)')
+  const corner = await page.evaluate(() => {
+    const boxes = [...document.querySelectorAll('.notify-toast')].map((toast) => toast.getBoundingClientRect())
+    return {
+      regions: document.querySelectorAll('.notify-toast-region').length,
+      toasts: [...document.querySelectorAll('.notify-toast-region > .notify-toast')].map((toast) => toast.textContent),
+      onScreen: boxes.every((box) => box.width > 0 && box.height > 0 && box.bottom <= innerHeight && box.right <= innerWidth),
+      apart: boxes.length === 2 && (boxes[0].bottom <= boxes[1].top || boxes[1].bottom <= boxes[0].top),
+    }
+  })
+  expect(corner).toEqual({ regions: 1, toasts: ['BetterGit 0.1.9 is available.Update', 'Fetching in a failed offlineView'], onScreen: true, apart: true })
+  await page.evaluate(() => {
+    const w = window as any
+    w.under.markAllRead()
+    w.hubRoot.unmount()
+    document.getElementById('hub-host')?.remove()
+  })
+})

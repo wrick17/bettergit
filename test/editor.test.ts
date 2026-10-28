@@ -164,6 +164,9 @@ test('detects known apps once each, merges custom apps by path, and accepts only
   expect(appCommand(found[0], root)).toEqual(openCommand('vscode', root))
 })
 
+// Main creates its updater on load; these tests never check for updates.
+const updaterStub = { state: () => ({ kind: 'idle' }), check: async () => {}, update: async () => {}, install: () => null, openPage: async () => {}, watch: () => {}, start: () => {} }
+
 // Like the repo-lock bridge test, execute the real entry points in memory. No app or output files are built.
 async function loadEntry(file: string, imports: Record<string, unknown>, after = '', globals: Record<string, unknown> = {}): Promise<any> {
   const compiled = await Bun.build({
@@ -174,7 +177,7 @@ async function loadEntry(file: string, imports: Record<string, unknown>, after =
   const module = { exports: {} }
   runInNewContext(await compiled.outputs[0].text() + after, {
     ...globals, module, exports: module.exports,
-    require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : {}),
+    require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub } : {}),
   })
   return module.exports
 }

@@ -462,9 +462,15 @@ describe('dirty counter', () => {
       await git(dir, ['switch', '-q', 'main'])
       await git(dir, ['branch', '-q', '--set-upstream-to', 'upstream'])
       const reports: unknown[] = []
-      new DirtyCounter((_path, counts) => reports.push(counts)).request([dir])
+      const counter = new DirtyCounter((_path, counts) => reports.push(counts))
+      counter.request([dir])
       while (reports.length === 0) await new Promise((resolve) => setTimeout(resolve, 10))
       expect(reports).toEqual([{ count: 0, ahead: 1, behind: 2 }])
+      // An explicit Refresh recounts past the cache, and rejects for a folder Git cannot read.
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'local 2'])
+      await counter.recount(dir)
+      expect(reports.at(-1)).toEqual({ count: 0, ahead: 2, behind: 2 })
+      await expect(counter.recount(path.dirname(dir))).rejects.toThrow()
     } finally {
       cleanup(dir)
     }

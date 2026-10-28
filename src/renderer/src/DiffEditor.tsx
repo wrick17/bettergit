@@ -61,6 +61,9 @@ export function useUnsaved(edit: EditBridge | undefined, path: string) {
   return !!edit && dirty(draft)
 }
 
+// Whether any repo has a file with unsaved edits, which an update restart must not lose.
+export const hasUnsavedDrafts = () => Array.from(drafts.values()).some(dirty)
+
 // Drafts outlive their editors, so selecting, scrolling or switching views keeps them. Staging or discarding a file takes
 // it out of the working diff, where its draft can no longer show, so those ask first. False when the user keeps the edits.
 export async function confirmDropEdits(repo: string, paths: string[]): Promise<boolean> {

@@ -17,6 +17,8 @@ import { useActiveFiles } from '../src/renderer/src/active-file'
 import type { DiffFile } from '../src/main/git/diff'
 import { App } from '../src/renderer/src/App'
 import { markAllRead, notify, parseNotifications } from '../src/renderer/src/notifications'
+import { UpdateStatus } from '../src/renderer/src/UpdateStatus'
+import { NotificationHub } from '../src/renderer/src/NotificationHub'
 
 // A diff container that registers its files with find, as DiffView does.
 function FindDiff({ files }: { files: Parameters<typeof useFindSource>[1] }) {
@@ -38,5 +40,5 @@ function ActiveDiff({ files: patchFiles }: { files: DiffFile[] }) {
 }
 
 Object.assign(window, {
-  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications },
+  under: { bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
 })

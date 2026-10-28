@@ -89,6 +89,35 @@ export function failureReason(failure: unknown): string {
   return (failure instanceof Error ? failure.message : String(failure)).replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
 }
 
+// Plain words and a next step for the Git failures people meet most, matched on Git's own text. Only what the text shows is
+// claimed: "Repository not found" is also what hosts say for a private repo the account cannot see. Any other failure keeps
+// its first line, without Git's "fatal:" prefix. Callers keep the full text for Details.
+const KNOWN_FAILURES: [RegExp, string, string][] = [
+  [/repository not found|repository '[^']*' not found|could not be found or you don't have permission/i,
+    'The remote repository was not found, or this account cannot access it.',
+    'Check the remote URL and that your Git account has access. Git hosts also report a private repository you cannot see as not found.'],
+  [/Permission denied \(publickey/i, 'The remote refused this SSH key.',
+    'Check that your SSH key is loaded (ssh-add -l in Terminal) and added to your account on the Git host, then retry.'],
+  [/Host key verification failed/i, "The remote's SSH host key is not trusted on this Mac.",
+    'Connect to the host once with ssh in Terminal to check and accept its key, then retry.'],
+  [/Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Invalid username or password|HTTP Basic: Access denied|returned error: 40[13]/i,
+    'The remote did not accept your credentials.',
+    'BetterGit cannot ask for a password. Update the token or password your Git credential helper saved, then retry.'],
+  [/Could not resolve host|Network is unreachable|Connection (?:timed out|refused|reset)|Operation timed out|Failed to connect to|timed out after \d+ seconds/i,
+    'Could not reach the remote.', 'Check your network or VPN connection, then retry.'],
+  [/does not appear to be a git repository|No such remote/i, "This repository's remote is not set up correctly.",
+    'Check the remote name and URL with git remote -v in Terminal.'],
+  [/Could not read from remote repository/i, 'Could not read from the remote repository.',
+    'Check the remote URL, your network and your access to the repository, then retry.'],
+]
+
+export function describeFailure(reason: string): { summary: string; hint?: string } {
+  const known = KNOWN_FAILURES.find(([pattern]) => pattern.test(reason))
+  if (known) return { summary: known[1], hint: known[2] }
+  const lines = reason.split('\n').map((line) => line.trim()).filter(Boolean)
+  return { summary: lines.length > 1 ? lines[0].replace(/^(?:fatal|error|remote): /i, '') : reason }
+}
+
 // A failure with the action it belongs to, such as "Pulling in bettergit", so the error popup can say what failed and why.
 // `repo` is the sidebar path of the repo it happened in, for the popup's Go to repository. The message stays the bare
 // reason, for callers that show it inline.

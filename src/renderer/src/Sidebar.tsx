@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig } from '../../main/config'
-import type { FolderNode, TreeNode } from '../../main/scan'
+import type { FolderNode, RepoNode, TreeNode } from '../../main/scan'
 import type { RepoCounts } from '../../main/git/dirty'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { FolderIcon } from './FileIcon'
 import { useScrollMemory } from './session'
 import type { FoldHold } from './fold'
-import { dismissBatch, useBatchStatus, type BatchStatus } from './batch-status'
+import { dismissBatch, REFRESHING, useBatchStatus, type BatchStatus } from './batch-status'
+import { blockedReason, useRepoBusy, workingLabel } from './repo-busy'
 import { loadTreeOrder, moveSibling, orderTree, REORDER_TYPE, saveTreeOrder, type TreeOrder } from './tree-order'
 
 interface SidebarProps {
@@ -25,8 +26,12 @@ interface SidebarProps {
   onDrop: (event: DragEvent) => void
   // Rescans the sources, for a repo added or deleted while the watcher could not see it. The folder shows the progress.
   onRefresh: (folder: FolderNode) => void
+  // Rescans every source and rereads the open repo, as the app menu's Refresh does.
+  onRefreshAll: () => void
   // Fetch All or Pull All for the shown repos in a folder.
   onSyncFolder: (folder: FolderNode, kind: 'fetch' | 'pull') => void
+  // Fetch, Pull or Refresh for one repo, from its row's menu. The open repo stays open.
+  onRepoAction: (repo: RepoNode, action: 'fetch' | 'pull' | 'refresh') => void
   dirty?: Record<string, RepoCounts>
   // Folded into a strip that shows `stripLabel`. A held fold opens the full sidebar in flow beside the content.
   fold: FoldHold<HTMLElement>
@@ -125,6 +130,14 @@ export function Sidebar(props: SidebarProps) {
       <div className="sidebar-head">
         <span className="sidebar-title">Repositories</span>
         <div className="sidebar-tools">
+          {/* One batch at a time: it spins for its own run and waits while a folder batch or Fetch All runs. */}
+          <IconButton
+            icon="rescan"
+            label={batch?.running && batch.folder === null && batch.text === REFRESHING ? REFRESHING : 'Refresh repositories'}
+            busy={batch?.running && batch.folder === null && batch.text === REFRESHING}
+            blocked={batch?.running && !(batch.folder === null && batch.text === REFRESHING) ? 'Wait for the running Refresh, Fetch All or Pull All to finish.' : undefined}
+            onClick={props.onRefreshAll}
+          />
           <div className="add-anchor" ref={addRef}>
             <button
               ref={addTrigger}
@@ -199,23 +212,28 @@ export function Sidebar(props: SidebarProps) {
             return (
               <>
                 {/* One batch at a time: these wait while a Refresh, Fetch All or Pull All runs. */}
-                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onRefresh(folder))}>Refresh</button>
-                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'fetch'))}>Fetch All</button>
-                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'pull'))}>Pull All</button>
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onRefresh(folder))}><Icon name="rescan" />Refresh</button>
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'fetch'))}><Icon name="refresh" />Fetch All</button>
+                <button role="menuitem" disabled={batch?.running} onClick={pick(() => props.onSyncFolder(folder, 'pull'))}><Icon name="pullMerge" />Pull All</button>
                 <div className="popover-sep" role="separator" />
               </>
             )
           })()}
           {context.node.kind === 'repo' && (
-            <button role="menuitem" onClick={() => { props.onReveal(context.node.path); setContext(null) }}>Reveal in Finder</button>
+            <>
+              <RepoActions repo={context.node} pick={pick} onAction={props.onRepoAction} />
+              <button role="menuitem" onClick={() => { props.onReveal(context.node.path); setContext(null) }}><Icon name="reveal" />Reveal in Finder</button>
+            </>
           )}
           <button role="menuitem" onClick={() => { props.onToggleHidden(context.node.path); setContext(null) }}>
+            <Icon name={props.config.hidden.includes(context.node.path) ? 'eye' : 'eyeOff'} />
             {props.config.hidden.includes(context.node.path) ? 'Show in Sidebar' : 'Hide in Sidebar'}
           </button>
           {props.config.sources.includes(context.node.path) && (
             <>
               <div className="popover-sep" role="separator" />
               <button role="menuitem" onClick={() => { props.onRemoveSource(context.node.path); setContext(null) }}>
+                <Icon name="minus" />
                 Remove from Sidebar
               </button>
             </>
@@ -224,6 +242,37 @@ export function Sidebar(props: SidebarProps) {
         document.body,
       )}
     </aside>
+  )
+}
+
+// A repo's own Fetch, Pull and Refresh. Fetch and Pull wait while a write runs in that repo; Refresh only reads.
+function RepoActions({ repo, pick, onAction }: {
+  repo: RepoNode
+  pick: (action: () => void) => () => void
+  onAction: SidebarProps['onRepoAction']
+}) {
+  const busy = useRepoBusy(repo.path)
+  return (
+    <>
+      <button role="menuitem" disabled={busy !== null} title={blockedReason(busy)} onClick={pick(() => onAction(repo, 'fetch'))}><Icon name="refresh" />Fetch</button>
+      <button role="menuitem" disabled={busy !== null} title={blockedReason(busy)} onClick={pick(() => onAction(repo, 'pull'))}><Icon name="pullMerge" />Pull</button>
+      <button role="menuitem" onClick={pick(() => onAction(repo, 'refresh'))}><Icon name="rescan" />Refresh</button>
+      <div className="popover-sep" role="separator" />
+    </>
+  )
+}
+
+// A repo row's menu button, which spins while a write runs in that repo.
+function RepoMore({ node, tabIndex, onContext }: { node: RepoNode; tabIndex: number; onContext: ItemProps['onContext'] }) {
+  const busy = useRepoBusy(node.path)
+  return (
+    <span className="row-more" onClick={(event) => {
+      event.stopPropagation()
+      const rect = event.currentTarget.getBoundingClientRect()
+      onContext(node, rect.left, rect.bottom)
+    }}>
+      <IconButton icon="more" label={busy ? `${node.name} actions. ${workingLabel(busy)}` : `${node.name} actions`} busy={busy !== null} tabIndex={tabIndex} onClick={() => {}} />
+    </span>
   )
 }
 
@@ -442,6 +491,8 @@ function TreeItem(props: ItemProps) {
           </span>
         )}
         {dirtyCount > 0 && <span className="repo-dirty" title={`${dirtyCount} uncommitted files`}>{dirtyCount}</span>}
+        {/* The context menu, for a pointer or keyboard user who does not right-click. It does not open the repo. */}
+        <RepoMore node={node} tabIndex={node.path === props.tabStop ? 0 : -1} onContext={props.onContext} />
       </div>
     </div>
   )

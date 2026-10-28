@@ -23,6 +23,7 @@ interface MenuHandlers {
   send: (action: MenuAction) => void
   setTheme: (theme: ThemeMode) => void
   currentTheme: () => ThemeMode
+  checkForUpdates: () => void
 }
 
 export function buildMenu(handlers: MenuHandlers): Menu {
@@ -39,6 +40,7 @@ export function buildMenu(handlers: MenuHandlers): Menu {
       label: app.name,
       submenu: [
         { role: 'about' },
+        { label: 'Check for Updates…', click: handlers.checkForUpdates },
         { label: 'Settings…', accelerator: 'Cmd+,', click: () => handlers.send('open-settings') },
         { type: 'separator' },
         { role: 'services' },
