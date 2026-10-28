@@ -2,6 +2,16 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.7] - 2026-10-28
+
+### Fixed
+
+- Restore fetch, fetch with tags, and fetch with prune, along with pull using merge, fast-forward only, rebase, and rebase with autostash.
+
+### Changed
+
+- Remove the standalone Pull and Merge toolbar button. Pull remains available in the Fetch dropdown and through the Actions shortcut.
+
 ## [0.1.6] - 2026-10-28
 
 ### New
