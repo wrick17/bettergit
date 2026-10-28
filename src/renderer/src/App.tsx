@@ -5,7 +5,9 @@ import { createPortal } from 'react-dom'
 import type { AppConfig, ConfigPatch } from '../../main/config'
 import { EditorContext } from './editor-launch'
 import { OpenInAppButton, useSelectedApp } from './OpenInAppButton'
-import type { TreeNode, RepoNode } from '../../main/scan'
+import type { FolderNode, TreeNode, RepoNode } from '../../main/scan'
+import type { RepoCounts } from '../../main/git/dirty'
+import { confirmOverBlur } from './confirm'
 import type { RepoStatus } from '../../main/git/status'
 import type { Branch } from '../../main/git/ops'
 import { Icon, IconButton, toggleLabel } from './Icons'
@@ -36,8 +38,8 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(initial.selected)
   const [tab, setTab] = useState<'changes' | 'history'>(initial.tab)
   const [error, setError] = useState<string | null>(null)
-  // Uncommitted-file counts by repo path. The main process fills these in the background.
-  const [dirty, setDirty] = useState<Record<string, number>>({})
+  // Uncommitted-file and ahead/behind counts by repo path. The main process fills these in the background.
+  const [dirty, setDirty] = useState<Record<string, RepoCounts>>({})
   const [revision, setRevision] = useState(0)
   const [refreshes, setRefreshes] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(initial.sidebarOpen)
@@ -114,8 +116,11 @@ export function App() {
     })
     const offFetch = api.onEvent('fetch:report', () => setRevision((value) => value + 1))
     const offDirty = api.onEvent('repos:dirty', (payload) => {
-      const { path, count } = payload as { path: string; count: number }
-      setDirty((prev) => prev[path] === count ? prev : { ...prev, [path]: count })
+      const { path, count, ahead, behind } = payload as RepoCounts & { path: string }
+      setDirty((prev) => {
+        const old = prev[path]
+        return old && old.count === count && old.ahead === ahead && old.behind === behind ? prev : { ...prev, [path]: { count, ahead, behind } }
+      })
     })
     return () => { offChanged(); offFetch(); offDirty() }
   }, [refreshTree])
@@ -147,24 +152,8 @@ export function App() {
         case 'search-history': setTab('history'); return requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search commit messages"]')?.focus())
         case 'toggle-sidebar': return toggleSidebar.current()
         case 'reveal-repo': return repo ? void api.reveal(repo) : undefined
-        case 'fetch-all': return void (async () => {
-          // Each repo is fetched on its own. A busy repo is skipped and named, and every failure is reported with its repo.
-          const failures: string[] = []
-          const skipped: string[] = []
-          for (const node of flatten(await api.getTree())) {
-            if (busyKey(node.path)) {
-              skipped.push(node.name)
-              continue
-            }
-            await runRepoWrite(node.path, 'fetch', () => api.fetch(node.path), {
-              onError: (failure) => failures.push(`${node.name}: ${failure instanceof Error ? failure.message : String(failure)}`),
-              reload: () => undefined,
-            })
-          }
-          setRevision((value) => value + 1)
-          const problems = [...failures, ...(skipped.length ? [`skipped while busy: ${skipped.join(', ')}`] : [])]
-          if (problems.length) reportErrorRef.current(new Error(`Fetch All: ${problems.join('; ')}`))
-        })()
+        case 'fetch-all': return void api.getTree().then((all: TreeNode[]) =>
+          runEach('Fetch All', 'fetch', flatten(all), (path) => api.fetch(path), reportErrorRef.current, () => setRevision((value) => value + 1)))
       }
     })
     return off
@@ -282,6 +271,16 @@ export function App() {
             await refreshTree()
           }).catch(reportError)}
           onDrop={handleDrop}
+          onRefresh={() => refreshTree().then(() => setRevision((value) => value + 1)).catch(reportError)}
+          onSyncFolder={(folder: FolderNode, kind: 'fetch' | 'pull') => void (async () => {
+            // Repos hidden in the sidebar, or inside a hidden folder, are left alone.
+            const shown = flatten([folder]).filter((node) => !config.hidden.some((path) => node.path === path || node.path.startsWith(path + '/')))
+            const reload = () => setRevision((value) => value + 1)
+            if (kind === 'fetch') return runEach(`Fetch All in ${folder.name}`, 'fetch', shown, (path) => api.fetch(path), reportError, reload)
+            // Fast-forward only: a bulk pull never makes merge commits or leaves conflicts. A diverged repo is refused and named.
+            const message = `Pull ${shown.length} ${shown.length === 1 ? 'repository' : 'repositories'} in ${folder.name}?\n\nEach fast-forwards its current branch to its upstream. A repo that has diverged, has no upstream, or would overwrite local files is left unchanged and reported.`
+            if (await confirmOverBlur(message)) await runEach(`Pull All in ${folder.name}`, 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reportError, reload)
+          })()}
           onSettings={() => setSettingsOpen(true)}
           stripLabel={repo?.name ?? 'Repositories'}
         />
@@ -562,6 +561,26 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
 // A pane toggle's label: whether the pane shows now, and what a click does.
 function paneLabel(pane: string, shown: boolean) {
   return toggleLabel(`${pane}: ${shown ? 'expanded' : 'collapsed'}`, shown ? 'collapse to a rail' : 'pin open')
+}
+
+// Runs one write in each repo in turn. A busy repo is skipped and named, and every failure is reported with its repo.
+async function runEach(title: string, key: string, repos: RepoNode[], action: (path: string) => Promise<unknown>,
+  onError: (error: unknown) => void, reload: () => void) {
+  const failures: string[] = []
+  const skipped: string[] = []
+  for (const node of repos) {
+    if (busyKey(node.path)) {
+      skipped.push(node.name)
+      continue
+    }
+    await runRepoWrite(node.path, key, () => action(node.path), {
+      onError: (failure) => failures.push(`${node.name}: ${failure instanceof Error ? failure.message : String(failure)}`),
+      reload: () => undefined,
+    })
+  }
+  reload()
+  const problems = [...failures, ...(skipped.length ? [`skipped while busy: ${skipped.join(', ')}`] : [])]
+  if (problems.length) onError(new Error(`${title}: ${problems.join('; ')}`))
 }
 
 function flatten(nodes: TreeNode[]): RepoNode[] {

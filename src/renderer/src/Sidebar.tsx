@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig } from '../../main/config'
-import type { TreeNode } from '../../main/scan'
+import type { FolderNode, TreeNode } from '../../main/scan'
+import type { RepoCounts } from '../../main/git/dirty'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { FolderIcon } from './FileIcon'
 import { useScrollMemory } from './session'
@@ -21,7 +22,11 @@ interface SidebarProps {
   onRemoveSource: (path: string) => void
   onReveal: (path: string) => void
   onDrop: (event: DragEvent) => void
-  dirty?: Record<string, number>
+  // Rescans the sources, for a repo added or deleted while the watcher could not see it.
+  onRefresh: () => void
+  // Fetch All or Pull All for the shown repos in a folder.
+  onSyncFolder: (folder: FolderNode, kind: 'fetch' | 'pull') => void
+  dirty?: Record<string, RepoCounts>
   // Folded into a strip that shows `stripLabel`. A held fold opens the full sidebar in flow beside the content.
   fold: FoldHold<HTMLElement>
   stripLabel?: string
@@ -69,7 +74,7 @@ export function Sidebar(props: SidebarProps) {
   // Popovers close on any outside click or Escape.
   useEffect(() => {
     if (!addOpen && !context) return
-    const close = (event: globalThis.MouseEvent) => {
+    const close = (event: MouseEvent) => {
       // A press inside the context menu is a click on one of its items, so it must reach them.
       if (contextRef.current?.contains(event.target as Node)) return
       if (!addRef.current?.contains(event.target as Node)) setAddOpen(false)
@@ -92,10 +97,8 @@ export function Sidebar(props: SidebarProps) {
     menu.style.top = `${Math.max(0, Math.min(context.y, window.innerHeight - menu.offsetHeight))}px`
   }, [context])
 
-  const openContext = (event: MouseEvent, node: TreeNode) => {
-    event.preventDefault()
-    setContext({ x: event.clientX, y: event.clientY, node })
-  }
+  const openContext = (node: TreeNode, x: number, y: number) => setContext({ x, y, node })
+  const pick = (action: () => void) => () => { setContext(null); action() }
 
   const visible = visibleRows(tree, props.config, showHidden)
   // The one row Tab reaches: the last focused row, else the selected one, else the first.
@@ -178,6 +181,17 @@ export function Sidebar(props: SidebarProps) {
       {/* Portalled to the body: the sidebar's backdrop filter would otherwise clip and offset the fixed menu. */}
       {context && createPortal(
         <div ref={contextRef} className="popover context-menu" role="menu">
+          {context.node.kind === 'folder' && (() => {
+            const folder = context.node
+            return (
+              <>
+                <button role="menuitem" onClick={pick(props.onRefresh)}>Refresh</button>
+                <button role="menuitem" onClick={pick(() => props.onSyncFolder(folder, 'fetch'))}>Fetch All</button>
+                <button role="menuitem" onClick={pick(() => props.onSyncFolder(folder, 'pull'))}>Pull All</button>
+                <div className="popover-sep" role="separator" />
+              </>
+            )
+          })()}
           {context.node.kind === 'repo' && (
             <button role="menuitem" onClick={() => { props.onReveal(context.node.path); setContext(null) }}>Reveal in Finder</button>
           )}
@@ -217,7 +231,7 @@ type ItemProps = SidebarProps & {
   node: TreeNode
   depth: number
   showHidden: boolean
-  onContext: (event: MouseEvent, node: TreeNode) => void
+  onContext: (node: TreeNode, x: number, y: number) => void
   tabStop: string | undefined
   onFocusRow: (path: string) => void
   // Inside a hidden folder: shown greyed like a hidden row, though not hidden itself.
@@ -325,7 +339,7 @@ function TreeItem(props: ItemProps) {
           className={`tree-row folder${greyed ? ' is-hidden' : ''}${dropClass(props)}`}
           {...dragHandlers(props)}
           onClick={() => props.onToggleCollapsed(node.path)}
-          onContextMenu={(event) => props.onContext(event, node)}
+          onContextMenu={(event) => { event.preventDefault(); props.onContext(node, event.clientX, event.clientY) }}
         >
           <span className={`chevron${collapsed ? '' : ' open'}`}><Icon name="chevron" /></span>
           {/* The hide click must not also toggle or select the row. */}
@@ -339,6 +353,14 @@ function TreeItem(props: ItemProps) {
             />
           </span>
           <span className="tree-label">{node.name}</span>
+          {/* The context menu, for a pointer or keyboard user who does not right-click. */}
+          <span className="row-more" onClick={(event) => {
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            props.onContext(node, rect.left, rect.bottom)
+          }}>
+            <IconButton icon="more" label={`${node.name} actions`} tabIndex={node.path === props.tabStop ? 0 : -1} onClick={() => {}} />
+          </span>
         </div>
         {!collapsed && (
           <div role="group" className="tree-children">
@@ -354,7 +376,8 @@ function TreeItem(props: ItemProps) {
     )
   }
 
-  const dirtyCount = props.dirty?.[node.path] ?? 0
+  const { count: dirtyCount = 0, ahead = 0, behind = 0 } = props.dirty?.[node.path] ?? {}
+  const sync = [ahead && `${ahead} commit${ahead === 1 ? '' : 's'} to push`, behind && `${behind} commit${behind === 1 ? '' : 's'} to pull`].filter(Boolean).join(', ')
   return (
     <div
       role="treeitem"
@@ -382,7 +405,7 @@ function TreeItem(props: ItemProps) {
         className={`tree-row repo${selected === node.path ? ' selected' : ''}${greyed ? ' is-hidden' : ''}${dropClass(props)}`}
         {...dragHandlers(props)}
         onClick={() => props.onSelect(node.path)}
-        onContextMenu={(event) => props.onContext(event, node)}
+        onContextMenu={(event) => { event.preventDefault(); props.onContext(node, event.clientX, event.clientY) }}
       >
         <span className="chevron-spacer" />
         <span className="row-icon has-row-action" onClick={(event) => event.stopPropagation()}>
@@ -396,6 +419,12 @@ function TreeItem(props: ItemProps) {
         </span>
         <span className="tree-label" title={node.name}>{node.name}</span>
         {node.branch && <span className="repo-branch" title={node.branch}>{node.branch}</span>}
+        {sync && (
+          <span className="repo-sync" role="img" title={sync} aria-label={sync}>
+            {ahead > 0 && <span><Icon name="arrowUp" />{ahead}</span>}
+            {behind > 0 && <span><Icon name="arrowDown" />{behind}</span>}
+          </span>
+        )}
         {dirtyCount > 0 && <span className="repo-dirty" title={`${dirtyCount} uncommitted files`}>{dirtyCount}</span>}
       </div>
     </div>

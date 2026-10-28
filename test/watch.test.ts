@@ -27,3 +27,17 @@ test('a nested repo edit refreshes each repo around it, and a no-op fetch refres
     rmSync(source, { recursive: true, force: true })
   }
 })
+
+test('a repo moved into or out of a sources folder rebuilds the tree, and a dot file there does not', async () => {
+  const source = mkdtempSync(path.join(tmpdir(), 'bettergit-watch-'))
+  try {
+    mkdirSync(path.join(source, 'group/added/.git'), { recursive: true })
+    // Finder and mv report only the moved folder, never its .git.
+    expect((await eventsFor(source, ['group/added'])).tree).toBe(true)
+    expect((await eventsFor(source, ['removed'])).tree).toBe(true)
+    expect((await eventsFor(source, ['.DS_Store'])).tree).toBe(false)
+    expect((await eventsFor(source, ['group/added/file.txt'])).tree).toBe(false)
+  } finally {
+    rmSync(source, { recursive: true, force: true })
+  }
+})

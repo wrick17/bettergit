@@ -236,3 +236,14 @@ test('Alt+Up/Down reorders past the shown neighbour and leaves arrow navigation 
   expect(moves).toEqual([['', ['/a', '/f', '/b'], '/a', '/b', true]])
   expect(stopped).toBe(2)
 })
+
+test('a repo row shows commits to push and to pull, and a folder row opens its menu from the more button', () => {
+  const synced = components.TreeItem({ ...row(repo).props, dirty: { [repo.path]: { count: 0, ahead: 1, behind: 3 } } })
+  expect(find(synced, (props) => props.className === 'repo-sync')?.['aria-label']).toBe('1 commit to push, 3 commits to pull')
+  expect(find(components.TreeItem({ ...row(repo).props, dirty: { [repo.path]: { count: 2, ahead: 0, behind: 0 } } }), (props) => props.className === 'repo-sync')).toBeUndefined()
+
+  const opened: unknown[] = []
+  const more = find(components.TreeItem({ ...row(folder).props, onContext: (...args: unknown[]) => opened.push(args) }), (props) => props.className === 'row-more')
+  more.onClick({ stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 10, bottom: 30 }) } })
+  expect(opened).toEqual([[folder, 10, 30]])
+})

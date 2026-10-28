@@ -248,7 +248,7 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* Hidden rows, shown while "Show hidden" is on, read as greyed out: muted italic text and a faded icon and badges. */
 .tree-row.is-hidden:not(.selected), .tree-row.is-hidden:not(.selected) .tree-label { color: var(--text-3); }
 .tree-row.is-hidden:not(.selected) .tree-label { font-style: italic; }
-.tree-row.is-hidden:not(.selected) :is(.folder-icon, .repo-branch, .repo-dirty) { opacity: 0.45; filter: grayscale(1); }
+.tree-row.is-hidden:not(.selected) :is(.folder-icon, .repo-branch, .repo-dirty, .repo-sync) { opacity: 0.45; filter: grayscale(1); }
 /* The guide sits under the parent's chevron. Children start one step to the right of it. */
 /* Each nested group steps 10px right. The guide sits under the parent's chevron (row padding 4px + half of 10px). */
 /* Guide: one vertical line under the parent's chevron that stops at the last child's midline (the elbow).
@@ -799,6 +799,17 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-title { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .commit-title .commit-subject { flex: 1 1 0; min-width: 0; }
 .commit-title .commit-notice { flex-basis: 100%; }
+
+/* Repo ahead and behind, as the toolbar shows them for the open repo */
+.repo-sync { flex: none; display: inline-flex; gap: 4px; margin-left: 6px; color: var(--text-3); font: 600 calc(11px + var(--ui-delta))/1 var(--font-code); font-variant-numeric: tabular-nums; }
+.repo-sync > span { display: inline-flex; align-items: center; gap: 1px; }
+.repo-sync svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.tree-row.selected .repo-sync { color: var(--muted-on); }
+
+/* Folder actions: shown on hover or focus, at the row's end */
+.row-more { flex: none; display: inline-flex; margin-left: auto; opacity: 0; transition: opacity 120ms var(--ease); }
+.row-more > .icon-button { width: 20px; height: 20px; }
+:is(.tree-row:hover, .tree-row:focus-within, [role='treeitem']:focus > .tree-row) > .row-more { opacity: 1; }
 
 /* Repo dirty count */
 .repo-dirty { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 600 calc(11px + var(--ui-delta))/1.4 var(--font-code); font-variant-numeric: tabular-nums; }

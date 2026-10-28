@@ -435,13 +435,36 @@ describe('dirty counter', () => {
       writeFileSync(path.join(dir, 'folder/a.txt'), 'a')
       writeFileSync(path.join(dir, 'folder/b.txt'), 'b')
       const counts: number[] = []
-      const counter = new DirtyCounter((_path, count) => counts.push(count))
+      const counter = new DirtyCounter((_path, { count }) => counts.push(count))
       counter.request([dir])
       while (counts.length === 0) await new Promise((resolve) => setTimeout(resolve, 10))
       expect(counts).toEqual([2])
       // A reloaded window asks again. The cached count is sent without running git.
       counter.request([dir])
       expect(counts).toEqual([2, 2])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test('reports commits to push and to pull, so a repo that is not open shows what a fetch brought', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-dirty-'))
+    try {
+      await git(dir, ['init', '-q', '-b', 'main'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'base'])
+      await git(dir, ['branch', 'upstream'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'local'])
+      await git(dir, ['switch', '-q', 'upstream'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'remote 1'])
+      await git(dir, ['commit', '-q', '--allow-empty', '-m', 'remote 2'])
+      await git(dir, ['switch', '-q', 'main'])
+      await git(dir, ['branch', '-q', '--set-upstream-to', 'upstream'])
+      const reports: unknown[] = []
+      new DirtyCounter((_path, counts) => reports.push(counts)).request([dir])
+      while (reports.length === 0) await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(reports).toEqual([{ count: 0, ahead: 1, behind: 2 }])
     } finally {
       cleanup(dir)
     }

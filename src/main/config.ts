@@ -85,6 +85,9 @@ function normalizeSettings(input: unknown): Settings {
   return {
     ...DEFAULT_CONFIG.settings,
     ...source,
+    backgroundFetch: typeof source.backgroundFetch === 'boolean' ? source.backgroundFetch : DEFAULT_CONFIG.settings.backgroundFetch,
+    // A zero or non-numeric interval would make the fetch timer spin, so only a positive number is kept.
+    fetchIntervalMinutes: Number.isFinite(source.fetchIntervalMinutes) && source.fetchIntervalMinutes! > 0 ? source.fetchIntervalMinutes! : DEFAULT_CONFIG.settings.fetchIntervalMinutes,
     textZoom: typeof source.textZoom === 'number' ? Math.min(1.6, Math.max(0.8, source.textZoom)) : DEFAULT_CONFIG.settings.textZoom,
     languages,
     editor,
