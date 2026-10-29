@@ -54,7 +54,7 @@ export function useDialogFocus(dialog: RefObject<HTMLElement | null>) {
   }, [dialog, opener])
 }
 
-function Modal({ title, subtitle, footer, onClose, children, className, hideHead }: {
+export function Modal({ title, subtitle, footer, onClose, children, className, hideHead }: {
   title: string
   subtitle?: string
   footer?: ReactNode

@@ -37,12 +37,13 @@ beforeAll(async () => {
 
 afterAll(async () => { await browser?.close() })
 
-test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff rows and the visible scroll anchor', async () => {
+for (const layout of ['unified', 'split'] as const) test.skipIf(!playwright)(`staging and unstaging a file keeps neighbouring diff rows and the visible scroll anchor (${layout})`, async () => {
   await page.setViewportSize({ width: 1400, height: 800 })
-  await page.evaluate(() => {
+  const rootStyle = await page.locator('#root').getAttribute('style') ?? ''
+  await page.evaluate((layout: 'unified' | 'split') => {
     const w = window as any
     const { createElement, createRoot, flushSync, ChangesView, setContextLines, setDiffLayout } = w.under
-    setContextLines(3); setDiffLayout('unified')
+    setContextLines(3); setDiffLayout(layout)
     const paths = ['a.txt', 'b.txt', 'c.txt']
     const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}${i === 29 || i === 169 ? ' changed' : ''}`)
     const files = paths.map(path => ({ oldPath: path, newPath: path, status: 'modified', binary: false,
@@ -53,18 +54,19 @@ test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff r
     let staged = false, revision = 0
     w.stageErrors = []
     Object.assign(w.bettergit, {
+      commitIdentity: async () => ({ name: 'Browser Author', email: 'author@example.test', error: null }),
       readFile: async () => lines.join('\n'),
       working: async (_repo: string, cached: boolean) => ({ files: structuredClone(files.filter(f => cached ? staged && f.newPath === 'a.txt' : !staged || f.newPath !== 'a.txt')), moves: [] }),
       stage: async () => { staged = true }, unstage: async () => { staged = false },
     })
-    document.getElementById('root')!.style.cssText = 'height:760px;width:1400px'
+    document.getElementById('root')!.style.cssText = 'display:flex;flex-direction:column;height:760px;width:1400px'
     w.stageRoot = createRoot(document.getElementById('root'))
     const render = () => flushSync(() => w.stageRoot.render(createElement(ChangesView, {
       repo: '/stage-browser', status: { changes: paths.map(path => ({ path, kind: 'modified', staged: staged && path === 'a.txt', unstaged: !staged || path !== 'a.txt', conflicted: false })) },
       revision: revision++, listOpen: true, detailOpen: true, onChanged: render, onError: (error: unknown) => w.stageErrors.push(String(error)),
     })))
     render()
-  })
+  }, layout)
   try {
     await page.waitForFunction(() => document.querySelectorAll('[data-section="unstaged"] .ed-preview').length === 3, undefined, { timeout: 3000 }).catch(async (error: Error) => {
       throw new Error(`${error.message}\n${await page.evaluate(() => JSON.stringify({ errors: (window as any).stageErrors, text: document.getElementById('root')?.innerText.slice(0, 1500), previews: document.querySelectorAll('.ed-preview').length }))}`)
@@ -75,6 +77,8 @@ test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff r
     })
     // Settle the observer work before sampling frames through the stage and reverse transition.
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    expect(await page.locator('.diff-pane').evaluate((pane: HTMLElement) => pane.scrollTop)).toBeGreaterThan(0)
+    expect(await page.locator('.diff-pane').evaluate((pane: HTMLElement) => pane.querySelector('[data-path="a.txt"]')!.getBoundingClientRect().bottom <= pane.getBoundingClientRect().top)).toBe(true)
     for (const action of ['Stage', 'Unstage']) {
       await page.evaluate(() => {
         const w = window as any
@@ -87,9 +91,7 @@ test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff r
           if (!w.stageSampling) return
           const current = pane.querySelector('[data-section="unstaged"] [data-path="b.txt"]')
           w.stageSamples.push({ same: current?.querySelector('.ed-preview') === w.stageNeighbour,
-            top: current?.getBoundingClientRect().top, blank: !current?.querySelector('code')?.textContent,
-            // The toggled file stays in Changes either way, so it keeps its rows instead of re-rendering as separate hunks.
-            kept: !!pane.querySelector('[data-section="unstaged"] [data-path="a.txt"] .ed-preview') })
+            top: current?.getBoundingClientRect().top, blank: !current?.querySelector('code')?.textContent })
           requestAnimationFrame(sample)
         }
         sample()
@@ -104,12 +106,14 @@ test.skipIf(!playwright)('staging and unstaging a file keeps neighbouring diff r
       const samples = await page.evaluate(() => { const w = window as any; w.stageSampling = false; return w.stageSamples })
       expect(samples.every((sample: any) => sample.same), `${action} replaced an unchanged neighbour's preview`).toBe(true)
       expect(samples.every((sample: any) => !sample.blank), `${action} exposed an empty neighbour`).toBe(true)
-      expect(samples.every((sample: any) => sample.kept), `${action} re-rendered the toggled file's rows`).toBe(true)
+      expect(await page.locator('[data-section="unstaged"] [data-path="a.txt"]').count()).toBe(action === 'Stage' ? 0 : 1)
+      expect(await page.locator('[data-section="staged"] [data-path="a.txt"]').count()).toBe(action === 'Stage' ? 1 : 0)
       expect(Math.max(...samples.map((sample: any) => sample.top)) - Math.min(...samples.map((sample: any) => sample.top)), `${action} moved the visible neighbour between frames`).toBeLessThanOrEqual(2)
     }
     expect(await page.evaluate(() => (window as any).stageErrors)).toEqual([])
   } finally {
     await page.evaluate(() => { const w = window as any; w.stageSampling = false; w.stageRoot.unmount() })
+    await page.locator('#root').evaluate((root: HTMLElement, style: string) => { root.style.cssText = style }, rootStyle)
     await page.setViewportSize({ width: 800, height: 600 })
   }
 })

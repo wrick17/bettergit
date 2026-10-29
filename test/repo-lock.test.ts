@@ -452,11 +452,11 @@ test('discovered aliases share foreground, conflict-save, background and rendere
 
     // Every registered Git-write route refuses an alias before running or parsing its arguments.
     const writeChannels = [
-      'stage', 'unstage', 'commit-changes', 'switch', 'create-branch', 'fetch', 'pull', 'pull-from', 'reset-upstream',
+      'stage', 'unstage', 'commit-changes', 'identity-set', 'switch', 'create-branch', 'fetch', 'pull', 'pull-from', 'reset-upstream',
       'checkout-detached', 'branch-from', 'tag-from', 'cherry-pick', 'revert', 'amend-message', 'push',
       'stash', 'stash-action', 'backup', 'restore', 'discard', 'conflict-save', 'conflict-reset', 'conflict-take',
     ]
-    expect(writeChannels).toHaveLength(24)
+    expect(writeChannels).toHaveLength(25)
     await withRepoLock(repo, 'repo:push', async () => {
       expect(busy.busyKey(alias)).toBe('push')
       for (const channel of writeChannels) {
@@ -486,7 +486,7 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     expect(busy.blockedReason(busy.busyKey(alias))).toContain('Fetching')
     await expect(api.stage(alias, [])).rejects.toBeInstanceOf(RepoBusyError)
     fetchHold.reject(new Error('fetch failed'))
-    expect(await fetch).toEqual({ fetched: [], skipped: [], failed: [{ repo, reason: 'fetch failed' }] })
+    expect(await fetch).toEqual({ fetched: [], skipped: [], failed: [] })
     expect(busy.busyKey(alias)).toBeNull()
     expect(fetched).toEqual([repo])
 
@@ -619,4 +619,33 @@ test('background fetch keeps its schedule through config writes and fetches repo
   } finally {
     await handlers.get('config:update')!({}, { settings: { backgroundFetch: false } })
   }
+})
+
+
+test('background fetch backs off lock and network failures, reports once until recovery, and deduplicates aliases', async () => {
+  const repo = lockPath('backoff-source')
+  const alias = repo + '-alias'
+  symlinkSync(repo, alias)
+  let now = 0, calls = 0, failing = true
+  const { BackgroundFetcher } = await load('../src/main/background.ts', {
+    electron: { powerMonitor: { getSystemIdleTime: () => 0 } }, './repo-lock': locks,
+    './git/status': { readStatus: async () => ({ upstream: 'origin/main' }) },
+    './git/ops': { fetchAll: async () => { calls++; if (failing) throw new Error('cannot lock ref: File exists') } },
+  }, '', { Date: { now: () => now }, setInterval, clearInterval }) as typeof import('../src/main/background')
+  const fetcher = new BackgroundFetcher({ enabled: true, intervalMinutes: 1, idleThresholdSeconds: 60, repos: async () => [repo, alias], onReport() {} })
+  expect((await fetcher.runOnce())!.failed).toHaveLength(0)
+  expect(calls).toBe(1)
+  await fetcher.runOnce()
+  expect(calls).toBe(1)
+  for (const seconds of [60, 180]) { now = seconds * 1000; expect((await fetcher.runOnce())!.failed).toHaveLength(0) }
+  now = 420_000
+  expect((await fetcher.runOnce())!.failed).toHaveLength(1)
+  expect(calls).toBe(4)
+  // After bounded quiet retries, one failure is reported; later attempts remain throttled and quiet.
+  now = 900_000
+  expect((await fetcher.runOnce())!.failed).toHaveLength(0)
+  now = 1_860_000; failing = false
+  expect((await fetcher.runOnce())!.fetched).toEqual([repo])
+  now += 60_000; failing = true
+  expect((await fetcher.runOnce())!.failed).toHaveLength(0)
 })

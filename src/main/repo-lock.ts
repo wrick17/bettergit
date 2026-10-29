@@ -23,6 +23,7 @@ const OPERATION_NAMES: Record<string, string> = {
   'repo:discard': 'Discarding',
   'repo:delete-untracked': 'Deleting file',
   'repo:hunk': 'Updating hunk',
+  'repo:identity-set': 'Updating commit identity',
   'repo:commit-changes': 'Committing',
   'repo:switch': 'Switching branch',
   'repo:create-branch': 'Creating branch',

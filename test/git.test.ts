@@ -2036,3 +2036,62 @@ describe('commit details', () => {
     }
   })
 })
+
+
+test('commit identity follows effective author precedence and writes only the selected isolated config scope', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'bettergit-identity-'))
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && key !== 'EMAIL'))
+  const script = String.raw`
+    import assert from 'node:assert/strict'
+    import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+    import { git } from './src/main/git/exec'
+    import { commit } from './src/main/git/ops'
+    import { readCommitIdentity, setCommitIdentity } from './src/main/git/identity'
+    const repo = process.env.HOME + '/repo'
+    mkdirSync(repo)
+    await git(repo, ['init', '-q'])
+    await git(repo, ['config', '--global', 'user.useConfigOnly', 'true'])
+    assert.ok((await readCommitIdentity(repo)).error)
+    assert.deepEqual(await setCommitIdentity(repo, 'Global Author', 'global@example.test', 'global'), { name: 'Global Author', email: 'global@example.test', error: null })
+    assert.deepEqual(await setCommitIdentity(repo, 'Local Author', 'local@example.test', 'local'), { name: 'Local Author', email: 'local@example.test', error: null })
+    assert.equal((await git(repo, ['config', '--global', 'user.name'])).trim(), 'Global Author')
+    // Global updates cannot claim to replace a repository override.
+    assert.equal((await setCommitIdentity(repo, 'New Global', 'new-global@example.test', 'global')).name, 'Local Author')
+    writeFileSync(process.env.HOME + '/author.inc', '[user]\nname = Included Author\nemail = included@example.test\n')
+    await git(repo, ['config', '--local', 'include.path', process.env.HOME + '/author.inc'])
+    assert.equal((await readCommitIdentity(repo)).name, 'Included Author')
+    process.env.GIT_AUTHOR_NAME = 'Environment Author'
+    process.env.GIT_AUTHOR_EMAIL = 'env@example.test'
+    assert.deepEqual(await readCommitIdentity(repo), { name: 'Environment Author', email: 'env@example.test', error: null })
+    await setCommitIdentity(repo, 'Saved Local', 'saved@example.test', 'local')
+    assert.equal((await readCommitIdentity(repo)).name, 'Environment Author')
+    await git(repo, ['commit', '--allow-empty', '-qm', 'identity check'])
+    assert.equal((await git(repo, ['log', '-1', '--format=%an <%ae>'])).trim(), 'Environment Author <env@example.test>')
+    writeFileSync(repo + '/conflict.txt', 'base\n')
+    await git(repo, ['add', 'conflict.txt'])
+    await git(repo, ['commit', '-qm', 'base'])
+    await git(repo, ['switch', '-qc', 'picked'])
+    writeFileSync(repo + '/conflict.txt', 'picked\n')
+    await git(repo, ['commit', '-qam', 'original change', '--author=Original Author <original@example.test>'])
+    const picked = (await git(repo, ['rev-parse', 'HEAD'])).trim()
+    await git(repo, ['switch', '--detach', 'HEAD~1'])
+    writeFileSync(repo + '/conflict.txt', 'current\n')
+    await git(repo, ['commit', '-qam', 'current change'])
+    await assert.rejects(git(repo, ['cherry-pick', picked]), /conflict/i)
+    assert.deepEqual(await readCommitIdentity(repo), { name: 'Original Author', email: 'original@example.test', error: null })
+    assert.equal((await setCommitIdentity(repo, 'New Default', 'default@example.test', 'local')).name, 'Original Author')
+    writeFileSync(repo + '/conflict.txt', 'resolved\n')
+    await git(repo, ['add', 'conflict.txt'])
+    await commit(repo, 'resolved cherry-pick', false)
+    assert.equal((await git(repo, ['log', '-1', '--format=%an <%ae>'])).trim(), 'Original Author <original@example.test>')
+    const before = readFileSync(repo + '/.git/config', 'utf8')
+    for (const [name, email, scope] of [['Bad\nName', 'valid@example.test', 'local'], ['Valid', 'bad\nmail@example.test', 'global'], ['Valid', 'valid@example.test', '--system']]) {
+      await assert.rejects(setCommitIdentity(repo, name, email, scope))
+    }
+    assert.equal(readFileSync(repo + '/.git/config', 'utf8'), before)
+  `
+  try {
+    const child = Bun.spawnSync([process.execPath, '-e', script], { cwd: path.resolve(import.meta.dir, '..'), env: { ...env, HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_NOSYSTEM: '1' }, stderr: 'pipe' })
+    expect(child.exitCode, child.stderr.toString()).toBe(0)
+  } finally { cleanup(home) }
+})
