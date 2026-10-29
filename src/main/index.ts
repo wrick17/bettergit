@@ -17,6 +17,7 @@ import { avatars } from './avatar'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
 import * as ops from './git/ops'
+import { readCommitIdentity, setCommitIdentity } from './git/identity'
 import { applyHunk, parseHunk } from './git/hunks'
 import { loadConflict, previewConflict, resetConflict, saveConflict, takeConflictSide } from './git/conflict'
 import { parseConflictReset, parseConflictSave, parseConflictTake } from '../shared/conflict'
@@ -264,6 +265,8 @@ function registerIpc() {
     const hasHead = (await readStatus(repo)).headHash !== null
     return ops.unstagePaths(repo, paths, hasHead)
   })
+  ipcMain.handle('repo:identity', (_event, repoPath: string) => readCommitIdentity(assertKnownRepo(repoPath)))
+  handleWrite('repo:identity-set', (_event, repoPath: string, name: unknown, email: unknown, scope: unknown) => setCommitIdentity(repoPath, name, email, scope))
   handleWrite('repo:commit-changes', (_event, repoPath: string, message: string, amend: boolean) =>
     ops.commit(repoPath, message, amend))
   ipcMain.handle('repo:branches', async (_event, repoPath: string) => ops.readBranches(assertKnownRepo(repoPath)))

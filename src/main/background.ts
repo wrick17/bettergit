@@ -23,6 +23,7 @@ interface Options {
 export class BackgroundFetcher {
   private timer: ReturnType<typeof setInterval> | null = null
   private running = false
+  private failures = new Map<string, { attempts: number; next: number; reported: boolean }>()
 
   constructor(private options: Options) {}
 
@@ -52,9 +53,17 @@ export class BackgroundFetcher {
         report.failed.push({ repo: '*', reason: `Could not list repositories: ${failure instanceof Error ? failure.message : String(failure)}` })
         return [] as string[]
       })
+      const seen = new Set<string>()
       for (const repo of repos) {
+        let canonical = repo
         try {
-          const canonical = canonicalRepoPath(repo)
+          canonical = canonicalRepoPath(repo)
+          if (seen.has(canonical)) continue
+          seen.add(canonical)
+          if ((this.failures.get(canonical)?.next ?? 0) > Date.now()) {
+            report.skipped.push({ repo, reason: 'retry backoff' })
+            continue
+          }
           // The check and claim are synchronous, including through a symlink alias.
           if (repoLockHolder(canonical)) {
             report.skipped.push({ repo, reason: 'busy' })
@@ -67,10 +76,17 @@ export class BackgroundFetcher {
               return
             }
             await fetchAll(lockedRepo)
+            this.failures.delete(canonical)
             report.fetched.push(repo)
           })
         } catch (failure) {
-          report.failed.push({ repo, reason: failure instanceof Error ? failure.message : String(failure) })
+          const previous = this.failures.get(canonical)
+          const attempts = Math.min((previous?.attempts ?? 0) + 1, 6)
+          // Three quiet failures, then at most one notification until a successful fetch. Never remove Git locks.
+          const reported = previous?.reported || attempts > 3
+          const wait = Math.min(Math.max(60_000, this.options.intervalMinutes * 60_000) * 2 ** (attempts - 1), 30 * 60_000)
+          this.failures.set(canonical, { attempts, next: Date.now() + wait, reported })
+          if (reported && !previous?.reported) report.failed.push({ repo, reason: failure instanceof Error ? failure.message : String(failure) })
         }
       }
     } finally {

@@ -14,6 +14,11 @@ const suspended = new WeakSet<HTMLElement>()
 // Files leaving from above the edge in this commit, per pane, with the position before they left.
 const removals = new Map<HTMLElement, { from: number; height: number }>()
 
+function margins(element: Element) {
+  const style = getComputedStyle(element)
+  return parseFloat(style.marginTop) + parseFloat(style.marginBottom)
+}
+
 // `initial` is the height a chunk mounted with as a placeholder, so rows it mounts before its first measurement still count.
 export function holdPlace(element: HTMLElement, file = false, initial?: number): () => void {
   if (file) files.add(element)
@@ -33,10 +38,7 @@ export function holdPlace(element: HTMLElement, file = false, initial?: number):
         const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
         const before = heights.get(entry.target)
         heights.set(entry.target, height)
-        // A file that mounts above the edge (a refresh adding one) pushes the reader down by its whole height. Its chunks
-        // are new too and are not counted.
-        const added = before === undefined && files.has(entry.target) && !adopting.has(pane)
-        return (before === undefined && !added) || before === height ? [] : [{ target: entry.target, delta: height - (before ?? 0), box: entry.target.getBoundingClientRect() }]
+        return before === undefined || before === height ? [] : [{ target: entry.target, delta: height - before, box: entry.target.getBoundingClientRect() }]
       })
       // Chunks are taken top down: each one's top before this frame is its top now less the growth of those above it.
       let grown = 0
@@ -54,6 +56,15 @@ export function holdPlace(element: HTMLElement, file = false, initial?: number):
     observers.set(pane, observer)
   }
   observer.observe(element)
+  // A new file can move existing rows before the observer's first delivery. Measure after the commit's layout effects,
+  // before the next frame, and seed the observer so it only counts later resizes.
+  if (file) queueMicrotask(() => {
+    if (!element.isConnected || heights.has(element)) return
+    const box = element.getBoundingClientRect()
+    heights.set(element, box.height)
+    const margin = margins(element)
+    if (box.top - margin <= pane.getBoundingClientRect().top && !suspended.has(pane) && !adopting.has(pane)) pane.scrollTop += box.height + margin
+  })
   return () => {
     observer.unobserve(element)
     heights.delete(element)
@@ -73,7 +84,7 @@ export function holdPlace(element: HTMLElement, file = false, initial?: number):
         if (diff.isConnected && !suspended.has(pane) && !adopting.has(pane)) pane.scrollTop = next.from - next.height
       })
     }
-    removal.height += box.height
+    removal.height += box.height + margins(element)
   }
 }
 

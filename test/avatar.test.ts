@@ -1,17 +1,27 @@
 import { afterEach, expect, test } from 'bun:test'
-import { avatars } from '../src/main/avatar'
+import { runInNewContext } from 'node:vm'
+import { systemRequestWithFetch } from './system-request'
 
 const realFetch = globalThis.fetch
+let mockFetch = realFetch
 const realNow = Date.now
+const compiled = await Bun.build({ entrypoints: [new URL('../src/main/avatar.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['electron'] })
+if (!compiled.success) throw new Error('Could not build avatar test module.')
+const module = { exports: {} as typeof import('../src/main/avatar') }
+runInNewContext(await compiled.outputs[0].text(), {
+  module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer, Date, Response, Headers,
+  require: (id: string) => id === 'electron' ? { net: { request: systemRequestWithFetch((url, options) => mockFetch(url, options)) } } : require(id),
+})
+const { avatars } = module.exports
 afterEach(() => {
-  globalThis.fetch = realFetch
+  mockFetch = realFetch
   Date.now = realNow
 })
 
 test('author pictures: one fixed host, one request per email, and every failure falls back to null', async () => {
   const asked: string[] = []
   const reply = new Map<string, () => Response>()
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  mockFetch = (async (input: string | URL | Request) => {
     const url = String(input)
     asked.push(url)
     const hash = new URL(url).pathname.split('/').pop()!
@@ -48,13 +58,13 @@ test('author pictures: one fixed host, one request per email, and every failure 
   for (const bad of ['', 'no-at-sign', 42, null, `${'a'.repeat(320)}@x.y`]) expect(await avatarFor(bad)).toBeNull()
   expect(asked.length).toBe(before)
 
-  globalThis.fetch = (async () => { throw new Error('offline') }) as unknown as typeof fetch
+  mockFetch = (async () => { throw new Error('offline') }) as unknown as typeof fetch
   expect(await avatarFor('offline@example.com')).toBeNull()
 })
 
 test('GitHub noreply pictures use the author identity, with numeric IDs surviving username changes', async () => {
   const asked: string[] = []
-  globalThis.fetch = (async (input: string | URL | Request, options?: RequestInit) => {
+  mockFetch = (async (input: string | URL | Request, options?: RequestInit) => {
     const url = String(input)
     asked.push(url)
     expect(options?.redirect).toBe('manual')
@@ -91,7 +101,7 @@ test('picture redirects stay within their provider and failures are cached only 
   let location = 'https://untrusted.example/picture.png'
   let now = 0
   Date.now = () => now
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  mockFetch = (async (input: string | URL | Request) => {
     const url = String(input)
     asked.push(url)
     return new Response(null, { status: 302, headers: { location } })
@@ -121,7 +131,7 @@ test('picture redirects stay within their provider and failures are cached only 
   expect(asked.at(-1)).toStartWith('https://gravatar.com/avatar/')
 
   now += 15 * 60_000
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  mockFetch = (async (input: string | URL | Request) => {
     asked.push(String(input))
     return new Response(Buffer.from([0x89]), { headers: { 'content-type': 'image/png' } })
   }) as typeof fetch

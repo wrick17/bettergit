@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { lookup } from 'node:dns/promises'
+import electron from 'electron'
 import { promises as fs } from 'node:fs'
 import { isIP, isIPv4 } from 'node:net'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 import { inflateRawSync } from 'node:zlib'
 import { isHexColor, type ColorTheme, type ExtensionDetails, type ExtensionMetadata, type ExtensionResult, type IconMaps, type IconTheme, type InstalledExtension, type ThemeChoice, type TokenRule } from '../shared/themes'
@@ -270,8 +271,52 @@ export function isInternalAddress(address: string): boolean {
 export async function isOpenVsxUrl(url: URL): Promise<boolean> {
   const host = url.hostname.replace(/^\[|\]$/g, '')
   if (url.protocol !== 'https:' || url.port || url.username || url.password || isIP(host) || !OPEN_VSX_HOSTS.has(host)) return false
-  const addresses = await lookup(host, { all: true })
+  const { endpoints: addresses } = await electron.net.resolveHost(host)
   return addresses.length > 0 && !addresses.some(({ address }) => isInternalAddress(address))
+}
+
+// Electron fetch rejects manual redirects. Capture the redirect event and cancel the request instead, so async
+// address validation can finish before a fresh request. Never call followRedirect, which must run synchronously.
+function systemRequest(url: string, signal: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted()
+    // Chromium uses the system proxy, certificate store and VPN-aware resolver.
+    const request = electron.net.request({ url, redirect: 'manual', credentials: 'omit', bypassCustomProtocolHandlers: true })
+    let incoming: Readable | undefined
+    const cleanup = () => signal.removeEventListener('abort', abort)
+    const abort = () => {
+      reject(signal.reason)
+      incoming?.destroy(signal.reason)
+      request.abort()
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    request.on('error', (error) => { cleanup(); reject(error) })
+    request.on('redirect', (status, _method, location) => {
+      cleanup()
+      resolve(new Response(null, { status, headers: { location } }))
+      request.abort()
+    })
+    request.on('response', (message) => {
+      // Electron implements Node Readable, though its declaration lists only the events.
+      incoming = message as unknown as Readable
+      incoming.once('close', () => { cleanup(); request.abort() })
+      incoming.on('error', reject)
+      try {
+        const headers = new Headers()
+        for (const [name, value] of Object.entries(message.headers)) {
+          for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item)
+        }
+        const body = [204, 205, 304].includes(message.statusCode) ? null : Readable.toWeb(incoming) as unknown as ReadableStream<Uint8Array>
+        resolve(new Response(body, { status: message.statusCode, headers }))
+        if (!body) request.abort()
+      } catch (error) {
+        cleanup()
+        reject(error)
+        request.abort()
+      }
+    })
+    request.end()
+  })
 }
 
 // Redirects are followed by hand, so every hop is checked before it is requested: a redirect to a host off the list
@@ -288,11 +333,12 @@ export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolea
         signal.throwIfAborted()
         if (!await Promise.race([allowed(next), expired])) throw new Error(`Refusing to fetch from ${next.host}: not an Open VSX address.`)
         signal.throwIfAborted()
-        response = await fetch(next, { redirect: 'manual', signal })
+        response = await systemRequest(next.href, signal)
         break
       } catch (error) {
         const failure = error as NodeJS.ErrnoException & { cause?: NodeJS.ErrnoException }
-        if (retried || signal.aborted || !TRANSIENT_NETWORK_ERRORS.has(failure?.code ?? failure?.cause?.code ?? '')) throw error
+        const transient = TRANSIENT_NETWORK_ERRORS.has(failure?.code ?? failure?.cause?.code ?? '') || /net::ERR_(?:NAME_NOT_RESOLVED|CONNECTION_RESET|CONNECTION_CLOSED|NETWORK_CHANGED|INTERNET_DISCONNECTED|TIMED_OUT)\b/.test(failure.message ?? '')
+        if (retried || signal.aborted || !transient) throw error
         // One retry for a short DNS/socket interruption, with the same deadline and fresh address validation.
         retried = true
         await delay(250, undefined, { signal })
@@ -300,7 +346,12 @@ export async function fetchOk(url: string, allowed: (url: URL) => Promise<boolea
     }
     const location = response.headers.get('location')
     if (response.status < 300 || response.status > 399 || !location) {
-      if (!response.ok) throw new Error(`Open VSX answered ${response.status}.`)
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw new Error(`Open VSX answered ${response.status}.`)
+      }
+      // Electron's Response.url can be empty; README-relative links need the final checked URL.
+      if (response.url !== next.href) Object.defineProperty(response, 'url', { value: next.href })
       return response
     }
     await response.body?.cancel()
@@ -391,7 +442,7 @@ function imageAsset(value: unknown): URL | null {
 
 async function isImageUrl(url: URL): Promise<boolean> {
   if (!imageAsset(url.href)) return false
-  const addresses = await lookup(url.hostname, { all: true })
+  const { endpoints: addresses } = await electron.net.resolveHost(url.hostname)
   return addresses.length > 0 && !addresses.some(({ address }) => isInternalAddress(address))
 }
 
@@ -434,7 +485,7 @@ export async function searchOpenVsx(query: unknown): Promise<ExtensionResult[]> 
 
 async function downloadFromOpenVsx(namespace: unknown, name: unknown): Promise<Buffer> {
   if (!PART.test(text(namespace)) || !PART.test(text(name))) throw new Error('Unknown extension.')
-  const meta = await (await fetchOk(`${OPEN_VSX}/${namespace}/${name}`)).json() as { files?: { download?: unknown } }
+  const meta = await registryJson(`${OPEN_VSX}/${namespace}/${name}`) as { files?: { download?: unknown } }
   const download = text(meta.files?.download)
   if (!download.startsWith(`${OPEN_VSX}/`)) throw new Error('Open VSX has no download for this extension.')
   // Redirect hops carry no body (fetchOk discards them), so one count covers the whole download.

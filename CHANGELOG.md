@@ -2,6 +2,22 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.10] - 2026-10-29
+
+### New
+
+- See the effective commit author and edit Git identity for the current repository or globally.
+
+### Improved
+
+- Background fetches back off after transient failures and avoid duplicate requests for the same repository.
+
+### Fixed
+
+- Load extension marketplace details and downloads through the system network connection.
+- Show fully staged files only in Staged and unstaged files only in Changes; partially staged files appear in both.
+- Keep the visible diff position when staging or unstaging files.
+
 ## [0.1.9] - 2026-10-28
 
 ### New

@@ -12,6 +12,7 @@ Object.assign(globalThis, {
   window: {
     innerWidth: 1900, addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout,
     bettergit: {
+      commitIdentity: async () => ({ name: 'Effective Author', email: 'author@example.test', error: null }),
       working: (...args) => new Promise((resolve, reject) => requests.push({ args, resolve, reject, done: false })),
     },
   },
@@ -50,13 +51,14 @@ react.useLayoutEffect = react.useEffect
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
 
 const { ChangesView } = await import('./src/renderer/src/ChangesView')
+let Component = ChangesView
 const { setContextLines, setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
 const { parseDiff } = await import('./src/main/git/diff')
 
 function render() {
   do {
     dirty = false; cursor = 0; effects = []
-    tree = ChangesView(props)
+    tree = Component(props)
     for (const effect of effects) effect()
     // Each DiffView shows the files it was given, as it does once its deferred render lands.
     if (diffViewsShow) for (const view of findAll(tree, (p) => typeof p.onShown === 'function')) view.onShown(view.files)
@@ -773,15 +775,53 @@ if (process.env.CHECK_MODE === 'commit-draft') {
   }
 }
 
+if (process.env.CHECK_MODE === 'identity') {
+  await start(false)
+  const author = find(tree, (p) => p['aria-label'] === 'Edit commit identity')
+  assert.ok(author, 'commit box shows an editable effective Git author')
+  assert.equal(author.children, 'Effective Author <author@example.test>')
+  author.onClick(); render()
+  const dialog = find(tree, (p) => typeof p.onSaved === 'function' && p.repo === '/repo')
+  assert.ok(dialog, 'click opens the identity dialog for this repository')
+  unmount()
+}
+
+if (process.env.CHECK_MODE === 'identity-dialog') {
+  const { IdentityDialog } = await import('./src/renderer/src/IdentityDialog')
+  const writes = [], saved = []
+  let closed = 0
+  window.bettergit.setCommitIdentity = async (...args) => {
+    writes.push(args)
+    return { name: 'Environment Author', email: 'env@example.test', error: null }
+  }
+  Component = IdentityDialog
+  slots = []; mounted = true
+  props = { repo: '/repo', identity: { name: 'Old Author', email: 'old@example.test', error: null }, onSaved: (next) => saved.push(next), onClose: () => closed++ }
+  render()
+  const radios = () => findAll(tree, (p) => p.type === 'radio')
+  assert.deepEqual(radios().map((p) => p.checked), [true, false], 'scope defaults to this repository')
+  const fields = () => findAll(tree, (p) => p.required)
+  fields()[0].onChange({ target: { value: 'New Author' } }); render()
+  fields()[1].onChange({ target: { value: 'new@example.test' } }); render()
+  await find(tree, (p) => typeof p.onSubmit === 'function').onSubmit({ preventDefault() {} }); render()
+  assert.deepEqual(writes[0], ['/repo', 'New Author', 'new@example.test', 'local'])
+  assert.equal(saved[0].name, 'Environment Author')
+  assert.match(find(tree, (p) => p.role === 'alert').children, /Configuration saved.*environment variable takes precedence/)
+  assert.equal(closed, 0, 'an effective override must be explained before closing')
+  radios()[1].onChange(); render()
+  await find(tree, (p) => typeof p.onSubmit === 'function').onSubmit({ preventDefault() {} }); render()
+  assert.equal(writes[1][3], 'global', 'only an explicit scope change writes global config')
+  unmount()
+}
+
 if (process.env.CHECK_MODE === 'membership') {
-  // Status gives one entry per side: a.ts is only unstaged, b.ts only staged, c.ts both. Changes lists every path once,
-  // c.ts by its unstaged entry, b.ts by its staged one; Staged lists b.ts and c.ts. Stage all takes only unstaged paths.
+  // Status gives one entry per side: a.ts is unstaged, b.ts staged, c.ts both. Each diff and action stays on its side.
   const side = (path, staged) => ({ path, staged, unstaged: !staged, conflicted: false, kind: 'modified' })
   const patch = (paths, label) => ({ files: paths.flatMap((path) => parseDiff('diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + ' ' + path + '\n')), moves: [] })
   const respond = async () => {
     for (const request of requests.filter((r) => !r.done)) {
       request.done = true
-      request.resolve(request.args[1] ? patch(['b.ts', 'c.ts'], 'staged') : patch(['a.ts', 'c.ts'], 'working'))
+      request.resolve(patch(props.status.changes.filter((change) => request.args[1] ? change.staged : change.unstaged).map((change) => change.path), request.args[1] ? 'staged' : 'working'))
     }
     await flush()
   }
@@ -797,26 +837,36 @@ if (process.env.CHECK_MODE === 'membership') {
   render(); await respond()
   const lists = findAll(tree, (p) => typeof p.title === 'string' && Array.isArray(p.changes))
   assert.deepEqual(lists.map((list) => list.title), ['Changes', 'Staged'])
-  assert.deepEqual(lists[0].changes.map((c) => [c.path, c.staged]), [['a.ts', false], ['b.ts', true], ['c.ts', false]])
+  assert.deepEqual(lists[0].changes.map((c) => [c.path, c.staged]), [['a.ts', false], ['c.ts', false]])
   assert.deepEqual(lists[1].changes.map((c) => c.path), ['b.ts', 'c.ts'])
   const text = (file) => file.hunks[0].lines.at(-1).text
   const changesView = find(tree, (p) => Array.isArray(p.files) && p.stage?.staged === false)
-  assert.deepEqual(changesView.files.map(text), ['working a.ts', 'staged b.ts', 'working c.ts'])
-  assert.deepEqual([...changesView.stage.stagedPaths], ['b.ts'])
+  assert.deepEqual(changesView.files.map(text), ['working a.ts', 'working c.ts'])
+  assert.equal(changesView.stage.stagedPaths, undefined)
   lists[0].onToggleAll(); await flush()
   assert.deepEqual(writes, [['stage', ['a.ts', 'c.ts']]])
-  // The staged-only row unstages; picking it shows its staged content in the Changes view, routed as staged.
-  lists[0].onToggle(lists[0].changes[1]); await flush()
+  // A staged row unstages and opens only the staged diff.
+  lists[1].onToggle(lists[1].changes[0]); await flush()
   assert.deepEqual(writes.at(-1), ['unstage', ['b.ts']])
-  lists[0].onSelect(lists[0].changes[1]); render(); await respond()
+  lists[1].onSelect(lists[1].changes[0]); render(); await respond()
   // A picked file replaces both section diffs with its own, so it is the only diff on screen.
   const diffs = findAll(tree, (p) => Array.isArray(p.files) && p.stage)
   assert.equal(diffs.length, 1)
   const [selected] = diffs
-  assert.equal(selected.stage.staged, false)
-  assert.ok(selected.edit, 'working files in Changes stay editable')
-  assert.ok(selected.stage.stagedPaths.has('b.ts') && !selected.stage.stagedPaths.has('c.ts'))
+  assert.equal(selected.stage.staged, true)
+  assert.equal(selected.edit, undefined, 'staged files cannot edit the working tree')
   assert.equal(text(selected.files.find((file) => file.newPath === 'b.ts')), 'staged b.ts')
+  // The selection follows its file when it leaves the staged section, then follows it back after staging.
+  props = { ...props, status: { changes: [side('a.ts', false), side('b.ts', false), side('c.ts', true), side('c.ts', false)] } }
+  render(); await respond()
+  let moved = find(tree, (p) => Array.isArray(p.files) && p.stage)
+  assert.equal(moved.stage.staged, false)
+  assert.equal(text(moved.files.find((file) => file.newPath === 'b.ts')), 'working b.ts')
+  props = { ...props, status: { changes: [side('a.ts', false), side('b.ts', true), side('c.ts', true), side('c.ts', false)] } }
+  render(); await respond()
+  moved = find(tree, (p) => Array.isArray(p.files) && p.stage)
+  assert.equal(moved.stage.staged, true)
+  assert.equal(text(moved.files.find((file) => file.newPath === 'b.ts')), 'staged b.ts')
   // Clearing the selection shows conflicts before both diff sections in the continuous all-files pane.
   window.bettergit.conflictLoad = () => new Promise(() => {})
   props = { ...props, status: { changes: [...props.status.changes, { path: 'd.ts', staged: false, unstaged: false, conflicted: true, kind: 'modified' }] } }
@@ -856,5 +906,9 @@ test('while new options load, old hunks, counts and stats are hidden behind a lo
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
-test('Changes lists every path once with staged-only files routed as staged, and Stage all takes only unstaged paths', () => check('membership'))
+test('Changes contains only unstaged files and follows selections across staging', () => check('membership'))
 test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))
+
+test('commit box shows the effective author and opens identity editing', () => check('identity'))
+
+test('identity dialog defaults local, saves the selected scope, and explains effective overrides', () => check('identity-dialog'))

@@ -1,3 +1,4 @@
+import type { CommitIdentity, IdentityScope } from '../shared/identity'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { HunkAction, HunkRequest } from '../main/git/hunks'
@@ -48,6 +49,8 @@ const api = {
   deleteUntracked: (repo: string, path: string) => invoke('repo:delete-untracked', repo, path) as Promise<void>,
   // Main re-reads the diff and applies the hunk only if it still matches what was shown.
   applyHunk: (repo: string, action: HunkAction, request: HunkRequest) => invoke('repo:hunk', repo, action, request) as Promise<void>,
+  commitIdentity: (repo: string) => invoke('repo:identity', repo) as Promise<CommitIdentity>,
+  setCommitIdentity: (repo: string, name: string, email: string, scope: IdentityScope) => invoke('repo:identity-set', repo, name, email, scope) as Promise<CommitIdentity>,
   commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
   branches: (repo: string) => invoke('repo:branches', repo) as Promise<Branch[]>,
   switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,

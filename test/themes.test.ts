@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { DEFAULT_APPEARANCE } from '../src/shared/editors'
-import { entryPath, fetchOk, isInternalAddress, isOpenVsxUrl, listExtensions, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
+import { entryPath, isInternalAddress, isOpenVsxUrl, listExtensions, loadColorTheme, loadIconTheme, parseJsonc, resolveInside } from '../src/main/extensions'
 import * as shared from '../src/shared/themes'
 import { fileIconId, themeCss, themeVariables, type IconTheme } from '../src/shared/themes'
+import { systemRequestWithFetch } from './system-request'
 
 const root = mkdtempSync(path.join(tmpdir(), 'bettergit-themes-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -19,17 +20,91 @@ function extension(id: string, files: Record<string, string>) {
   }
 }
 
-async function registryWithFetch(fetch: (url: URL) => Promise<Response>, lookup = async (_host: string) => [{ address: '151.101.1.242', family: 4 }]) {
+async function registryWithFetch(fetch: (url: URL, options?: RequestInit) => Promise<Response>, lookup = async (_host: string) => [{ address: '151.101.1.242', family: 4 }], nodeFetch = fetch) {
   const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
   expect(compiled.success).toBe(true)
   const module = { exports: {} as typeof import('../src/main/extensions') }
   runInNewContext(await compiled.outputs[0].text(), {
-    module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer, fetch,
-    require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises'
-      ? { lookup } : require(id),
+    module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer, Response, Headers, fetch: nodeFetch,
+    require: (id: string) => id === 'electron' ? { net: { request: systemRequestWithFetch((url, options) => fetch(new URL(url), options)), resolveHost: async (host: string) => ({ endpoints: await lookup(host) }) } } : id === '../shared/themes' ? shared : require(id),
   })
   return module.exports
 }
+
+test.skipIf(process.platform !== 'darwin')('native Electron redirects are cancelled and validated before a new request, with bounded streaming bodies', async () => {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['electron'] })
+  expect(compiled.success).toBe(true)
+  const file = path.join(root, 'native-transport.cjs')
+  writeFileSync(file, `${await compiled.outputs[0].text()}
+const { app, session, BrowserWindow } = require('electron');
+const assert = require('node:assert/strict');
+const http = require('node:http');
+app.setPath('userData', ${JSON.stringify(path.join(root, 'native-profile'))});
+app.dock?.hide();
+app.whenReady().then(async () => {
+  const { fetchOk, readBody } = module.exports;
+  const hits = [];
+  const closed = {};
+  let cookie;
+  const server = http.createServer((req, res) => {
+    hits.push(req.url);
+    if (req.url === '/end') cookie = req.headers.cookie;
+    if (req.url === '/start' || req.url === '/forbidden' || req.url.startsWith('/loop')) {
+      res.writeHead(302, { location: req.url === '/start' ? '/end' : req.url === '/forbidden' ? '/private' : '/loop' + hits.length });
+      res.end();
+    } else if (req.url === '/slow' || req.url === '/large') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.flushHeaders();
+      const timer = setInterval(() => res.write('chunk'), 10);
+      res.on('close', () => { clearInterval(timer); closed[req.url]?.(); });
+    } else res.end('redirect works');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    await session.defaultSession.cookies.set({ url: base, name: 'private', value: 'must-not-be-sent' });
+    const checked = [];
+    const response = await fetchOk(base + '/start', async url => {
+      checked.push(url.pathname);
+      assert.deepEqual(hits, checked.slice(0, -1));
+      return true;
+    });
+    assert.equal(response.url, base + '/end');
+    assert.equal((await readBody(response, 100, 'too large')).toString(), 'redirect works');
+    assert.equal(cookie, undefined);
+    assert.deepEqual(hits, ['/start', '/end']);
+    hits.length = 0;
+    await assert.rejects(fetchOk(base + '/forbidden', async url => url.pathname !== '/private'), /Refusing to fetch/);
+    assert.deepEqual(hits, ['/forbidden']);
+    hits.length = 0;
+    await assert.rejects(fetchOk(base + '/loop', async () => true), /redirected too many/);
+    assert.equal(hits.length, 4);
+    const largeClosed = new Promise(resolve => { closed['/large'] = resolve; });
+    await assert.rejects(readBody(await fetchOk(base + '/large', async () => true), 6, 'too large'), /too large/);
+    await largeClosed;
+    const timeout = AbortSignal.timeout;
+    const deadline = new AbortController();
+    AbortSignal.timeout = () => deadline.signal;
+    try {
+      const slowClosed = new Promise(resolve => { closed['/slow'] = resolve; });
+      const slow = await fetchOk(base + '/slow', async () => true);
+      const reading = readBody(slow, 10000, 'too large');
+      deadline.abort(new Error('native deadline reached'));
+      await assert.rejects(reading, /native deadline reached/);
+      await slowClosed;
+    } finally { AbortSignal.timeout = timeout; }
+    assert.equal(BrowserWindow.getAllWindows().length, 0);
+    console.log('NATIVE_TRANSPORT_OK: redirects, validation, final URL, redirect cap, streaming cap, body deadline, socket cancellation, no cookies; no windows');
+  } finally { server.closeAllConnections(); server.close(); }
+}).then(() => app.exit(0), error => { console.error(error); app.exit(1); });
+`)
+  const env = { ...process.env }
+  delete env.ELECTRON_RUN_AS_NODE
+  const child = Bun.spawn([require('electron'), file], { env, stdout: 'pipe', stderr: 'pipe', timeout: 15_000 })
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+  expect({ exitCode, stderr: exitCode ? stderr : '' }).toEqual({ exitCode: 0, stderr: '' })
+  expect(stdout).toContain('NATIVE_TRANSPORT_OK')
+}, 20_000)
 
 test('registry lists and metadata stay lazy; Details reads the selected README and never an extension archive', async () => {
   const api = 'https://open-vsx.org/api/PKief/material-icon-theme'
@@ -266,12 +341,13 @@ test('file icons resolve by name, then longest extension, then language, then th
 })
 
 test('a redirect is checked before it is followed, so a hop off the allowed hosts is never requested', async () => {
+  const registry = await registryWithFetch((url, options) => fetch(url, options))
   const hits: string[] = []
   const target = Bun.serve({ port: 0, fetch: (request) => { hits.push(request.url); return new Response('PK') } })
   const start = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 302, headers: { location: `http://127.0.0.1:${target.port}/private-target` } }) })
   try {
     const first = `http://127.0.0.1:${start.port}/`
-    await expect(fetchOk(`${first}file.vsix`, async (url) => url.href.startsWith(first))).rejects.toThrow('Refusing to fetch')
+    await expect(registry.fetchOk(`${first}file.vsix`, async (url) => url.href.startsWith(first))).rejects.toThrow('Refusing to fetch')
     expect(hits).toEqual([])
   } finally {
     start.stop(true)
@@ -288,29 +364,19 @@ test('a redirect is checked before it is followed, so a hop off the allowed host
 })
 
 test('Open VSX retries a transient DNS or connection failure once and validates the address again', async () => {
-  const compiled = await Bun.build({ entrypoints: [new URL('../src/main/extensions.ts', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
-  expect(compiled.success).toBe(true)
-  for (const failure of ['dns', 'connection']) {
+  for (const failure of ['dns', 'connection', 'chromium']) {
     let validations = 0
     let requests = 0
-    const module = { exports: {} as typeof import('../src/main/extensions') }
-    runInNewContext(await compiled.outputs[0].text(), {
-      module, exports: module.exports, URL, URLSearchParams, AbortSignal, Buffer,
-      require: (id: string) => id === '../shared/themes' ? shared : id === 'node:dns/promises' ? {
-        lookup: async () => {
-          if (++validations === 1 && failure === 'dns') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
-          return [{ address: '151.101.1.242', family: 4 }]
-        },
-      } : require(id),
-      fetch: async (input: URL) => {
-        expect(input.searchParams.get('query')).toBe('Material icon theme')
-        if (++requests === 1 && failure === 'connection') {
-          throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }) })
-        }
-        return Response.json({ extensions: [{ namespace: 'PKief', name: 'material-icon-theme' }] })
-      },
+    const registry = await registryWithFetch(async (input) => {
+      expect(input.searchParams.get('query')).toBe('Material icon theme')
+      if (++requests === 1 && failure === 'chromium') throw new Error('net::ERR_NETWORK_CHANGED')
+      if (requests === 1 && failure === 'connection') throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }) })
+      return Response.json({ extensions: [{ namespace: 'PKief', name: 'material-icon-theme' }] })
+    }, async () => {
+      if (++validations === 1 && failure === 'dns') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
+      return [{ address: '151.101.1.242', family: 4 }]
     })
-    const found = await module.exports.searchOpenVsx('Material icon theme')
+    const found = await registry.searchOpenVsx('Material icon theme')
     expect(found[0].name).toBe('material-icon-theme')
     expect(validations).toBe(2)
     expect(requests).toBe(failure === 'dns' ? 1 : 2)
@@ -318,6 +384,7 @@ test('Open VSX retries a transient DNS or connection failure once and validates 
 })
 
 test('Open VSX stops after one retry and never retries policy, TLS or HTTP failures', async () => {
+  const registry = await registryWithFetch((url, options) => fetch(url, options))
   const original = globalThis.fetch
   try {
     for (const failure of ['policy', 'tls', 'http', 'connection', 'changed-address']) {
@@ -330,7 +397,7 @@ test('Open VSX stops after one retry and never retries policy, TLS or HTTP failu
           code: failure === 'tls' ? 'CERT_HAS_EXPIRED' : 'ECONNRESET',
         }) })
       }) as unknown as typeof fetch
-      await expect(fetchOk('https://open-vsx.org/api/-/search', async () => {
+      await expect(registry.fetchOk('https://open-vsx.org/api/-/search', async () => {
         validations++
         return failure !== 'policy' && !(failure === 'changed-address' && validations > 1)
       })).rejects.toThrow(failure === 'policy' || failure === 'changed-address' ? 'Refusing to fetch' : failure === 'http' ? '404' : 'fetch failed')
@@ -343,6 +410,7 @@ test('Open VSX stops after one retry and never retries policy, TLS or HTTP failu
 })
 
 test('Open VSX DNS validation and retry backoff share the request deadline', async () => {
+  const registry = await registryWithFetch((url, options) => fetch(url, options))
   const originalTimeout = AbortSignal.timeout
   const originalFetch = globalThis.fetch
   let requests = 0
@@ -355,9 +423,9 @@ test('Open VSX DNS validation and retry backoff share the request deadline', asy
     throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }) })
   }) as unknown as typeof fetch
   try {
-    await expect(fetchOk('https://open-vsx.org/api', () => new Promise(() => {}))).rejects.toThrow()
+    await expect(registry.fetchOk('https://open-vsx.org/api', () => new Promise(() => {}))).rejects.toThrow()
     expect(requests).toBe(0)
-    await expect(fetchOk('https://open-vsx.org/api', async () => true)).rejects.toThrow()
+    await expect(registry.fetchOk('https://open-vsx.org/api', async () => true)).rejects.toThrow()
     expect(requests).toBe(1)
   } finally {
     AbortSignal.timeout = originalTimeout
@@ -492,4 +560,30 @@ test('the last theme pick applies once it loads, an earlier slower load never co
   // A loaded theme applies in the same task.
   pick('c.x/first.json')
   expect(shown()).toEqual(['c.x/first.json', 'c.x/first.json'])
+})
+
+test('registry requests use the system proxy transport instead of Node fetch, retaining address and download caps', async () => {
+  let internal = false
+  const requests: string[] = []
+  const entry = { namespace: 'acme', name: 'theme', files: { readme: 'https://open-vsx.org/readme', download: 'https://open-vsx.org/api/theme.vsix' } }
+  const registry = await registryWithFetch(async (url, options) => {
+    expect(options).toMatchObject({ redirect: 'manual', credentials: 'omit', bypassCustomProtocolHandlers: true })
+    requests.push(url.href)
+    if (url.pathname === '/api/-/search') return Response.json({ extensions: [entry] })
+    if (url.pathname === '/api/acme/theme') return Response.json(entry)
+    if (url.hostname === 'open-vsx.org' && url.pathname === '/readme') return new Response(null, { status: 302, headers: { location: 'https://openvsx.eclipsecontent.org/readme' } })
+    if (url.hostname === 'openvsx.eclipsecontent.org') return new Response('# Theme')
+    return new Response('archive', { headers: { 'content-length': String(50 * 1024 * 1024 + 1) } })
+  }, async () => [{ address: internal ? '127.0.0.1' : '151.101.1.242', family: 4 }],
+    async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('direct connection unavailable'), { code: 'ENETUNREACH' }) }) })
+  expect((await registry.searchOpenVsx(''))[0].name).toBe('theme')
+  expect((await registry.searchOpenVsx('theme'))[0].name).toBe('theme')
+  expect((await registry.extensionMetadata('acme', 'theme')).name).toBe('theme')
+  expect(await registry.extensionDetails('acme', 'theme')).toMatchObject({ readme: '# Theme', readmeBaseUrl: 'https://openvsx.eclipsecontent.org/readme' })
+  await expect(registry.installFromOpenVsx(root, 'acme', 'theme')).rejects.toThrow('The .vsix file is too large.')
+  expect(requests.at(-1)).toBe('https://open-vsx.org/api/theme.vsix')
+  internal = true
+  requests.length = 0
+  await expect(registry.searchOpenVsx('theme')).rejects.toThrow('Refusing to fetch')
+  expect(requests).toEqual([])
 })
