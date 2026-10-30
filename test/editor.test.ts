@@ -162,6 +162,27 @@ test('an unknown editor in config falls back to VS Code', () => {
   expect(normalizeConfig({}).settings.editor).toBe('vscode')
 })
 
+test('batch concurrency defaults to four and accepts only positive safe integers', () => {
+  expect(normalizeConfig({}).settings.batchConcurrency).toBe(4)
+  for (const value of [undefined, null, '6', 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(normalizeConfig({ settings: { batchConcurrency: value } }).settings.batchConcurrency).toBe(4)
+  }
+  for (const value of [1, 2, 6, Number.MAX_SAFE_INTEGER]) {
+    expect(normalizeConfig({ settings: { batchConcurrency: value } }).settings.batchConcurrency).toBe(value)
+  }
+})
+
+test('batch concurrency survives config save and load, including older configs', async () => {
+  const { root } = await sandbox()
+  const file = path.join(root, 'config.json')
+  for (const batchConcurrency of [2, 6]) {
+    await configModule.saveConfig(file, normalizeConfig({ settings: { batchConcurrency } }))
+    expect((await configModule.loadConfig(file)).settings.batchConcurrency).toBe(batchConcurrency)
+  }
+  await fs.writeFile(file, JSON.stringify({ settings: { backgroundFetch: false } }))
+  expect((await configModule.loadConfig(file)).settings).toMatchObject({ batchConcurrency: 4, backgroundFetch: false })
+})
+
 test('detects known apps once each, merges custom apps by path, and accepts only real .app bundles', async () => {
   const { root } = await sandbox()
   const first = path.join(root, 'Applications'), second = path.join(root, 'Utilities')

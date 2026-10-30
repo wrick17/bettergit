@@ -600,6 +600,7 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
       <div className="settings-pane" id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${section}`}>
         <h3 className="settings-title">{title}</h3>
         {section === 'general' && (
+          <>
           <section className="settings-section">
             <h4>Background fetch</h4>
             <div className="settings-group">
@@ -619,6 +620,17 @@ export function SettingsDialog({ config, onUpdate, onClose }: {
               </Row>
             </div>
           </section>
+          <section className="settings-section">
+            <h4>Fetch All and Pull All</h4>
+            <div className="settings-group">
+              <Row label="Repositories at once" htmlFor="batch-concurrency" help="How many repositories Fetch All and Pull All run at once. Applies to the next batch.">
+                <select id="batch-concurrency" value={settings.batchConcurrency} onChange={(event) => set({ batchConcurrency: Number(event.target.value) })}>
+                  {[...new Set([1, 2, 4, 6, 8, 12, 16, settings.batchConcurrency])].sort((a, b) => a - b).map((count) => <option key={count} value={count}>{count}</option>)}
+                </select>
+              </Row>
+            </div>
+          </section>
+          </>
         )}
         {section === 'appearance' && (
           <>

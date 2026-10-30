@@ -209,18 +209,22 @@ test('Git failures are summarised by what their text shows', () => {
   expect(describeFailure('main has no upstream branch to pull from.')).toEqual({ summary: 'main has no upstream branch to pull from.' })
 })
 
-test('a batch runs up to four repos at once and keeps each failure with its repo', async () => {
-  const repos = Array.from({ length: 6 }, (_, index) => ({ kind: 'repo' as const, path: `/batch/r${index}`, name: `r${index}` }))
-  let inFlight = 0, most = 0
-  const ran: string[] = []
-  const failures = await runBatch(null, 'Fetch All', 'fetching', 'fetch', repos, async (path) => {
-    most = Math.max(most, ++inFlight)
-    await new Promise((done) => setTimeout(done, 5))
-    inFlight--
-    ran.push(path)
-    if (path === '/batch/r2') throw new Error('fatal: Could not read from remote repository.')
-  }, noop)
-  expect(most).toBe(4)
-  expect(ran.sort()).toEqual(repos.map((repo) => repo.path))
-  expect(failures).toEqual([{ repo: '/batch/r2', reason: 'fatal: Could not read from remote repository.' }])
+test('fetch and pull batches default to four workers, honor saved limits, and keep each failure with its repo', async () => {
+  const repos = Array.from({ length: 8 }, (_, index) => ({ kind: 'repo' as const, path: `/batch/r${index}`, name: `r${index}` }))
+  for (const key of ['fetch', 'pull-ff']) {
+    for (const limit of [undefined, 2, 6, Number.MAX_SAFE_INTEGER]) {
+      let inFlight = 0, most = 0
+      const ran: string[] = []
+      const failures = await runBatch(null, key, key, key, repos, async (path) => {
+        most = Math.max(most, ++inFlight)
+        await new Promise((done) => setTimeout(done, 5))
+        inFlight--
+        ran.push(path)
+        if (path === '/batch/r2') throw new Error('fatal: Could not read from remote repository.')
+      }, noop, limit)
+      expect(most).toBe(Math.min(limit ?? 4, repos.length))
+      expect(ran.sort()).toEqual(repos.map((repo) => repo.path))
+      expect(failures).toEqual([{ repo: '/batch/r2', reason: 'fatal: Could not read from remote repository.' }])
+    }
+  }
 })

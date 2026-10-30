@@ -1390,11 +1390,17 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     markAllRead()
     const repos = ['a', 'b', 'c'].map((name) => ({ kind: 'repo', path: `/p/${name}`, name, branch: 'main' }))
     const tree = [{ kind: 'folder', path: '/p', name: 'projects', children: repos }, { kind: 'folder', path: '/e', name: 'empty', children: [] }]
-    w.sync = { tree, calls: [] as string[], pending: [] as any[], listeners: {} as Record<string, (payload: unknown) => void>, holdTree: false, confirm: false, confirms: 0 }
+    const config = { sources: ['/p', '/e'], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null,
+      settings: { theme: 'dark', backgroundFetch: true, fetchIntervalMinutes: 10, batchConcurrency: 4, appearance: {}, languages: {}, editorApp: 'none', terminalApp: 'none', customApps: [] } }
+    w.sync = { tree, config, writes: [], calls: [] as string[], pending: [] as any[], listeners: {} as Record<string, (payload: unknown) => void>, holdTree: false, confirm: false, confirms: 0 }
     const hold = (call: string) => new Promise((resolve, reject) => { w.sync.calls.push(call); w.sync.pending.push({ call, resolve, reject }) })
     Object.assign(w.bettergit, {
-      getConfig: async () => ({ sources: ['/p', '/e'], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null,
-        settings: { theme: 'dark', appearance: {}, languages: {}, editorApp: 'none', terminalApp: 'none', customApps: [] } }),
+      getConfig: async () => w.sync.config,
+      updateConfig: async (patch: any) => {
+        w.sync.writes.push(patch)
+        w.sync.config = { ...w.sync.config, ...patch, settings: { ...w.sync.config.settings, ...patch.settings } }
+        return w.sync.config
+      },
       getTree: () => (w.sync.holdTree ? hold('getTree') : Promise.resolve(tree)),
       repoLocks: async () => ({ seq: 0, holders: {} }),
       onEvent: (name: string, listener: (payload: unknown) => void) => { w.sync.listeners[name] = listener; return () => undefined },
@@ -1620,11 +1626,36 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     await closeHub()
     await page.evaluate(() => (window as any).under.markAllRead())
 
+    // Editing the setting updates App's config; the next folder and app-menu batches must use it.
+    await page.evaluate(() => { sessionStorage.setItem('bettergit.settingsSection', 'general'); (window as any).sync.listeners['menu:action']('open-settings') })
+    const concurrency = page.getByLabel('Repositories at once', { exact: true })
+    expect(await concurrency.inputValue()).toBe('4')
+    await concurrency.selectOption('2')
+    await page.waitForFunction(() => (window as any).sync.config.settings.batchConcurrency === 2)
+    expect(await page.evaluate(() => (window as any).sync.writes.at(-1))).toEqual({ settings: { batchConcurrency: 2 } })
+    await page.getByRole('button', { name: 'Done', exact: true }).click()
+    // The fixture deliberately reports an extensions error whenever Settings opens.
+    await page.evaluate(() => (window as any).under.markAllRead())
+    for (const kind of ['Pull All', 'app-menu']) {
+      await reset()
+      if (kind === 'app-menu') await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
+      else await (await menu(kind)).click()
+      await page.waitForFunction(() => (window as any).sync.pending.length === 2)
+      expect(await calls()).toEqual(kind === 'app-menu' ? ['fetch /p/a', 'fetch /p/b'] : ['pull /p/a ff-only', 'pull /p/b ff-only'])
+      await settle(0)
+      await page.waitForFunction(() => (window as any).sync.pending.length === 3)
+      await settle(1)
+      await settle(2)
+      await shows('done: 3 succeeded')
+    }
+
     // A failure that lands after the user moved to another repo still goes to its own repo, as does each repo's entry.
     await page.locator('.tree-row.repo', { hasText: 'b' }).click()
     expect(await selected()).toBe('bmain')
     await reset()
     await (await menu('Fetch All')).click()
+    await page.waitForFunction(() => (window as any).sync.pending.length === 2)
+    expect(await calls()).toEqual(['fetch /p/a', 'fetch /p/b'])
     await page.locator('.tree-row.repo', { hasText: 'c' }).click()
     await settle(0, 'denied a')
     await page.waitForFunction(() => (window as any).sync.pending.length > 1).then(() => settle(1))

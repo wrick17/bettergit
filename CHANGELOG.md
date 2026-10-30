@@ -2,6 +2,12 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.13] - 2026-10-30
+
+### Improved
+
+- Choose how many repositories Fetch All and Pull All run at once in General settings. The saved setting defaults to four.
+
 ## [0.1.12] - 2026-10-30
 
 ### Improved
