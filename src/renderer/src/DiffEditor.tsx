@@ -317,7 +317,7 @@ export function EditableDiff({ edit, path, hunks, layout, language, context = 3,
       dom.className = 'ed-hunk-actions'
       return { line: stretch.b, dom, hunk: hunks[index] }
     }) : [], [active, preview, hunks, !!hunkActions])
-  const tokens = usePreviewTokens(preview, language, layout)
+  const tokens = usePreviewTokens(preview, language)
   const metrics = useCodeMetrics()
   // Layout effect: a font change repaints with the new extent, not a frame of the old one.
   useLayoutEffect(() => {
@@ -532,7 +532,7 @@ function dragged(event: ReactMouseEvent) {
 }
 
 // Shiki colours for the static rows, in the same cache the editor reads, so it is coloured on its first frame.
-function usePreviewTokens(preview: Preview | null, language: string | null, layout: 'unified' | 'split') {
+function usePreviewTokens(preview: Preview | null, language: string | null) {
   const [tokens, setTokens] = useState<{ preview: Preview; old: Segment[][] | null; new: Segment[][] | null } | null>(null)
   // A new identity on a syntax theme change, so the rows re-colour; the last colours stay until the new ones land.
   const recoloured = useLanguageOverrides()
@@ -540,18 +540,18 @@ function usePreviewTokens(preview: Preview | null, language: string | null, layo
   const cached = useMemo(() => {
     if (!preview || !language) return null
     const next = cachedTokens(preview.lines.join('\n'), language)
-    const old = layout === 'split' ? cachedTokens(preview.old.join('\n'), language) : null
-    return next && (layout !== 'split' || old) ? { preview, new: next, old: old ?? null } : null
-  }, [preview, language, layout, recoloured])
+    const old = cachedTokens(preview.old.join('\n'), language)
+    return next && old ? { preview, new: next, old } : null
+  }, [preview, language, recoloured])
   useEffect(() => {
     if (!preview || !language || cached) return
     let stale = false
     const gone = () => stale
-    void Promise.all([tokenize(preview.lines.join('\n'), language, gone), layout === 'split' ? tokenize(preview.old.join('\n'), language, gone) : null]).then(([next, old]) => {
+    void Promise.all([tokenize(preview.lines.join('\n'), language, gone), tokenize(preview.old.join('\n'), language, gone)]).then(([next, old]) => {
       if (!stale) setTokens({ preview, new: next, old })
     })
     return () => { stale = true }
-  }, [preview, language, layout, cached])
+  }, [preview, language, cached])
   return cached ?? (tokens?.preview === preview ? tokens : null)
 }
 
@@ -674,9 +674,9 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
   }, [model, opened, onOpen])
 
   const numberStyle = { '--digits-a': String(model.old.length).length, '--digits-b': String(model.lines.length).length } as CSSProperties
-  const code = (side: 'old' | 'new', line: number, marks?: Marks, coloured = true) => {
+  const code = (side: 'old' | 'new', line: number, marks?: Marks) => {
     const text = (side === 'old' ? model.old : model.lines)[line - 1] ?? ''
-    const segments = coloured ? (side === 'old' ? tokens?.old : tokens?.new)?.[line - 1] : undefined
+    const segments = (side === 'old' ? tokens?.old : tokens?.new)?.[line - 1]
     return <Code text={text} segments={segments} changed={marks} changedClass="ed-changed" />
   }
   const fold = (row: Extract<Row, { kind: 'fold' }>, side: 'a' | 'b') => (
@@ -699,7 +699,7 @@ function EditorPreview({ model, tokens, layout, opened, onOpen, onActivate, file
     if (row.kind === 'hunk') return <div key={index} className="ed-hunk-actions">{hunkActions?.(hunks[row.hunk])}</div>
     if (layout === 'unified') {
       if (row.kind === 'fold') return <Fragment key={index}>{fold(row, 'b')}</Fragment>
-      if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks, false), false, row.whole)}</Fragment>
+      if (row.kind === 'del') return <Fragment key={index}>{line('a', 'del', row.a, code('old', row.a, row.marks), false, row.whole)}</Fragment>
       if (row.kind === 'add') return <Fragment key={index}>{line('b', 'add', row.b, code('new', row.b, row.marks), true, row.whole)}</Fragment>
       if (row.kind === 'same') {
         return (

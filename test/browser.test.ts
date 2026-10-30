@@ -106,7 +106,7 @@ test.skipIf(!playwright)('file and hunk destruction reaches Git only on the seco
   const tracked = path.join(repo, 'tracked.txt')
   const untracked = path.join(repo, 'scratch.txt')
   const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
-  const changed = base.replace('line 2\n', 'line 2 changed\n').replace('line 28\n', 'line 28 changed\n')
+  const changed = base.replace('line 2\n', 'line 2 changed\n').replace('line 3\n', 'line  3\n').replace('line 28\n', 'line 28 changed\n')
   const writes: string[] = []
   const dialogs: string[] = []
   const errors: string[] = []
@@ -123,7 +123,7 @@ test.skipIf(!playwright)('file and hunk destruction reaches Git only on the seco
     writeFileSync(tracked, changed)
     writeFileSync(untracked, 'disposable scratch\n')
     await page.exposeFunction('fileTestStatus', () => readStatus(repo))
-    await page.exposeFunction('fileTestWorking', async (staged: boolean, context: number, file?: string) => ({ files: await workingDiff(repo, staged, context, file), moves: [] }))
+    await page.exposeFunction('fileTestWorking', async (staged: boolean, context: number, file?: string, hideWhitespace?: boolean) => ({ files: await workingDiff(repo, staged, context, file, hideWhitespace), moves: [] }))
     await page.exposeFunction('fileTestRead', (file: string) => readFileSync(path.join(repo, file), 'utf8'))
     await page.exposeFunction('fileTestWrite', async (action: string, file: string, request?: HunkRequest) => {
       expect(['tracked.txt', 'scratch.txt']).toContain(file)
@@ -140,7 +140,7 @@ test.skipIf(!playwright)('file and hunk destruction reaches Git only on the seco
       setContextLines(3)
       Object.assign(w.bettergit, {
         commitIdentity: async () => ({ name: 'Test', email: 'test@example.test', error: null }),
-        working: (_repo: string, staged: boolean, context: number, file?: string) => w.fileTestWorking(staged, context, file),
+        working: (_repo: string, staged: boolean, context: number, file?: string, hideWhitespace?: boolean) => w.fileTestWorking(staged, context, file, hideWhitespace),
         readFile: (_repo: string, file: string) => w.fileTestRead(file),
         discard: (_repo: string, files: string[]) => w.fileTestWrite('discard', files[0]),
         deleteUntracked: (_repo: string, file: string) => w.fileTestWrite('delete', file),
@@ -158,6 +158,35 @@ test.skipIf(!playwright)('file and hunk destruction reaches Git only on the seco
       }
       await w.fileTestRender()
     }, repo)
+    // Start with the screenshot's hidden-whitespace setting at the real ChangesView/Git seam.
+    for (const layout of ['unified', 'split']) {
+      await page.evaluate((layout: string) => {
+        const { setDiffLayout, setIgnoreWhitespace } = (window as any).under
+        setDiffLayout(layout); setIgnoreWhitespace(true)
+      }, layout)
+      const reveal = page.getByRole('button', { name: 'Show whitespace to change this hunk', exact: true }).first()
+      await reveal.waitFor()
+      expect(await page.getByRole('button', { name: 'Stage hunk at line 1 of tracked.txt', exact: true }).isDisabled()).toBe(true)
+      const before = writes.length
+      await reveal.click()
+      expect(writes.length).toBe(before)
+      await page.getByRole('button', { name: 'Stage hunk at line 1 of tracked.txt', exact: true }).click()
+      await page.getByRole('button', { name: 'Unstage hunk at line 1 of tracked.txt', exact: true }).waitFor()
+      expect(await git(repo, ['show', ':tracked.txt'])).toBe(base.replace('line 2\n', 'line 2 changed\n').replace('line 3\n', 'line  3\n'))
+      expect(readFileSync(tracked, 'utf8')).toBe(changed)
+      await page.evaluate(() => (window as any).under.setIgnoreWhitespace(true))
+      const staged = page.locator('[data-section="staged"]')
+      await staged.getByRole('button', { name: 'Show whitespace to change this hunk', exact: true }).waitFor()
+      expect(await staged.getByRole('button', { name: 'Unstage hunk at line 1 of tracked.txt', exact: true }).isDisabled()).toBe(true)
+      await staged.getByRole('button', { name: 'Show whitespace to change this hunk', exact: true }).click()
+      await page.getByRole('button', { name: 'Unstage hunk at line 1 of tracked.txt', exact: true }).click()
+      await page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'))
+      expect(await git(repo, ['show', ':tracked.txt'])).toBe(base)
+      expect(readFileSync(tracked, 'utf8')).toBe(changed)
+    }
+    expect(writes).toEqual(['stage', 'unstage', 'stage', 'unstage'])
+    writes.length = 0
+    await page.evaluate(() => (window as any).under.setDiffLayout('unified'))
     const fileButton = (name: string) => page.locator('.diff-file-actions').getByRole('button', { name, exact: true })
     const deleteButton = fileButton('Delete untracked file scratch.txt')
     await deleteButton.click()
@@ -416,6 +445,75 @@ test.skipIf(!playwright)('Changes context controls update previews and the same 
     await page.evaluate(() => (window as any).contextRoot.unmount())
   }
   await page.setViewportSize({ width: 800, height: 600 })
+})
+
+test.skipIf(!playwright)('unified deleted imports align and keep syntax and inline highlights in preview and editor', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, DiffView, setDiffLayout, setContextLines } = w.under
+    setDiffLayout('unified'); setContextLines(3)
+    const before = ["import React from 'react';", "import { Router, Redirect, useLocation } from 'host/router';", "import { Query } from 'query';"]
+    const after = before.map(line => line.replace('Redirect, ', ''))
+    const file = { oldPath: 'imports.ts', newPath: 'imports.ts', status: 'modified', binary: false, hunks: [{ header: '@@ -1,3 +1,3 @@', lines: [
+      { type: 'context', text: before[0], oldNo: 1, newNo: 1 },
+      { type: 'del', text: before[1], oldNo: 2, newNo: null },
+      { type: 'add', text: after[1], oldNo: null, newNo: 2 },
+      { type: 'context', text: before[2], oldNo: 3, newNo: 3 },
+    ] }] }
+    w.syntaxFile = file
+    w.syntaxRoot = createRoot(document.getElementById('root'))
+    flushSync(() => w.syntaxRoot.render(createElement(DiffView, { files: [file], moves: [], edit: {
+      repo: '/syntax-imports', load: async () => after.join('\n'), save: async () => true, onError: (error: unknown) => { throw error },
+    } })))
+  })
+  try {
+    await page.waitForSelector('.ed-preview .tok')
+    for (const live of [false, true]) {
+      if (live) {
+        await page.locator('.ed-line[data-new="2"] code').click()
+        await page.waitForSelector('.cm-line .tok')
+        await page.waitForSelector('.cm-deletedLine .tok')
+      }
+      const result = await page.evaluate((live: boolean) => {
+        const deleted = document.querySelector(live ? '.cm-deletedLine' : '.ed-line.del code')!
+        const added = document.querySelector(live ? '.cm-changedLine' : '.ed-line.add code')!
+        const context = document.querySelector(live ? '.cm-line' : '.ed-line code')!
+        const start = (line: Element) => {
+          const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT)
+          const text = walker.nextNode()!
+          const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, 1)
+          return range.getBoundingClientRect().left
+        }
+        const colour = (line: Element) => getComputedStyle(line.querySelector('.tok') ?? line).color
+        return { offset: start(deleted) - start(added), contextOffset: start(context) - start(added),
+          deletedColour: colour(deleted), addedColour: colour(added), contextColour: colour(context),
+          marked: deleted.querySelector(live ? '.cm-deletedText' : '.ed-changed')?.textContent,
+          full: deleted.classList.contains('cm-fullChange') }
+      }, live)
+      expect(Math.abs(result.offset)).toBeLessThan(1)
+      expect(Math.abs(result.contextOffset)).toBeLessThan(1)
+      expect(result.deletedColour).toBe(result.addedColour)
+      expect(result.contextColour).toBe(result.addedColour)
+      expect(result.marked).toContain('Redirect')
+      expect(result.full).toBe(false)
+    }
+    await page.evaluate(async () => {
+      const w = window as any
+      const start = w.syntaxFile.hunks[0].lines[1].text.indexOf('Redirect')
+      w.under.setFindQuery('Redirect')
+      await w.under.revealMatch({ container: { current: document.querySelector('.diff') }, files: [w.syntaxFile], openFile() {} },
+        { file: 0, hunk: 0, line: 1, start, end: start + 'Redirect'.length })
+      w.syntaxToken = document.querySelector('.cm-deletedLine .tok')
+      w.under.setSyntaxThemes(null, { name: 'find-recolour', label: 'Find recolour', dark: true, colors: {}, tokenColors: [] })
+    })
+    await page.waitForFunction(() => document.querySelector('.cm-deletedLine .tok') !== (window as any).syntaxToken)
+    expect(await page.evaluate(() => [...((CSS as any).highlights.get('find-current') ?? [])].map((range: Range) => range.toString()))).toEqual(['Redirect'])
+  } finally {
+    await page.evaluate(() => {
+      const w = window as any
+      w.under.clearHighlight(); w.under.setFindQuery(''); w.under.setSyntaxThemes(null, null); w.syntaxRoot.unmount()
+    })
+  }
 })
 
 test.skipIf(!playwright)('saved working hunks keep stage and discard actions in previews and live editors across context changes', async () => {
@@ -1382,10 +1480,10 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     await page.evaluate(() => { (window as any).sync.holdTree = false })
     await reset()
 
-    // Fetch All runs one repo at a time with the count and the repo in flight, after its menu has closed.
+    // Fetch All starts independent repos together after its menu has closed.
     await (await menu('Fetch All')).click()
     expect(await page.locator('.context-menu').count()).toBe(0)
-    await shows('Fetch All in projects: 0 of 3, fetching a')
+    await shows('Fetch All in projects: 0 of 3, fetching c')
     expect(await actions.getAttribute('aria-busy')).toBe('true')
     // A second batch is refused while one runs: the folder actions are disabled and the app menu's Fetch All starts nothing.
     for (const item of ['Refresh', 'Fetch All', 'Pull All']) expect(await (await menu(item)).isDisabled()).toBe(true)
@@ -1394,13 +1492,13 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     await page.evaluate(() => { (window as any).sync.holdTree = true })
     await page.evaluate(() => (window as any).sync.listeners['menu:action']('fetch-all'))
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)))
-    expect(await calls()).toEqual(['fetch /p/a'])
+    expect(await calls()).toEqual(['fetch /p/a', 'fetch /p/b', 'fetch /p/c'])
     await page.evaluate(() => { (window as any).sync.holdTree = false })
-    await settle(0)
-    await shows('Fetch All in projects: 1 of 3, fetching b')
-    await settle(1, 'no remote')
-    await shows('Fetch All in projects: 2 of 3, fetching c')
     await settle(2)
+    expect(await actions.getAttribute('aria-busy')).toBe('true')
+    await settle(1, 'no remote')
+    expect(await actions.getAttribute('aria-busy')).toBe('true')
+    await settle(0)
     await shows('Fetch All in projects done: 2 succeeded, 1 failed')
     await shows('b: no remote')
     expect(await actions.getAttribute('aria-busy')).toBeNull()
@@ -1423,7 +1521,8 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     // A confirmed Pull All fast-forwards each repo; one busy elsewhere is skipped and named, but is not a failure.
     await page.evaluate(() => { const w = window as any; w.sync.confirm = true; w.sync.listeners['repo:locks']({ seq: 1, holders: { '/p/c': 'push' } }) })
     await (await menu('Pull All')).click()
-    await shows('Pull All in projects: 0 of 3, pulling a')
+    await shows('Pull All in projects: 0 of 3, pulling c')
+    expect(await calls()).toEqual(['pull /p/a ff-only', 'pull /p/b ff-only'])
     await settle(0)
     await settle(1)
     await shows('Pull All in projects done: 2 succeeded, 1 skipped')
@@ -1444,7 +1543,7 @@ test.skipIf(!playwright)('folder batches show progress and a result, and failure
     expect(await calls()).toEqual(['getTree'])
     await settle(0)
     await page.evaluate(() => { (window as any).sync.holdTree = false })
-    await shows('Fetch All: 0 of 3, fetching a')
+    await shows('Fetch All: 0 of 3, fetching c')
     for (const index of [1, 2, 3]) await page.waitForFunction((index: number) => (window as any).sync.pending.length > index, index).then(() => settle(index))
     await shows('Fetch All done: 3 succeeded')
 
@@ -1720,6 +1819,25 @@ test.skipIf(!playwright)('repo rows fetch, pull and refresh their own repo, the 
     expect(await notifications()).toEqual([
       'Background fetch: b failed | The remote refused this SSH key. | Retry fetch | Go to repository | Mark as read',
       'Background fetch: a failed | The remote repository was not found, or this account cannot access it. | Retry fetch | Go to repository | Mark as read',
+    ])
+    // A delayed success clears only older failures from the same default fetch, never a newer failure or a tag fetch.
+    await page.evaluate(() => {
+      const w = window as any
+      w.under.markAllRead()
+      const now = Date.now
+      try {
+        Date.now = () => 100
+        w.under.notify({ action: 'Background fetch: a', reason: 'old offline', repo: '/p/a' })
+        w.under.notify({ action: 'Fetch All: a', reason: 'old offline', repo: '/p/a' })
+        w.under.notify({ action: 'Fetching in a', reason: 'would clobber existing tag', repo: '/p/a' })
+        w.under.notify({ action: 'Background fetch: b', reason: 'still offline', repo: '/p/b' })
+        Date.now = () => 300
+        w.under.notify({ action: 'Background fetch: a', reason: 'new offline', repo: '/p/a' })
+      } finally { Date.now = now }
+      w.rows.listeners['fetch:report']({ fetched: ['/p/a'], startedAt: 200, skipped: [], failed: [] })
+    })
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('bettergit.notifications')!).map((entry: any) => entry.reason))).toEqual([
+      'new offline', 'still offline', 'would clobber existing tag',
     ])
   } finally {
     await page.evaluate(() => { const w = window as any; w.rowsRoot.unmount(); Object.setPrototypeOf(w.bettergit, Object.prototype); w.under.markAllRead() })

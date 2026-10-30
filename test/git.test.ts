@@ -1776,6 +1776,19 @@ describe('writes that could overwrite untracked or ignored files', () => {
     expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(false)
   })
 
+  test('fetches from linked worktrees of one repo run one at a time, so they never collide on ref locks', async () => {
+    const { dir, local } = await fixture()
+    const linked = path.join(dir, 'linked')
+    await git(local, ['worktree', 'add', '-q', '-b', 'side', linked])
+    // A slow upload-pack that logs when each fetch talks to the remote. Overlapping fetches log start, start.
+    const log = path.join(dir, 'upload.log'), script = path.join(dir, 'slow-upload-pack')
+    writeFileSync(script, `#!/bin/sh\necho start >> '${log}'\nsleep 0.3\necho end >> '${log}'\nexec git-upload-pack "$@"\n`)
+    chmodSync(script, 0o755)
+    await git(local, ['config', 'remote.origin.uploadpack', script])
+    await Promise.all([fetchAll(linked), pull(local, 'ff-only')])
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['start', 'end', 'start', 'end'])
+  })
+
   test('force with lease refuses an upstream that moved since the fetch, and force replaces it', async () => {
     const { local, other } = await fixture()
     await commitFile(local, 'c.txt', 'c\n')

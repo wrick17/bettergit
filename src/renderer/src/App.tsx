@@ -24,7 +24,7 @@ import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { ActionError, blockedReason, busyKey, connectRepoLocks, failureReason, repoIdentity, runRepoWrite, useRepoBusy, workingLabel, type RepoLockSnapshot } from './repo-busy'
 import { runBatch, runRefresh } from './batch-status'
-import { notify, notifyFailure } from './notifications'
+import { notify, notifyFailure, resolveFetchFailures } from './notifications'
 import { NotificationHub } from './NotificationHub'
 import { UpdateStatus } from './UpdateStatus'
 import { setLanguageOverrides } from './prefs'
@@ -88,6 +88,11 @@ export function App() {
   const reportError = (failure: unknown, action = 'An action', repo?: string) => notifyFailure(action, failure, repo)
   const reportErrorRef = useRef(reportError)
   reportErrorRef.current = reportError
+  const fetchRepo = async (path: string) => {
+    const startedAt = Date.now()
+    await api.fetch(path)
+    resolveFetchFailures([path], startedAt)
+  }
   // A refused sidebar batch, or each repo that failed in one. Its per-repo detail stays in the sidebar status too.
   const reportBatch = (title: string, failures: { repo: string; reason: string }[] | null) => {
     if (failures === null) reportError(new Error('Wait for the running Refresh, Fetch All or Pull All to finish.'), `Starting ${title}`)
@@ -143,6 +148,7 @@ export function App() {
     // Each failed repo is its own notification. The same failure next time raises its count without announcing again.
     const offFetch = api.onEvent('fetch:report', (payload) => {
       setRevision((value) => value + 1)
+      resolveFetchFailures((payload as FetchReport).fetched ?? [], (payload as FetchReport).startedAt)
       for (const { repo, reason } of (payload as FetchReport).failed ?? []) {
         // '*' is a failure to list the repos at all, so it has no repo to go to.
         notify(repo === '*' ? { action: 'Background fetch', reason: failureReason(reason) }
@@ -208,7 +214,7 @@ export function App() {
         case 'toggle-sidebar': return toggleSidebar.current()
         case 'reveal-repo': return repo ? void api.reveal(repo).catch((failure: unknown) => reportErrorRef.current(failure, `Reveal ${repo.split('/').pop()} in Finder`, repo)) : undefined
         case 'fetch-all': return void runBatch(null, 'Fetch All', 'fetching', 'fetch', async () => flatten(await api.getTree()),
-          (path) => api.fetch(path), () => setRevision((value) => value + 1))
+          fetchRepo, () => setRevision((value) => value + 1))
           .then((failures) => reportBatchRef.current('Fetch All', failures), (failure: unknown) => reportErrorRef.current(failure, 'Fetch All'))
       }
     })
@@ -345,7 +351,7 @@ export function App() {
             const shown = flatten([folder]).filter((node) => !config.hidden.some((path) => node.path === path || node.path.startsWith(path + '/')))
             const reload = () => setRevision((value) => value + 1)
             const title = `${kind === 'fetch' ? 'Fetch All' : 'Pull All'} in ${folder.name}`
-            if (kind === 'fetch') return reportBatch(title, await runBatch(folder.path, title, 'fetching', 'fetch', shown, (path) => api.fetch(path), reload))
+            if (kind === 'fetch') return reportBatch(title, await runBatch(folder.path, title, 'fetching', 'fetch', shown, fetchRepo, reload))
             // Fast-forward only: a bulk pull never makes merge commits or leaves conflicts. A diverged repo is refused and named.
             const message = `Pull ${shown.length} ${shown.length === 1 ? 'repository' : 'repositories'} in ${folder.name}?\n\nEach fast-forwards its current branch to its upstream. A repo that has diverged, has no upstream, or would overwrite local files is left unchanged and reported.`
             if (!shown.length || await confirmOverBlur(message)) reportBatch(title, await runBatch(folder.path, title, 'pulling', 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reload))

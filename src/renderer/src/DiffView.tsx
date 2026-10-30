@@ -998,9 +998,9 @@ function FileHeader({ file, stat, open, onToggle, stage, untracked = false, acti
 export const fileKey = (action: HunkAction | 'delete', path: string) => `${action}:${path}`
 export const hunkKey = (action: HunkAction, path: string, header: string) => `hunk-${action}:${path}\n${header}`
 
-function StageButton({ busy, running, ...button }: { busy: string | null; running: string; icon: IconName; text: string; label: string; className?: string; confirm?: string; onClick: () => void }) {
+function StageButton({ busy, running, blocked, ...button }: { busy: string | null; running: string; blocked?: string; icon: IconName; text: string; label: string; className?: string; confirm?: string; onClick: () => void }) {
   return <IconButton {...button} label={busy === running ? workingLabel(running) : button.label} busy={busy === running}
-    blocked={busy !== null && busy !== running ? blockedReason(busy) : undefined} />
+    blocked={busy !== null && busy !== running ? blockedReason(busy) : blocked} />
 }
 
 // Discard and Stage in an unstaged file's header, Unstage in a staged one. An untracked file has nothing to restore, so it
@@ -1026,13 +1026,16 @@ function FileStageActions({ path, stage, untracked, unsaved }: { path: string; s
 // The same actions for one hunk, in its header row, or in the editable view's row above the hunk's first change.
 function HunkActions({ path, hunk, stage }: { path: string; hunk: DiffHunk; stage: NonNullable<Props['stage']> }) {
   const busy = stage.busy ?? null
+  const ignoreWhitespace = useIgnoreWhitespace()
   const line = edgeLines(hunk.lines).first
   const button = (action: HunkAction, icon: IconName, text: string, className?: string) => (
     <StageButton key={`${action}:${hunk.id ?? hunk.header}`} busy={busy} running={hunkKey(action, path, hunk.header)} icon={icon} text={text} label={`${text} at line ${line} of ${path}`}
+      blocked={ignoreWhitespace ? 'Show whitespace before changing a hunk so Git applies exactly the changes shown.' : undefined}
       className={className} confirm={action === 'discard' ? 'Discard hunk' : undefined} onClick={() => stage.onHunk?.(path, hunk, action)} />
   )
   return (
     <span className="hunk-actions">
+      {ignoreWhitespace && <IconButton icon="eye" text="Show whitespace" label="Show whitespace to change this hunk" onClick={() => setIgnoreWhitespace(false)} />}
       {stage.staged ? button('unstage', 'minus', 'Unstage hunk') : <>{button('discard', 'trash', 'Discard hunk', 'discard')}{button('stage', 'plus', 'Stage hunk')}</>}
     </span>
   )

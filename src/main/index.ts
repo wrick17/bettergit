@@ -518,6 +518,8 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Dev runs the stock Electron bundle, so the Dock and Stage Manager show Electron's icon. A packaged app uses its own .icns.
+  if (!app.isPackaged) app.dock?.setIcon(path.join(__dirname, '../../build/icon.png'))
   try {
     openCommandLog(path.join(app.getPath('logs'), 'git-commands.log'))
   } catch (error) {

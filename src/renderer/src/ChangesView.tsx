@@ -450,7 +450,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       reload: onChanged,
     })
   }
-  const onHunk = ignoreWhitespace || contextPending ? undefined : changeHunk
+  const onHunk = contextPending ? undefined : changeHunk
 
   const toggle = (change: FileChange, stage: boolean) => togglePath(change.path, stage)
 

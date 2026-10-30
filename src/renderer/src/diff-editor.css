@@ -12,7 +12,7 @@
 /* Added and changed lines on the current side, removed lines and the old side. */
 .diff-editor .cm-editor .cm-changedLine, .diff-editor .cm-merge-b .cm-changedLine { background: var(--add-bg); }
 .diff-editor .cm-editor .cm-deletedChunk, .diff-editor .cm-merge-a .cm-changedLine { background: var(--del-bg); }
-.diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 70px; }
+.diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 8px; }
 .diff-editor .cm-editor .cm-changedText, .diff-editor .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .diff-editor .cm-editor .cm-deletedChunk .cm-deletedText, .diff-editor .cm-merge-a .cm-changedText { background: color-mix(in srgb, var(--del) 30%, transparent); }
 /* Whole changed lines keep the line tint; changed-text marks add nothing on top. */
@@ -50,8 +50,6 @@
 .ed-line.add > .ed-bar { background: var(--add); }
 .ed-line:is(.del, .old) > code { background: var(--del-bg); }
 .ed-line:is(.del, .old) > .ed-bar { background: var(--del); }
-/* The unified editor's removed block (.cm-deletedChunk) indents its text. */
-.ed-line.del > code { padding-left: 70px; }
 .ed-line.add .ed-changed { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .ed-line:is(.del, .old) .ed-changed { background: color-mix(in srgb, var(--del) 30%, transparent); }
 .ed-line.full .ed-changed { background: none; }

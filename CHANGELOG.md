@@ -2,6 +2,19 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.12] - 2026-10-30
+
+### Improved
+
+- Fetch repositories in a folder concurrently while serializing fetches for linked worktrees that share refs.
+- Show Stage and Unstage controls for diff hunks, with an action to show whitespace.
+- Use the BetterGit app icon in development builds.
+
+### Fixed
+
+- Clear stale default fetch errors and identify the remote that failed.
+- Align and color deleted lines correctly, and update Find highlighting when diff colors change.
+
 ## [0.1.11] - 2026-10-30
 
 ### Changed

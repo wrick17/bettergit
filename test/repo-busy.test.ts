@@ -6,6 +6,7 @@ import {
   applyRepoLockSnapshot, blockedReason, busyKey, connectRepoLocks, describeFailure, REPO_WORKING_LABELS, runRepoAction, runRepoWrite,
   subscribeRepoBusy, workingLabel, type RepoLockSnapshot,
 } from '../src/renderer/src/repo-busy'
+import { runBatch } from '../src/renderer/src/batch-status'
 
 // Snapshots from main carry a rising sequence number. Each test takes fresh numbers, since the store keeps the newest.
 let sequence = 0
@@ -204,5 +205,22 @@ test('Git failures are summarised by what their text shows', () => {
   expect(summary('kex_exchange_identification: read: Connection reset by peer\nfatal: Could not read from remote repository.')).toBe('Could not reach the remote.')
   expect(summary('fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights')).toBe('Could not read from the remote repository.')
   expect(summary('fatal: Not possible to fast-forward, aborting.\nhint: Diverging branches')).toBe('Not possible to fast-forward, aborting.')
+  expect(summary("fatal: repository 'https://github.com/a/b.git/' not found\nerror: could not fetch upstream")).toBe('The remote repository was not found, or this account cannot access it. Remote: upstream.')
   expect(describeFailure('main has no upstream branch to pull from.')).toEqual({ summary: 'main has no upstream branch to pull from.' })
+})
+
+test('a batch runs up to four repos at once and keeps each failure with its repo', async () => {
+  const repos = Array.from({ length: 6 }, (_, index) => ({ kind: 'repo' as const, path: `/batch/r${index}`, name: `r${index}` }))
+  let inFlight = 0, most = 0
+  const ran: string[] = []
+  const failures = await runBatch(null, 'Fetch All', 'fetching', 'fetch', repos, async (path) => {
+    most = Math.max(most, ++inFlight)
+    await new Promise((done) => setTimeout(done, 5))
+    inFlight--
+    ran.push(path)
+    if (path === '/batch/r2') throw new Error('fatal: Could not read from remote repository.')
+  }, noop)
+  expect(most).toBe(4)
+  expect(ran.sort()).toEqual(repos.map((repo) => repo.path))
+  expect(failures).toEqual([{ repo: '/batch/r2', reason: 'fatal: Could not read from remote repository.' }])
 })
