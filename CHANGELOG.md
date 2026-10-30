@@ -2,6 +2,18 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.11] - 2026-10-30
+
+### Changed
+
+- Confirm destructive file actions inline with two clicks. The first click turns the button red and shows "Click again to confirm"; the second runs it. This covers file and hunk discard, untracked-file deletion, draft discard, conflict reset, and Use Ours or Use Theirs.
+- Staging a file with unsaved editor changes also asks for a second click. Ordinary staging remains one click.
+- Moving away, losing focus, or pressing Escape cancels an armed action.
+
+### Fixed
+
+- Keep unchanged lines plain when small edits are spread across a large file. Both the diff preview and inline editor now preserve matching whole lines before comparing changed text, preventing a large false replacement block.
+
 ## [0.1.10] - 2026-10-29
 
 ### New

@@ -135,6 +135,27 @@ test('file and folder targets must match their kind', async () => {
   expect(await resolveRepoTarget(repo)).toBe(await fs.realpath(repo))
 })
 
+test('separated small additions keep unchanged lines out of the editor diff', async () => {
+  const { repo } = await sandbox()
+  await git(repo, ['init', '-q'])
+  const before = Array.from({ length: 550 }, (_, i) => `const Page${i} = lazyRemote("feature/${i}", () => import("feature/${i}"));`).join('\n')
+  await fs.writeFile(path.join(repo, 'app.jsx'), before)
+  await git(repo, ['add', 'app.jsx'])
+  const lines = before.split('\n')
+  lines[2] += ' // change'
+  for (const [at, count] of [[520, 1], [340, 9], [150, 10], [100, 6]]) {
+    lines.splice(at, 0, ...Array.from({ length: count }, (_, i) => `// Register added development route ${at}-${i} with its imported component`))
+  }
+  const after = lines.join('\n')
+  await fs.writeFile(path.join(repo, 'app.jsx'), after)
+  const [file] = await workingDiff(repo, false)
+  expect(originalText(after, file.hunks)).toBe(before)
+  Object.assign(globalThis, { localStorage: globalThis.localStorage ?? { getItem: () => null, setItem: () => undefined } })
+  const { previewOf } = await import('../src/renderer/src/cm-editor')
+  const chunks = previewOf(after, before).stretches.filter((stretch) => stretch.kind === 'chunk')
+  expect(chunks.map((chunk) => [chunk.countA, chunk.countB])).toEqual([[1, 1], [0, 6], [0, 10], [0, 9], [0, 1]])
+})
+
 test('an unknown editor in config falls back to VS Code', () => {
   expect(normalizeConfig({ settings: { editor: 'vscode' } }).settings.editor).toBe('vscode')
   expect(normalizeConfig({ settings: { editor: 'nano' } }).settings.editor).toBe('vscode')

@@ -928,6 +928,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   border-radius: var(--radius-sm);
   animation: fade 120ms var(--ease) 350ms both;
 }
+.tooltip.confirm-tooltip { background: #ffdc73; color: #171717; animation: none; }
+.confirm-tooltip::before {
+  content: ''; position: absolute; left: calc(50% - 5px); top: -5px; width: 10px; height: 10px;
+  background: inherit; transform: rotate(45deg);
+}
+
 /* Destructive icon actions (BarItem danger). */
 .icon-button.danger, .icon-button.danger:hover:not(:disabled) { color: var(--del); }
 /* Discard keeps the red tint on hover too, as the danger rule does. */
@@ -935,6 +941,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* A selected row (not in an inactive window) shows the discard control on-accent, so it stays readable on the fill. */
 :root:not([data-window='inactive']) .tree-row.selected .icon-button.discard,
 :root:not([data-window='inactive']) .group li.active .icon-button.discard { color: var(--on-accent); }
+.icon-button.confirm-armed, .icon-button.confirm-armed:hover:not(:disabled) {
+  width: auto; background: #c83245; color: #fff; opacity: 1; pointer-events: auto;
+}
 /* The warning above a dialog field (PromptDialog note). */
 .dialog-note { color: var(--text-2); font-size: calc(13px + var(--ui-delta)); line-height: 1.5; }
 .dialog-note p { margin: 0 0 6px; }

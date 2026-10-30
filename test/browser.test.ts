@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { git } from '../src/main/git/exec'
+import { readStatus } from '../src/main/git/status'
+import { workingDiff } from '../src/main/git/diff'
+import { discardPaths, deleteUntracked } from '../src/main/git/ops'
+import { applyHunk, type HunkAction, type HunkRequest } from '../src/main/git/hunks'
+import { cleanup } from './helpers'
+import { loadConflict, resetConflict, takeConflictSide } from '../src/main/git/conflict'
 
 // Checks that need a real browser: where a click lands in wrapped editor-look rows, find highlights reaching rows that
 // mount after the query, and keys typed before the editor mounts. They run in Chromium from the Playwright install the
@@ -36,6 +45,240 @@ beforeAll(async () => {
 }, 30000)
 
 afterAll(async () => { await browser?.close() })
+
+test.skipIf(!playwright)('two-click file controls cancel safely and never arm ordinary or blocked actions', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, IconButton } = w.under
+    w.confirmCalls = 0
+    w.confirmRoot = createRoot(document.getElementById('root'))
+    w.renderConfirm = (props = {}) => flushSync(() => w.confirmRoot.render(createElement(IconButton, {
+      icon: 'trash', label: 'Delete test.txt', confirm: 'Delete', onClick: () => w.confirmCalls++, ...props,
+    })))
+    w.renderConfirm()
+  })
+  const button = page.locator('#root > button')
+  const calls = () => page.evaluate(() => (window as any).confirmCalls)
+  try {
+    await button.click()
+    expect(await calls()).toBe(0)
+    expect(await button.innerText()).toBe('Delete!')
+    expect(await page.locator('.confirm-tooltip').innerText()).toBe('Click again to confirm')
+    expect(await page.locator('.confirm-tooltip').evaluate((tip: HTMLElement) => getComputedStyle(tip).animationName)).toBe('none')
+    await page.keyboard.press('Escape')
+    expect(await button.getAttribute('class')).not.toContain('confirm-armed')
+    await button.click()
+    await page.mouse.move(700, 500)
+    expect(await button.getAttribute('class')).not.toContain('confirm-armed')
+    await button.focus()
+    await page.keyboard.press('Enter')
+    await button.dispatchEvent('keydown', { key: 'Enter', repeat: true })
+    expect(await calls()).toBe(0)
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+    expect(await button.getAttribute('class')).not.toContain('confirm-armed')
+    await button.click()
+    await button.evaluate((node: HTMLButtonElement) => node.blur())
+    expect(await button.getAttribute('class')).not.toContain('confirm-armed')
+    await button.click()
+    await page.evaluate(() => (window as any).renderConfirm({ label: 'Delete other.txt' }))
+    await button.click()
+    expect(await calls()).toBe(0)
+    await button.click()
+    expect(await calls()).toBe(1)
+    await page.evaluate(() => (window as any).renderConfirm({ busy: true }))
+    await button.dispatchEvent('click')
+    expect(await calls()).toBe(1)
+    await page.evaluate(() => (window as any).renderConfirm({ blocked: 'Another action is running.' }))
+    await button.dispatchEvent('click')
+    expect(await calls()).toBe(1)
+    await page.evaluate(() => (window as any).renderConfirm({ confirm: undefined, label: 'Stage test.txt' }))
+    await button.click()
+    expect(await calls()).toBe(2)
+  } finally {
+    await page.evaluate(() => (window as any).confirmRoot.unmount())
+  }
+})
+
+test.skipIf(!playwright)('file and hunk destruction reaches Git only on the second click in a disposable repo', async () => {
+  page.setDefaultTimeout(10000)
+  const previousView = await page.evaluate(() => localStorage.getItem('bettergit.changesView'))
+  const repo = mkdtempSync(path.join(tmpdir(), 'bettergit-two-click-'))
+  const tracked = path.join(repo, 'tracked.txt')
+  const untracked = path.join(repo, 'scratch.txt')
+  const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  const changed = base.replace('line 2\n', 'line 2 changed\n').replace('line 28\n', 'line 28 changed\n')
+  const writes: string[] = []
+  const dialogs: string[] = []
+  const errors: string[] = []
+  const dialog = async (entry: any) => { dialogs.push(entry.message()); await entry.dismiss() }
+  page.on('dialog', dialog)
+  try {
+    await git(repo, ['init', '-q'])
+    await git(repo, ['config', 'user.name', 'Test'])
+    await git(repo, ['config', 'user.email', 'test@example.test'])
+    await git(repo, ['config', 'core.hooksPath', path.join(repo, '.git/hooks')])
+    writeFileSync(tracked, base)
+    await git(repo, ['add', '.'])
+    await git(repo, ['commit', '-qm', 'Test baseline'])
+    writeFileSync(tracked, changed)
+    writeFileSync(untracked, 'disposable scratch\n')
+    await page.exposeFunction('fileTestStatus', () => readStatus(repo))
+    await page.exposeFunction('fileTestWorking', async (staged: boolean, context: number, file?: string) => ({ files: await workingDiff(repo, staged, context, file), moves: [] }))
+    await page.exposeFunction('fileTestRead', (file: string) => readFileSync(path.join(repo, file), 'utf8'))
+    await page.exposeFunction('fileTestWrite', async (action: string, file: string, request?: HunkRequest) => {
+      expect(['tracked.txt', 'scratch.txt']).toContain(file)
+      writes.push(action)
+      if (request) await applyHunk(repo, action as HunkAction, request)
+      else if (action === 'delete') await deleteUntracked(repo, file)
+      else if (action === 'discard') await discardPaths(repo, [file])
+    })
+    await page.exposeFunction('fileTestError', (error: string) => { errors.push(error) })
+    await page.setViewportSize({ width: 1400, height: 900 })
+    await page.evaluate(async (repo: string) => {
+      const w = window as any
+      const { createElement, createRoot, flushSync, ChangesView, setContextLines } = w.under
+      setContextLines(3)
+      Object.assign(w.bettergit, {
+        commitIdentity: async () => ({ name: 'Test', email: 'test@example.test', error: null }),
+        working: (_repo: string, staged: boolean, context: number, file?: string) => w.fileTestWorking(staged, context, file),
+        readFile: (_repo: string, file: string) => w.fileTestRead(file),
+        discard: (_repo: string, files: string[]) => w.fileTestWrite('discard', files[0]),
+        deleteUntracked: (_repo: string, file: string) => w.fileTestWrite('delete', file),
+        applyHunk: (_repo: string, action: string, request: any) => w.fileTestWrite(action, request.path, request),
+      })
+      document.getElementById('root')!.style.cssText = 'display:flex;height:850px;width:1400px'
+      w.fileTestRoot = createRoot(document.getElementById('root'))
+      let revision = 0
+      w.fileTestRender = async () => {
+        const status = await w.fileTestStatus()
+        flushSync(() => w.fileTestRoot.render(createElement(ChangesView, {
+          repo, status, revision: revision++, listOpen: true, detailOpen: true,
+          onChanged: w.fileTestRender, onError: (error: unknown) => w.fileTestError(String(error)),
+        })))
+      }
+      await w.fileTestRender()
+    }, repo)
+    const fileButton = (name: string) => page.locator('.diff-file-actions').getByRole('button', { name, exact: true })
+    const deleteButton = fileButton('Delete untracked file scratch.txt')
+    await deleteButton.click()
+    expect(existsSync(untracked)).toBe(true)
+    expect(writes).toEqual([])
+    await fileButton('Delete untracked file scratch.txt. Click again to confirm').click()
+    await page.waitForFunction(() => !document.querySelector('.diff-file[data-path="scratch.txt"]'))
+    expect(existsSync(untracked)).toBe(false)
+    expect(writes).toEqual(['delete'])
+
+    const hunk = page.getByRole('button', { name: 'Discard hunk at line 1 of tracked.txt', exact: true }).first()
+    await hunk.click()
+    expect(readFileSync(tracked, 'utf8')).toBe(changed)
+    await page.getByRole('button', { name: 'Discard hunk at line 1 of tracked.txt. Click again to confirm', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('.confirm-armed'))
+    await page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'))
+    expect(readFileSync(tracked, 'utf8')).toBe(base.replace('line 28\n', 'line 28 changed\n'))
+
+    await fileButton('Discard changes to tracked.txt').click()
+    expect(readFileSync(tracked, 'utf8')).not.toBe(base)
+    await fileButton('Discard changes to tracked.txt. Click again to confirm').click()
+    await page.waitForFunction(() => !document.querySelector('.diff-file[data-path="tracked.txt"]'))
+    expect(readFileSync(tracked, 'utf8')).toBe(base)
+
+    // List and tree rows share the same file handler, and must also arm before it runs.
+    for (const mode of ['list', 'tree']) {
+      writeFileSync(tracked, changed)
+      await page.evaluate(() => (window as any).fileTestRender())
+      await page.getByRole('button', { name: mode === 'list' ? /^List view/ : /^Tree view/ }).click()
+      const row = page.locator('.file-list').getByRole('button', { name: 'Discard changes to tracked.txt', exact: true })
+      await row.locator('..').hover()
+      await row.click()
+      expect(readFileSync(tracked, 'utf8')).toBe(changed)
+      await page.locator('.file-list').getByRole('button', { name: 'Discard changes to tracked.txt. Click again to confirm', exact: true }).click()
+      await page.waitForFunction(() => !document.querySelector('.diff-file[data-path="tracked.txt"]'))
+      expect(readFileSync(tracked, 'utf8')).toBe(base)
+    }
+    writeFileSync(tracked, changed)
+    await page.evaluate(() => (window as any).fileTestRender())
+    await page.locator('.ed-line[data-new="2"] code').click()
+    await page.waitForSelector('.cm-content')
+    await page.keyboard.type(' unsaved')
+    const draft = page.getByRole('button', { name: 'Discard edits to tracked.txt', exact: true })
+    await draft.click()
+    expect(await page.locator('.cm-content').innerText()).toContain('unsaved')
+    await page.getByRole('button', { name: 'Discard edits to tracked.txt. Click again to confirm', exact: true }).click()
+    expect(await page.locator('.cm-content').innerText()).not.toContain('unsaved')
+    expect(readFileSync(tracked, 'utf8')).toBe(changed)
+    await page.locator('.cm-content').click()
+    await page.keyboard.type(' unsaved')
+    await fileButton('Stage tracked.txt. Discards unsaved edits').click()
+    expect(await page.locator('.cm-content').innerText()).toContain('unsaved')
+    await page.keyboard.press('Escape')
+    await fileButton('Discard changes to tracked.txt').click()
+    expect(await page.locator('.cm-content').innerText()).toContain('unsaved')
+    await fileButton('Discard changes to tracked.txt. Click again to confirm').click()
+    await page.waitForFunction(() => !document.querySelector('.diff-file[data-path="tracked.txt"]'))
+    expect(readFileSync(tracked, 'utf8')).toBe(base)
+    expect(writes).toEqual(['delete', 'discard', 'discard', 'discard', 'discard', 'discard'])
+
+    // A real merge conflict exercises whole-file reset and both side replacements.
+    await git(repo, ['checkout', '-qb', 'incoming'])
+    writeFileSync(tracked, 'theirs\n')
+    await git(repo, ['commit', '-qam', 'Incoming test edit'])
+    await git(repo, ['checkout', '-q', '-'])
+    writeFileSync(tracked, 'ours\n')
+    await git(repo, ['commit', '-qam', 'Current test edit'])
+    await expect(git(repo, ['merge', 'incoming'])).rejects.toThrow()
+    const conflictWrites: string[] = []
+    await page.exposeFunction('fileTestConflict', () => loadConflict(repo, 'tracked.txt'))
+    await page.exposeFunction('fileTestReset', async (request: Parameters<typeof resetConflict>[2]) => {
+      conflictWrites.push('reset')
+      return resetConflict(repo, 'tracked.txt', request)
+    })
+    await page.exposeFunction('fileTestTake', async (request: Parameters<typeof takeConflictSide>[2]) => {
+      conflictWrites.push(request.side)
+      return takeConflictSide(repo, 'tracked.txt', request)
+    })
+    await page.evaluate(() => {
+      const w = window as any
+      Object.assign(w.bettergit, {
+        conflictLoad: () => w.fileTestConflict(),
+        conflictReset: (_repo: string, _file: string, request: unknown) => w.fileTestReset(request),
+        conflictTake: (_repo: string, _file: string, request: unknown) => w.fileTestTake(request),
+      })
+      return w.fileTestRender()
+    })
+    for (const [label, expected] of [
+      ['Resolve using ours, the current side, for tracked.txt', 'ours\n'],
+      ['Reset resolution', null],
+      ['Resolve using theirs, the incoming side, for tracked.txt', 'theirs\n'],
+    ] as const) {
+      const before = readFileSync(tracked, 'utf8')
+      await page.getByRole('button', { name: label, exact: true }).click()
+      expect(readFileSync(tracked, 'utf8')).toBe(before)
+      await page.getByRole('button', { name: `${label}. Click again to confirm`, exact: true }).click()
+      await page.waitForFunction(async (expected: string | null) => {
+        const text = await (window as any).fileTestRead('tracked.txt')
+        return expected === null ? text.includes('<<<<<<<') : text === expected
+      }, expected)
+      await page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'))
+      await page.waitForFunction((markers: boolean) => !!document.querySelector('.conflict-count')?.textContent?.includes('of') === markers, expected === null)
+      if (expected) expect(readFileSync(tracked, 'utf8')).toBe(expected)
+      else expect(readFileSync(tracked, 'utf8')).toContain('<<<<<<<')
+    }
+    expect(conflictWrites).toEqual(['ours', 'reset', 'theirs'])
+    expect((await readStatus(repo)).changes[0].conflicted).toBe(true)
+    expect(dialogs).toEqual([])
+    expect(errors).toEqual([])
+  } finally {
+    page.off('dialog', dialog)
+    await page.evaluate(() => { (window as any).fileTestRoot?.unmount(); document.getElementById('root')!.style.cssText = '' })
+    await page.setViewportSize({ width: 800, height: 600 })
+    cleanup(repo)
+    await page.evaluate((value: string | null) => {
+      if (value === null) localStorage.removeItem('bettergit.changesView')
+      else localStorage.setItem('bettergit.changesView', value)
+    }, previousView)
+    page.setDefaultTimeout(30000)
+  }
+}, 60000)
 
 for (const layout of ['unified', 'split'] as const) test.skipIf(!playwright)(`staging and unstaging a file keeps neighbouring diff rows and the visible scroll anchor (${layout})`, async () => {
   await page.setViewportSize({ width: 1400, height: 800 })
@@ -222,6 +465,8 @@ test.skipIf(!playwright)('saved working hunks keep stage and discard actions in 
     await page.locator('.diff-pane').evaluate((pane: HTMLElement) => { pane.scrollTop = 0 })
     await page.getByRole('button', { name: 'Stage hunk at line 30 of hunks.txt', exact: true }).click()
     await page.getByRole('button', { name: 'Discard hunk at line 90 of hunks.txt', exact: true }).click()
+    expect(await page.evaluate(() => (window as any).hunkWrites.length)).toBe(1)
+    await page.getByRole('button', { name: 'Discard hunk at line 90 of hunks.txt. Click again to confirm', exact: true }).click()
     expect(await page.evaluate(() => (window as any).hunkWrites.map(({ path, hunk, action }: any) => [path, hunk.header, hunk.id, action]))).toEqual([
       ['hunks.txt', '@@ -30 +30 @@', '30'.padStart(64, '0'), 'stage'], ['hunks.txt', '@@ -90 +90 @@', '90'.padStart(64, '0'), 'discard'],
     ])

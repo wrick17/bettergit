@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Archive, ArchiveRestore, ArrowDown, ArrowLeftRight, ArrowUp, ArrowUpFromLine, Blocks, Cherry, ChevronDown, ChevronRight, ChevronUp, ChevronsDownUp, ChevronsUpDown, Columns2,
@@ -96,7 +96,7 @@ export function Icon({ name, className }: { name: IconName; className?: string }
 }
 
 // The chip lives in the body, so a clipped toolbar or pane cannot cut it off.
-function Tooltip({ anchor, label }: { anchor: HTMLElement; label: string }) {
+function Tooltip({ anchor, label, warning = false }: { anchor: HTMLElement; label: string; warning?: boolean }) {
   const chipRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
 
@@ -110,7 +110,7 @@ function Tooltip({ anchor, label }: { anchor: HTMLElement; label: string }) {
   }, [anchor, label])
 
   return createPortal(
-    <div ref={chipRef} className="tooltip" aria-hidden="true" style={{ left: position?.left, top: position?.top }}>
+    <div ref={chipRef} className={`tooltip${warning ? ' confirm-tooltip' : ''}`} aria-hidden="true" style={{ left: position?.left, top: position?.top }}>
       {label}
     </div>,
     document.body,
@@ -124,7 +124,7 @@ export function toggleLabel(state: string, action: string) {
 
 // The tooltip of a control: shown on hover or keyboard focus. It re-renders with the control, so a click that changes
 // the label changes the tooltip at once.
-export function useTooltip(tip: string) {
+export function useTooltip(tip: string, warning = false) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null)
   return {
     handlers: {
@@ -133,7 +133,7 @@ export function useTooltip(tip: string) {
       onFocus: (event: FocusEvent<HTMLButtonElement>) => { if (event.currentTarget.matches(':focus-visible')) setAnchor(event.currentTarget) },
       onBlur: () => setAnchor(null),
     },
-    tooltip: anchor && <Tooltip anchor={anchor} label={tip} />,
+    tooltip: anchor && <Tooltip anchor={anchor} label={tip} warning={warning} />,
   }
 }
 
@@ -152,7 +152,7 @@ export function TextToggle({ text, label, active, onClick }: { text: string; lab
 // While `busy`, the glyph becomes a spinner and aria-busy is set. The label should then say what runs.
 // `blocked` gives the reason a control cannot run now. It stays focusable and hoverable, so the reason shows as a tooltip.
 // `text` shows a short visible name after the glyph, for actions that read better named, such as Stage in a diff header.
-export function IconButton({ icon, image, label, onClick, active, disabled, busy, blocked, className, tabIndex, text }: {
+export function IconButton({ icon, image, label, onClick, active, disabled, busy, blocked, className, tabIndex, text, confirm }: {
   icon: IconName
   // An image URL (an app icon) shown instead of the glyph once it has loaded.
   image?: string | null
@@ -165,26 +165,49 @@ export function IconButton({ icon, image, label, onClick, active, disabled, busy
   className?: string
   tabIndex?: number
   text?: string
+  // Destructive file actions arm on the first click and execute on the second.
+  confirm?: string
 }) {
   const inert = !!busy || !!blocked
-  const { handlers, tooltip } = useTooltip(blocked ? `${label}. ${blocked}` : label)
+  const [armedLabel, setArmedLabel] = useState<string | null>(null)
+  const armed = !!confirm && armedLabel === label && !inert && !disabled
+  const visibleText = armed ? `${confirm}!` : text
+  const { handlers, tooltip } = useTooltip(armed ? 'Click again to confirm' : blocked ? `${label}. ${blocked}` : label, armed)
+  useEffect(() => { setArmedLabel(null) }, [label, confirm, inert, disabled])
+  useEffect(() => {
+    if (!armed) return
+    const cancel = () => setArmedLabel(null)
+    window.addEventListener('blur', cancel)
+    return () => window.removeEventListener('blur', cancel)
+  }, [armed])
   return (
     <button
       type="button"
-      className={`icon-button${text ? ' with-text' : ''}${active ? ' on' : ''}${busy ? ' busy' : ''}${blocked ? ' blocked' : ''}${className ? ` ${className}` : ''}`}
-      aria-label={label}
+      className={`icon-button${visibleText ? ' with-text' : ''}${armed ? ' confirm-armed' : ''}${active ? ' on' : ''}${busy ? ' busy' : ''}${blocked ? ' blocked' : ''}${className ? ` ${className}` : ''}`}
+      aria-label={armed ? `${label}. Click again to confirm` : label}
       aria-pressed={active === undefined ? undefined : active}
       aria-busy={busy || undefined}
       aria-disabled={inert || undefined}
       disabled={disabled}
       tabIndex={tabIndex}
-      onClick={inert ? undefined : onClick}
       {...handlers}
+      onClick={() => {
+        if (inert || disabled) return
+        if (confirm && !armed) { setArmedLabel(label); return }
+        setArmedLabel(null)
+        onClick()
+      }}
+      onPointerLeave={() => { handlers.onPointerLeave(); setArmedLabel(null) }}
+      onBlur={() => { handlers.onBlur(); setArmedLabel(null) }}
+      onKeyDown={(event) => {
+        if (confirm && event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault()
+        if (armed && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setArmedLabel(null) }
+      }}
     >
       {image && !busy
         ? <img src={image} alt="" width={16} height={16} draggable={false} />
         : <Icon name={busy ? 'loader' : icon} className={busy ? 'action-spin' : undefined} />}
-      {text && <span className="icon-button-text">{text}</span>}
+      {visibleText && <span className="icon-button-text">{visibleText}</span>}
       {tooltip}
     </button>
   )

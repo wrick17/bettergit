@@ -160,7 +160,7 @@ if (process.env.CHECK_MODE === 'hunk-context') {
     assert.equal(writes.at(-1)[2].id, hunk.id)
     unmount()
   }
-  assert.equal(confirms, 10, 'discard hunks must retain their confirmation')
+  assert.equal(confirms, 0, 'the file controls confirm inline before invoking hunk writes')
 } else if (process.env.CHECK_MODE === 'rails') {
   await start(true)
   find(tree, (p) => p['aria-label'] === 'Commit message').onChange({ target: { value: 'unfinished draft' } })
@@ -255,34 +255,32 @@ if (process.env.CHECK_MODE === 'hunk-context') {
   load('c.ts', first); await flush()
   choose()
 
-  // The blurred underlay is up and drawn for two frames before the sheet opens, and a second request meanwhile asks nothing.
+  const { confirmOverBlur } = await import('./src/renderer/src/confirm')
+  // Non-file actions still use native confirmations. The blurred underlay is up and drawn for two frames before the sheet opens, and a second request meanwhile asks nothing.
   // Cancel asks once, calls nothing and takes the underlay down.
   answer = false
-  view().onReset(); await flush()
+  void confirmOverBlur('Test repository confirmation'); await flush()
   assert.deepEqual(body.map((el) => el.className), ['scrim confirm-scrim'])
   await drawFrame()
-  view().onReset(); await flush()
+  void confirmOverBlur('Test repository confirmation'); await flush()
   assert.equal(confirms.length, 0)
   await drawFrame()
   assert.deepEqual(under, [['scrim confirm-scrim']])
   assert.deepEqual(body, [])
   assert.equal(resets.length, 0)
   assert.equal(confirms.length, 1)
-  for (const words of ['c.ts', "Git's index", 'saved edits and unsaved choices', 'stays unmerged and unstaged', 'Other files are unchanged']) {
-    assert.ok(confirms[0].includes(words), 'confirmation says: ' + words)
-  }
+  assert.equal(confirms[0], 'Test repository confirmation')
   assert.deepEqual(view().choices, ['current'])
 
   // A confirmation that fails is a cancel, and its underlay still comes down.
   answer = new Error('no sheet')
-  view().onReset(); await answered()
+  void confirmOverBlur('Test repository confirmation'); await answered()
   assert.equal(resets.length, 0)
   assert.deepEqual(body, [])
 
   // The request is the confirmed fingerprint alone. A refusal keeps the model and its choices.
   answer = true
   view().onReset(); await answered()
-  assert.deepEqual(under.at(-1), ['scrim confirm-scrim'])
   assert.deepEqual(body, [])
   assert.deepEqual(resets[0].args, ['/repo', 'c.ts', { fingerprint: fingerprint('a') }])
   resets[0].reject(new Error('refused')); await flush()
@@ -338,8 +336,7 @@ if (process.env.CHECK_MODE === 'hunk-context') {
   assert.deepEqual(fileView('__proto__').choices, ['current'])
   unmount()
 
-  // Stage in a resolver goes through the ordinary stage write for that file alone. Taking a side asks first, then sends
-  // the confirmed fingerprint and the side, nothing else.
+  // The inline controls confirm before these callbacks send only the fingerprint and side.
   const staged = [], takes = []
   Object.assign(window.bettergit, {
     stage: (...args) => { staged.push(args); return Promise.resolve() },
@@ -352,13 +349,9 @@ if (process.env.CHECK_MODE === 'hunk-context') {
   load('c.ts', clean); load('d.ts', conflictDoc('d')); await flush()
   fileView('c.ts').onStage(); await flush()
   assert.deepEqual(staged, [['/repo', ['c.ts']]])
-  answer = false
-  fileView('d.ts').onTake('theirs'); await answered()
-  assert.equal(takes.length, 0)
-  assert.ok(confirms.at(-1).includes('d.ts') && confirms.at(-1).includes('theirs') && confirms.at(-1).includes('stays unmerged'))
-  answer = true
   fileView('d.ts').onTake('theirs'); await answered()
   assert.deepEqual(takes, [['/repo', 'd.ts', { fingerprint: fingerprint('d'), side: 'theirs' }]])
+  assert.equal(confirms.length, 0, 'confirmed file callbacks must not open a second native dialog')
   unmount()
 }
 
@@ -907,7 +900,7 @@ test('a scrolled diff keeps its place through an option reload, and a file picke
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
 test('Changes contains only unstaged files and follows selections across staging', () => check('membership'))
-test('conflict reset asks first, keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))
+test('confirmed conflict reset keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))
 
 test('commit box shows the effective author and opens identity editing', () => check('identity'))
 

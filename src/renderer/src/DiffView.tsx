@@ -550,7 +550,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   })
   return (
     <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
-      <FileHeader file={file} stat={stat} open={open} onToggle={toggle} stage={stage} untracked={untracked}
+      <FileHeader unsaved={unsaved} file={file} stat={stat} open={open} onToggle={toggle} stage={stage} untracked={untracked}
         actions={text && <DraftActions edit={text} path={path} />} />
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
@@ -959,13 +959,14 @@ function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHun
 
 // The sticky header for one file: collapse toggle, status, name with its folder, how many lines were added and
 // removed, then its actions.
-function FileHeader({ file, stat, open, onToggle, stage, untracked = false, actions }: {
+function FileHeader({ file, stat, open, onToggle, stage, untracked = false, actions, unsaved }: {
   file: DiffFile
   stat: { adds: number; dels: number }
   open: boolean
   onToggle: () => void
   stage?: Props['stage']
   untracked?: boolean
+  unsaved?: boolean
   actions?: ReactNode
 }) {
   const path = pathOf(file)
@@ -988,7 +989,7 @@ function FileHeader({ file, stat, open, onToggle, stage, untracked = false, acti
       </span>
       {actions}
       {editor && <OpenInEditorButton file={file} bridge={editor} />}
-      {stage && <FileStageActions path={path} stage={stage} untracked={untracked} />}
+      {stage && <FileStageActions unsaved={unsaved} path={path} stage={stage} untracked={untracked} />}
     </header>
   )
 }
@@ -997,14 +998,14 @@ function FileHeader({ file, stat, open, onToggle, stage, untracked = false, acti
 export const fileKey = (action: HunkAction | 'delete', path: string) => `${action}:${path}`
 export const hunkKey = (action: HunkAction, path: string, header: string) => `hunk-${action}:${path}\n${header}`
 
-function StageButton({ busy, running, ...button }: { busy: string | null; running: string; icon: IconName; text: string; label: string; className?: string; onClick: () => void }) {
+function StageButton({ busy, running, ...button }: { busy: string | null; running: string; icon: IconName; text: string; label: string; className?: string; confirm?: string; onClick: () => void }) {
   return <IconButton {...button} label={busy === running ? workingLabel(running) : button.label} busy={busy === running}
     blocked={busy !== null && busy !== running ? blockedReason(busy) : undefined} />
 }
 
 // Discard and Stage in an unstaged file's header, Unstage in a staged one. An untracked file has nothing to restore, so it
 // offers Delete instead. A tracked addition (git add -N) shows Discard, which restores it from the index like any tracked file.
-function FileStageActions({ path, stage, untracked }: { path: string; stage: NonNullable<Props['stage']>; untracked: boolean }) {
+function FileStageActions({ path, stage, untracked, unsaved }: { path: string; stage: NonNullable<Props['stage']>; untracked: boolean; unsaved?: boolean }) {
   const busy = stage.busy ?? null
   return (
     <span className="diff-file-actions">
@@ -1013,9 +1014,9 @@ function FileStageActions({ path, stage, untracked }: { path: string; stage: Non
         : (
           <>
             {untracked
-              ? stage.onDelete && <StageButton busy={busy} running={fileKey('delete', path)} icon="trash" text="Delete" label={`Delete untracked file ${path}`} className="discard" onClick={() => stage.onDelete!(path)} />
-              : stage.onDiscard && <StageButton busy={busy} running={fileKey('discard', path)} icon="trash" text="Discard" label={`Discard changes to ${path}`} className="discard" onClick={() => stage.onDiscard!(path)} />}
-            <StageButton busy={busy} running={fileKey('stage', path)} icon="plus" text="Stage" label={`Stage ${path}`} onClick={() => stage.onToggle(path, true)} />
+              ? stage.onDelete && <StageButton busy={busy} running={fileKey('delete', path)} icon="trash" text="Delete" confirm="Delete" label={`Delete untracked file ${path}`} className="discard" onClick={() => stage.onDelete!(path)} />
+              : stage.onDiscard && <StageButton busy={busy} running={fileKey('discard', path)} icon="trash" text="Discard" confirm="Discard" label={`Discard changes to ${path}`} className="discard" onClick={() => stage.onDiscard!(path)} />}
+            <StageButton busy={busy} running={fileKey('stage', path)} icon="plus" text="Stage" confirm={unsaved ? 'Stage' : undefined} label={`Stage ${path}${unsaved ? '. Discards unsaved edits' : ''}`} onClick={() => stage.onToggle(path, true)} />
           </>
         )}
     </span>
@@ -1027,8 +1028,8 @@ function HunkActions({ path, hunk, stage }: { path: string; hunk: DiffHunk; stag
   const busy = stage.busy ?? null
   const line = edgeLines(hunk.lines).first
   const button = (action: HunkAction, icon: IconName, text: string, className?: string) => (
-    <StageButton busy={busy} running={hunkKey(action, path, hunk.header)} icon={icon} text={text} label={`${text} at line ${line} of ${path}`}
-      className={className} onClick={() => stage.onHunk?.(path, hunk, action)} />
+    <StageButton key={`${action}:${hunk.id ?? hunk.header}`} busy={busy} running={hunkKey(action, path, hunk.header)} icon={icon} text={text} label={`${text} at line ${line} of ${path}`}
+      className={className} confirm={action === 'discard' ? 'Discard hunk' : undefined} onClick={() => stage.onHunk?.(path, hunk, action)} />
   )
   return (
     <span className="hunk-actions">

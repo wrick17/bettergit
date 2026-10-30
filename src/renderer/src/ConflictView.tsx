@@ -39,11 +39,11 @@ export interface ConflictViewProps {
   onChoose: (index: number, choice: Choice) => void
   // Saves with the fingerprint from load, not a fresh one, so the write is bound to the file the user reviewed.
   onSave: (save: ConflictSave) => void
-  // Asks, then replaces the whole file with the conflicts recreated from Git's index. The parent owns the confirmation.
+  // Replaces the whole file after the reset control's second click confirms it.
   onReset: () => void
   // Stages the file once no markers remain. The stage write checks the markers again before git add runs.
   onStage: () => void
-  // Asks, then replaces the whole file with one side from Git's index. The file stays unmerged until it is staged.
+  // Replaces the whole file after the side control's second click. The file stays unmerged until it is staged.
   onTake: (side: 'ours' | 'theirs') => void
   // The write running in this repo, or null. Every control stops while it runs, and the running one says so.
   busy: string | null
@@ -62,9 +62,10 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
       {layout && <LayoutToggles />}
       {canTake && SIDES.map(({ side, text, label }) => (
         <IconButton
-          key={side}
+          key={`${path}:${side}`}
           icon="branch"
           text={text}
+          confirm={text}
           label={busy === `conflict-take:${side}` ? 'Resolving conflict…' : `${label} ${path}`}
           onClick={() => onTake(side)}
           busy={busy === `conflict-take:${side}`}
@@ -72,7 +73,9 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
         />
       ))}
       <IconButton
+        key={path}
         icon="reset"
+        confirm="Reset"
         label="Reset resolution"
         onClick={onReset}
         busy={busy === 'conflict-reset'}

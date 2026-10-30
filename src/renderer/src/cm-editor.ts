@@ -428,13 +428,32 @@ const DIFF = { override: continuousDiff }
 
 // Join changes within one line on both sides, so the preview and either live layout paint one inner block.
 function continuousDiff(a: string, b: string): Change[] {
+  // Anchor whole lines first: a character search can exhaust its budget on small edits spread across a large file.
+  const ids = new Map<string, string>()
+  const encode = (text: string) => {
+    let encoded = '', offset = 0
+    const offsets = [0]
+    for (const [line] of text.matchAll(/[^\n]*\n|[^\n]+$/g)) {
+      let id = ids.get(line)
+      if (!id) { id = String.fromCodePoint(0x10000 + ids.size); ids.set(line, id) }
+      encoded += id
+      offset += line.length
+      offsets.push(offset, offset)
+    }
+    return { encoded, offsets }
+  }
+  const old = encode(a), current = encode(b)
   const changes: Change[] = []
-  for (const change of diff(a, b, { scanLimit: 500 })) {
-    const last = changes[changes.length - 1]
-    if (last && !a.slice(last.toA, change.fromA).includes('\n') && !b.slice(last.toB, change.fromB).includes('\n')) {
-      changes[changes.length - 1] = new Change(last.fromA, change.toA, last.fromB, change.toB)
-    } else {
-      changes.push(change)
+  for (const block of diff(old.encoded, current.encoded, { scanLimit: 500 })) {
+    const fromA = old.offsets[block.fromA], fromB = current.offsets[block.fromB]
+    for (const inner of diff(a.slice(fromA, old.offsets[block.toA]), b.slice(fromB, current.offsets[block.toB]), { scanLimit: 500 })) {
+      const change = new Change(fromA + inner.fromA, fromA + inner.toA, fromB + inner.fromB, fromB + inner.toB)
+      const last = changes[changes.length - 1]
+      if (last && !a.slice(last.toA, change.fromA).includes('\n') && !b.slice(last.toB, change.fromB).includes('\n')) {
+        changes[changes.length - 1] = new Change(last.fromA, change.toA, last.fromB, change.toB)
+      } else {
+        changes.push(change)
+      }
     }
   }
   return changes
