@@ -56,7 +56,7 @@ function useDraft(key: string) {
 }
 
 // Whether a working file has unsaved edits. False without an edit bridge.
-export function useUnsaved(edit: EditBridge | undefined, path: string) {
+export function useUnsaved(edit: Pick<EditBridge, 'repo'> | undefined, path: string) {
   const draft = useDraft(edit ? keyOf(edit.repo, path) : '')
   return !!edit && dirty(draft)
 }
@@ -64,17 +64,22 @@ export function useUnsaved(edit: EditBridge | undefined, path: string) {
 // Whether any repo has a file with unsaved edits, which an update restart must not lose.
 export const hasUnsavedDrafts = () => Array.from(drafts.values()).some(dirty)
 
-// Drafts outlive their editors, so selecting, scrolling or switching views keeps them. Staging or discarding a file takes
-// it out of the working diff, where its draft can no longer show, so those ask first. False when the user keeps the edits.
+// Bulk staging can hide unsaved drafts. Individual file controls confirm inline before dropping their edits.
 export async function confirmDropEdits(repo: string, paths: string[]): Promise<boolean> {
   const lost = paths.flatMap((path) => (dirty(drafts.get(keyOf(repo, path))) ? [path] : []))
   if (!lost.length) return true
   if (!(await confirmOverBlur(`Discard your unsaved edits to ${lost.join(', ')}?`))) return false
-  for (const path of lost) {
-    const draft = drafts.get(keyOf(repo, path))!
+  dropEdits(repo, lost)
+  return true
+}
+
+// Used only after a destructive file control's second click has confirmed the loss of edits.
+export function dropEdits(repo: string, paths: string[]) {
+  for (const path of paths) {
+    const draft = drafts.get(keyOf(repo, path))
+    if (!draft || !dirty(draft)) continue
     draft.revert ? draft.revert() : setDraft(keyOf(repo, path), null)
   }
-  return true
 }
 
 async function saveDraft(edit: EditBridge, path: string) {
@@ -93,13 +98,9 @@ export function DraftActions({ edit, path }: { edit: EditBridge; path: string })
   const key = keyOf(edit.repo, path)
   const draft = useDraft(key)
   if (!draft || !dirty(draft)) return null
-  const discard = async () => {
-    if (draft.revert) draft.revert()
-    else if (await confirmOverBlur(`Discard your edits to ${path}?`)) setDraft(key, null)
-  }
   return (
     <>
-      <span className="diff-file-open"><IconButton icon="undo" label={`Discard edits to ${path}`} disabled={draft.saving} onClick={discard} /></span>
+      <span className="diff-file-open"><IconButton icon="undo" label={`Discard edits to ${path}`} confirm="Discard" disabled={draft.saving || edit.disabled} onClick={() => dropEdits(edit.repo, [path])} /></span>
       <span className="diff-file-open">
         <IconButton icon="save" label={draft.saving ? `Saving ${path}…` : `Save ${path} (⌘S)`} busy={draft.saving} disabled={edit.disabled} onClick={() => void saveDraft(edit, path)} />
       </span>

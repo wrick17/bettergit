@@ -8,8 +8,7 @@ import type { HunkAction, HunkRequest } from '../../main/git/hunks'
 import { DiffView, fileKey, hunkKey, type FileChoices } from './DiffView'
 import { useActiveFile, useActiveFiles, useKeepInView, type ActiveFiles } from './active-file'
 import { DiffRail } from './DiffRail'
-import { confirmOverBlur } from './confirm'
-import { confirmDropEdits, type EditBridge } from './DiffEditor'
+import { confirmDropEdits, dropEdits, useUnsaved, type EditBridge } from './DiffEditor'
 import { adoptView, mountNear, suspendHold } from './scroll-anchor'
 import { FileIcon, FolderIcon } from './FileIcon'
 import { Icon, IconButton, toggleLabel } from './Icons'
@@ -76,6 +75,7 @@ interface Conflicts {
 const CONFLICT_LOADS = 4
 
 interface SectionProps {
+  repo: string
   title: string
   changes: FileChange[]
   staged: boolean
@@ -427,7 +427,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
 
   // The file rows and the diff header share this. A click during another Git action is ignored, so stages do not race on the index.
   const togglePath = async (path: string, stage: boolean) => {
-    if (busy || (stage && !(await confirmDropEdits(repo, [path])))) return
+    if (busy) return
+    if (stage) dropEdits(repo, [path])
     void write(fileKey(stage ? 'stage' : 'unstage', path), () => (stage ? api.stage(repo, [path]) : api.unstage(repo, [path])))
   }
 
@@ -435,8 +436,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // longer matches, and any failure reloads, so the next click works on the current diff. Hidden whitespace is never sent.
   const changeHunk = async (path: string, hunk: DiffHunk, action: HunkAction) => {
     if (busy || ignoreWhitespace) return
-    if (action === 'discard' && !(await confirmOverBlur(`Discard this hunk of ${path}? This cannot be undone.`))) return
-    if (action !== 'unstage' && !(await confirmDropEdits(repo, [path]))) return
+    if (action !== 'unstage') dropEdits(repo, [path])
     const staged = action === 'unstage'
     const request: HunkRequest = {
       path, staged, context: extra[levelKey(staged, path)] ?? context, header: hunk.header, lines: hunk.lines.map(({ type, text }) => ({ type, text })),
@@ -484,9 +484,6 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     const conflict = conflictOf(conflictFiles, path)
     if (busy || !conflict?.model.reset.available) return
     const { fingerprint } = conflict.model.reset
-    if (!(await confirmOverBlur(`Reset resolution for "${path}"?\n\nThis replaces the whole working file with its conflicts recreated from Git's index, `
-      + 'and discards saved edits and unsaved choices for this file. The conflict markers are rebuilt in diff3 style, '
-      + 'so labels and layout can differ from the original. The file stays unmerged and unstaged. Other files are unchanged.'))) return
     void write(`conflict-reset:${path}`, async () => {
       const model = await api.conflictReset(repo, path, { fingerprint })
       if (repoRef.current !== repo) return
@@ -505,10 +502,6 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     const model = conflictOf(conflictFiles, path)?.model
     const fingerprint = model?.supported ? model.fingerprint : model?.reset.available ? model.reset.fingerprint : null
     if (busy || !fingerprint) return
-    const name = side === 'ours' ? 'ours, the current side' : 'theirs, the incoming side'
-    if (!(await confirmOverBlur(`Resolve "${path}" using ${name}?\n\nThis replaces the whole working file with that side's version from Git's index, `
-      + 'and discards saved edits and unsaved choices for this file, including changes from the other side that merged cleanly. '
-      + 'The file stays unmerged until you stage it. Other files are unchanged.'))) return
     void write(`conflict-take:${side}:${path}`, () => api.conflictTake(repo, path, { fingerprint, side }))
   }
 
@@ -544,14 +537,16 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }
 
   const discardPath = async (path: string) => {
-    if (busy || !(await confirmOverBlur(`Discard unstaged changes to ${path}? This cannot be undone.`)) || !(await confirmDropEdits(repo, [path]))) return
+    if (busy) return
+    dropEdits(repo, [path])
     void write(fileKey('discard', path), () => api.discard(repo, [path]))
   }
   const discard = (change: FileChange) => discardPath(change.path)
 
   // An untracked file is not in Git, so nothing can bring it back. Main checks again that it is still untracked.
   const deletePath = async (path: string) => {
-    if (busy || !(await confirmOverBlur(`Delete ${path}? It is untracked, so Git cannot restore it.`)) || !(await confirmDropEdits(repo, [path]))) return
+    if (busy) return
+    dropEdits(repo, [path])
     void write(fileKey('delete', path), () => api.deleteUntracked(repo, path))
   }
 
@@ -653,7 +648,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   }
 
   return (
-    <div className="changes" style={{ gridTemplateColumns: `${list.collapsed ? `${STRIP_WIDTH}px` : code.collapsed ? 'minmax(0, 1fr)' : `${listWidth}px`} ${list.collapsed ? 0 : GUTTER}px ${code.collapsed ? `${STRIP_WIDTH}px` : 'minmax(0, 1fr)'}` }}>
+    <div key={repo} className="changes" style={{ gridTemplateColumns: `${list.collapsed ? `${STRIP_WIDTH}px` : code.collapsed ? 'minmax(0, 1fr)' : `${listWidth}px`} ${list.collapsed ? 0 : GUTTER}px ${code.collapsed ? `${STRIP_WIDTH}px` : 'minmax(0, 1fr)'}` }}>
       {/* Clicking empty space in the list clears the file selection, so the right pane shows every change again. */}
         <div
           className={`file-list${list.folded ? ' folded' : ''}${list.held ? ' held' : ''}`}
@@ -681,6 +676,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
             {clean && <p className="file-list-empty">No changed files</p>}
             {listChanges.conflicted.length > 0 && (
               <List
+                repo={repo}
                 title="Conflicts"
                 changes={listChanges.conflicted}
                 staged={false}
@@ -696,6 +692,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
             )}
             {/* Only working-tree changes belong here; partially staged paths appear in both sections. */}
             <List
+              repo={repo}
               title="Changes"
               changes={listChanges.changes}
               staged={false}
@@ -711,6 +708,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               activeFiles={activeFiles}
             />
             <List
+              repo={repo}
               title="Staged"
               changes={listChanges.staged}
               staged
@@ -972,7 +970,7 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
+function Group({ repo, title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
   useKeepInView(sectionRef, inView)
@@ -985,7 +983,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
           const active = selection?.path === change.path && selection.staged === staged
           return (
             <li key={`${staged}-${change.path}`} className={`${active ? 'active' : ''}${inView === change.path ? ' in-view' : ''}`}>
-              <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+              <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
             </li>
           )
         })}
@@ -995,7 +993,7 @@ function Group({ title, changes, staged, selection, stats, onSelect, onToggle, o
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
+function Tree({ repo, title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
   const folder = useMemo(() => changeTree(changes), [changes])
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
@@ -1006,7 +1004,7 @@ function Tree({ title, changes, staged, selection, stats, collapsed, onToggleFol
     return (
       <div key={change.path} role="treeitem" aria-selected={active}>
         <div className={`tree-row${active ? ' selected' : ''}${inView === change.path ? ' in-view' : ''}`}>
-          <FileRow change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+          <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
         </div>
       </div>
     )
@@ -1107,7 +1105,8 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
 }
 
 // The name, counts, and status (which doubles as the stage button) shared by both views. Tree rows drop the folder part of the path.
-function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
+function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
+  repo: string
   change: FileChange
   staged: boolean
   stats: Map<string, Stats>
@@ -1118,6 +1117,7 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
   busy: string | null
 }) {
   const { name, dir } = splitPath(change.path)
+  const unsaved = useUnsaved({ repo }, change.path)
   const discardAction = !staged && change.kind !== 'untracked' && !change.conflicted ? onDiscard : undefined
   const discardKey = fileKey('discard', change.path)
   const stageKey = fileKey(staged ? 'unstage' : 'stage', change.path)
@@ -1139,6 +1139,7 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
             busy={busy === discardKey}
             blocked={busy !== null && busy !== discardKey ? blockedReason(busy) : undefined}
             className="discard"
+            confirm="Discard"
             onClick={() => discardAction(change)}
           />
         )}
@@ -1154,10 +1155,11 @@ function FileRow({ change, staged, stats, showDir, onSelect, onToggle, onDiscard
         <span className={`kind kind-${change.kind}`} title={change.kind}>{badge(change.kind)}</span>
         <IconButton
           icon={staged ? 'minus' : 'plus'}
-          label={busy === stageKey ? `${staged ? 'Unstaging' : 'Staging'} ${change.path}…` : `${staged ? 'Unstage' : 'Stage'} ${change.path}`}
+          label={busy === stageKey ? `${staged ? 'Unstaging' : 'Staging'} ${change.path}…` : `${staged ? 'Unstage' : 'Stage'} ${change.path}${!staged && unsaved ? '. Discards unsaved edits' : ''}`}
           busy={busy === stageKey}
           blocked={busy !== null && busy !== stageKey ? blockedReason(busy) : undefined}
           className="stage-toggle"
+          confirm={!staged && unsaved ? 'Stage' : undefined}
           onClick={() => onToggle(change)}
         />
       </span>
