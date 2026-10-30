@@ -82,6 +82,7 @@ let needle = ''
 const containers = new Set<HTMLElement>()
 const observers = new Map<HTMLElement, MutationObserver>()
 const marks = new Map<Element, Range[]>()
+let currentMatch: { row: HTMLElement; match: Match } | null = null
 
 type HighlightSet = { add: (range: Range) => void; delete: (range: Range) => void; clear: () => void; priority: number }
 let everyMatch: HighlightSet | null | undefined
@@ -132,6 +133,11 @@ function remark(records: MutationRecord[]) {
   // Lines that left the page drop their ranges, so the highlight holds only what can still show.
   for (const element of marks.keys()) if (!element.isConnected) unmark(element)
   touched.forEach(mark)
+  // Recolouring replaces token text nodes, so rebuild the active range from its saved line offsets too.
+  const current = currentMatch
+  if (current && [...touched].some((element) => current.row === element || current.row.contains(element))) {
+    highlight(current.row, current.match)
+  }
 }
 
 function unmark(element: Element) {
@@ -328,6 +334,7 @@ export async function revealMatch(source: FindSource, match: Match) {
 // Markdown shows its source gutter only) is highlighted whole.
 function highlight(row: HTMLElement, match: Match) {
   unhighlight()
+  currentMatch = { row, match }
   const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights
   const Highlight = (globalThis as { Highlight?: new (range: Range) => unknown }).Highlight
   const code = row.querySelector('code') ?? (row.matches('.cm-deletedLine') ? row : null)
@@ -370,6 +377,7 @@ export function clearHighlight() {
 }
 
 function unhighlight() {
+  currentMatch = null
   marked?.unmark()
   marked = null
   ;(globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights?.delete('find-current')

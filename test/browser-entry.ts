@@ -7,11 +7,12 @@ import { EditableDiff, bufferedKey, lineColumnAt, mountedEditors } from '../src/
 import { FindBar } from '../src/renderer/src/FindBar'
 import { clearHighlight, revealMatch, setFindQuery, useFindSource, watchFind } from '../src/renderer/src/find'
 import { typeKeys } from '../src/renderer/src/cm-editor'
+import { setSyntaxThemes } from '../src/renderer/src/highlight'
 import { SettingsDialog } from '../src/renderer/src/Dialogs'
 import { applyAppearance } from '../src/renderer/src/appearance'
 import { DiffView, setDiffLayout } from '../src/renderer/src/DiffView'
 import { ChangesView } from '../src/renderer/src/ChangesView'
-import { setContextLines } from '../src/renderer/src/prefs'
+import { setContextLines, setIgnoreWhitespace } from '../src/renderer/src/prefs'
 import { CommitStat, inListOrder, useFilesView } from '../src/renderer/src/CommitStat'
 import { useActiveFiles } from '../src/renderer/src/active-file'
 import type { DiffFile } from '../src/main/git/diff'
@@ -41,5 +42,5 @@ function ActiveDiff({ files: patchFiles }: { files: DiffFile[] }) {
 }
 
 Object.assign(window, {
-  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
+  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
 })

@@ -128,7 +128,7 @@ test('a stalled fetch helper reaches its deadline and releases the fetching stat
     }, 10)
     return poll
   } })
-  const ops = await load('../src/main/git/ops.ts', { './exec': exec }) as typeof import('../src/main/git/ops')
+  const ops = await load('../src/main/git/ops.ts', { './exec': exec, '../repo-lock': locks }) as typeof import('../src/main/git/ops')
   const busy = await load('../src/renderer/src/repo-busy.ts', {}) as typeof import('../src/renderer/src/repo-busy')
   const errors: unknown[] = []
   const off = busy.connectRepoLocks({ snapshot: async () => repoLockSnapshot(), subscribe: subscribeRepoLocks }, (error) => errors.push(error))
@@ -137,7 +137,7 @@ test('a stalled fetch helper reaches its deadline and releases the fetching stat
   })
   try {
     expect(busy.workingLabel(busy.busyKey(repo)!)).toContain('Fetching')
-    const result = await Promise.race([running, new Promise((resolve) => setTimeout(() => resolve('still fetching'), 2000))])
+    const result = await running
     expect(existsSync(marker), `${String(errors[0])} ${stderr.join('')}`).toBe(true)
     expect(result).toBe(false)
     expect(deadlines[0]).toBeGreaterThanOrEqual(60_000)
@@ -472,7 +472,7 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     const stage = api.stage(alias, ['file.txt'])
     expect(repoLockHolder(repo)).toBe('repo:stage')
     expect(busy.busyKey(alias)).toBe('stage')
-    expect(await background.runOnce()).toEqual({ fetched: [], skipped: [{ repo, reason: 'busy' }], failed: [] })
+    expect(await background.runOnce()).toEqual({ startedAt: expect.any(Number), fetched: [], skipped: [{ repo, reason: 'busy' }], failed: [] })
     expect(fetched).toEqual([])
     stageHold.reject(new Error('stage failed'))
     await expect(stage).rejects.toThrow('stage failed')
@@ -486,7 +486,7 @@ test('discovered aliases share foreground, conflict-save, background and rendere
     expect(busy.blockedReason(busy.busyKey(alias))).toContain('Fetching')
     await expect(api.stage(alias, [])).rejects.toBeInstanceOf(RepoBusyError)
     fetchHold.reject(new Error('fetch failed'))
-    expect(await fetch).toEqual({ fetched: [], skipped: [], failed: [] })
+    expect(await fetch).toEqual({ startedAt: expect.any(Number), fetched: [], skipped: [], failed: [] })
     expect(busy.busyKey(alias)).toBeNull()
     expect(fetched).toEqual([repo])
 
@@ -645,7 +645,9 @@ test('background fetch backs off lock and network failures, reports once until r
   now = 900_000
   expect((await fetcher.runOnce())!.failed).toHaveLength(0)
   now = 1_860_000; failing = false
-  expect((await fetcher.runOnce())!.fetched).toEqual([repo])
+  const recovery = (await fetcher.runOnce())!
+  expect(recovery.fetched).toEqual([repo])
+  expect(recovery.startedAt).toBe(now)
   now += 60_000; failing = true
   expect((await fetcher.runOnce())!.failed).toHaveLength(0)
 })

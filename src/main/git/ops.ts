@@ -3,7 +3,7 @@ import path from 'node:path'
 import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
 import { canonicalRepoPath } from '../repo-lock'
-import { GitError, git, gitOk, gitRaw } from './exec'
+import { GitError, git, gitOk, gitRaw, type GitOptions } from './exec'
 import { readStatus } from './status'
 
 export interface Branch {
@@ -449,10 +449,24 @@ const FETCH_ARGS: Record<FetchMode, string[]> = {
   prune: ['fetch', '--all', '--prune'],
 }
 
+// Linked worktrees share one set of remote refs, and the repo lock is per worktree. Two fetches into the same refs fail on
+// each other's ref locks ("cannot lock ref"), so each fetch waits for the one before it in that repository.
+const fetches = new Map<string, Promise<unknown>>()
+async function fetchSerially(repo: string, args: string[], options?: GitOptions): Promise<void> {
+  const refs = canonicalRepoPath((await git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim())
+  const run = (fetches.get(refs) ?? Promise.resolve()).catch(() => undefined).then(() => git(repo, args, options))
+  fetches.set(refs, run)
+  try {
+    await run
+  } finally {
+    if (fetches.get(refs) === run) fetches.delete(refs)
+  }
+}
+
 // With no mode, as the background fetch, native menu and Fetch All call it, every remote is fetched and pruned without tags.
 export async function fetchAll(repo: string, mode?: FetchMode): Promise<void> {
   if (mode !== undefined) assertMode('fetch', mode, Object.keys(FETCH_ARGS) as FetchMode[])
-  await git(repo, mode === undefined ? ['fetch', '--all', '--prune', '--no-tags'] : FETCH_ARGS[mode])
+  await fetchSerially(repo, mode === undefined ? ['fetch', '--all', '--prune', '--no-tags'] : FETCH_ARGS[mode])
 }
 
 // Git pull fetches and merges in one step, and takes no --no-overwrite-ignore. So this fetches once, then merges or
@@ -466,14 +480,14 @@ export async function pull(repo: string, mode: PullMode = 'merge'): Promise<void
   // Like git pull, a rebase starts from the fork point read before the fetch moves the remote branch.
   const forkPoint = mode.startsWith('rebase') ? (await git(repo, ['merge-base', '--fork-point', tracking, 'HEAD']).catch(() => '')).trim() : ''
   // With no arguments, fetch reads the branch's remote and marks its merge branch in FETCH_HEAD, as git pull does.
-  await git(repo, ['fetch'], { interactive: false })
+  await fetchSerially(repo, ['fetch'], { interactive: false })
   await integrateFetched(repo, mode, forkPoint)
 }
 
 export async function pullFrom(repo: string, remote: string, branch: string): Promise<void> {
   await assertRemote(repo, remote)
   await assertBranchName(repo, branch)
-  await git(repo, ['fetch', remote, branch], { interactive: false })
+  await fetchSerially(repo, ['fetch', remote, branch], { interactive: false })
   await integrateFetched(repo, 'merge', '')
 }
 

@@ -113,7 +113,9 @@ const KNOWN_FAILURES: [RegExp, string, string][] = [
 
 export function describeFailure(reason: string): { summary: string; hint?: string } {
   const known = KNOWN_FAILURES.find(([pattern]) => pattern.test(reason))
-  if (known) return { summary: known[1], hint: known[2] }
+  // A fetch of every remote names the one that failed; the others were still fetched.
+  const remote = reason.match(/^error: could not fetch '?([^'\s]+)/m)?.[1]
+  if (known) return { summary: remote ? `${known[1]} Remote: ${remote}.` : known[1], hint: known[2] }
   const lines = reason.split('\n').map((line) => line.trim()).filter(Boolean)
   return { summary: lines.length > 1 ? lines[0].replace(/^(?:fatal|error|remote): /i, '') : reason }
 }

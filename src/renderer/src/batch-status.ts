@@ -48,7 +48,7 @@ export async function runRefresh(folder: string | null, refresh: () => Promise<{
   return failures
 }
 
-// Runs one write in each repo in turn. A busy repo is skipped and named, and every failure is kept with its repo.
+// Runs one write in each repo, a few repos at a time. A busy repo is skipped and named, and every failure is kept with its repo.
 // Returns each failed repo's path and reason, or null when a batch is already running.
 export async function runBatch(folder: string | null, title: string, verb: string, key: string, discover: RepoNode[] | (() => Promise<RepoNode[]>),
   action: (path: string) => Promise<unknown>, reload: () => void): Promise<{ repo: string; reason: string }[] | null> {
@@ -68,18 +68,24 @@ export async function runBatch(folder: string | null, title: string, verb: strin
   }
   const failures: { repo: string; reason: string }[] = []
   const skipped: string[] = []
+  const queue = [...repos]
+  let done = 0
   try {
-    for (const [index, node] of repos.entries()) {
-      set({ folder, running: true, text: `${title}: ${index} of ${repos.length}, ${verb} ${node.name}`, problems: [], failed: false })
-      if (busyKey(node.path)) {
-        skipped.push(`${node.name}: skipped, another action was running`)
-        continue
+    // Four repos at a time, as Refresh runs. Main still runs fetches into one repository's shared refs one at a time.
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      for (let node = queue.shift(); node; node = queue.shift()) {
+        set({ folder, running: true, text: `${title}: ${done} of ${repos.length}, ${verb} ${node.name}`, problems: [], failed: false })
+        if (busyKey(node.path)) skipped.push(`${node.name}: skipped, another action was running`)
+        else {
+          const { path } = node
+          await runRepoWrite(path, key, () => action(path), {
+            onError: (failure) => failures.push({ repo: path, reason: failureReason(failure) }),
+            reload: () => undefined,
+          })
+        }
+        done++
       }
-      await runRepoWrite(node.path, key, () => action(node.path), {
-        onError: (failure) => failures.push({ repo: node.path, reason: failureReason(failure) }),
-        reload: () => undefined,
-      })
-    }
+    }))
   } finally {
     const ok = repos.length - failures.length - skipped.length
     const counts = [`${ok} succeeded`, skipped.length && `${skipped.length} skipped`, failures.length && `${failures.length} failed`].filter(Boolean)

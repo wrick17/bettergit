@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './Icons'
-import { clearLatest, markAllRead, markRead, useLatestNotification, useNotifications } from './notifications'
+import { clearLatest, isFetchFailure, markAllRead, markRead, useLatestNotification, useNotifications } from './notifications'
 import { describeFailure } from './repo-busy'
 
 const ANNOUNCE_MS = 6000
@@ -113,7 +113,7 @@ export function NotificationHub({ onGo, onRetryFetch, children }: {
                   {summary !== entry.reason && <details><summary>Details</summary><pre>{entry.reason}</pre></details>}
                   {notices[entry.id] && <em>{notices[entry.id]}</em>}
                   <div className="notify-actions">
-                    {entry.repo && /^(?:Background fetch\b|Fetching\b|Fetch All\b)/i.test(entry.action) && (
+                    {isFetchFailure(entry) && (
                       <button type="button" aria-label={`Retry fetch in ${name}`} onClick={() => void onRetryFetch(entry.repo!).then((ok) => { if (ok) markRead(entry.id) })}>Retry fetch</button>
                     )}
                     {entry.repo && (

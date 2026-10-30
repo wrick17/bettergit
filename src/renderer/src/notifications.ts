@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { ActionError, failureReason } from './repo-busy'
 
-// Failures the user has not marked as read, newest first. They stay, across restarts too, until marked read.
+// Unresolved failures, newest first, kept across restarts.
 export interface Notification {
   id: string
   // What the user tried, such as "Pulling in bettergit". Shown as "<action> failed".
@@ -86,6 +86,16 @@ export function notifyFailure(action: string, failure: unknown, repo?: string) {
   notify(failure instanceof ActionError
     ? { action: failure.action, reason: failure.message, repo: failure.repo ?? repo }
     : { action, reason: failureReason(failure), repo })
+}
+
+// Failures a fetch in their repo would fix, which the hub offers to retry.
+export const isFetchFailure = (entry: Notification) => !!entry.repo && /^(?:Background fetch\b|Fetching\b|Fetch All\b)/i.test(entry.action)
+
+// Default fetches resolve older default-fetch failures. Manual fetch modes may have failed on tags we did not fetch.
+export function resolveFetchFailures(repos: string[], startedAt: number) {
+  const next = entries.filter((entry) => !(entry.time < startedAt && entry.repo && repos.includes(entry.repo)
+    && /^(?:Background fetch\b|Fetch All\b)/i.test(entry.action)))
+  if (next.length !== entries.length) set(next, latest && next.includes(latest) ? latest : null)
 }
 
 export const markRead = (id: string) => set(entries.filter((entry) => entry.id !== id), latest?.id === id ? null : latest)

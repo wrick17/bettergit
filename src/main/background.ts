@@ -5,6 +5,7 @@ import { readStatus } from './git/status'
 import { canonicalRepoPath, repoLockHolder, withRepoLock } from './repo-lock'
 
 export interface FetchReport {
+  startedAt: number
   fetched: string[]
   skipped: { repo: string; reason: string }[]
   failed: { repo: string; reason: string }[]
@@ -42,11 +43,12 @@ export class BackgroundFetcher {
   // Skips the run if a previous one is still going or the user has been idle too long.
   async runOnce(): Promise<FetchReport | null> {
     if (this.running) return null
+    const startedAt = Date.now()
     if (powerMonitor.getSystemIdleTime() > this.options.idleThresholdSeconds) {
-      return { fetched: [], skipped: [{ repo: '*', reason: 'user idle' }], failed: [] }
+      return { startedAt, fetched: [], skipped: [{ repo: '*', reason: 'user idle' }], failed: [] }
     }
     this.running = true
-    const report: FetchReport = { fetched: [], skipped: [], failed: [] }
+    const report: FetchReport = { startedAt, fetched: [], skipped: [], failed: [] }
     try {
       // A failed scan is reported like a failed repo, under '*', so the run still ends with a report.
       const repos = await this.options.repos().catch((failure: unknown) => {

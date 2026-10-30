@@ -4,7 +4,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndI
 import { Change, Chunk, diff, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { onRecolour } from './prefs'
-import { wholeLine } from './intraline'
+import { emphasize, wholeLine, type Span } from './intraline'
 
 // One mounted diff editor. `replace` is an undoable edit; `sync` brings in a reload without touching the undo history.
 // `reveal` marks a find match: on the old side (split) or the current text, by 1-based line and offsets in that line.
@@ -104,7 +104,7 @@ export function mountEditor({ parent, layout, language, path, text, original, se
   // Fold starts as document positions, mapped through edits, so a fold can still be opened by position later.
   const foldsA = folds.map((fold) => ({ ...fold, from: -1 }))
   const current: Extension[] = [
-    common(language, wrapping, wrap),
+    common(language, wrapping, wrap, layout === 'unified'),
     hunkActionField,
     EditorView.updateListener.of((update) => {
       for (const tr of update.transactions) {
@@ -278,8 +278,8 @@ export function mountEditor({ parent, layout, language, path, text, original, se
 }
 
 // Shared by both sides: line numbers, wrapped lines (or sideways scrolling), and Shiki colours like the rest of the diff.
-function common(language: string | null, wrapping: Compartment, wrap: boolean): Extension {
-  return [lineNumbers(), wrapping.of(wrap ? EditorView.lineWrapping : []), shikiColours(language), findField, wholeChanges]
+function common(language: string | null, wrapping: Compartment, wrap: boolean, deletions = false): Extension {
+  return [lineNumbers(), wrapping.of(wrap ? EditorView.lineWrapping : []), shikiColours(language, deletions), findField, wholeChanges]
 }
 
 // Whole changed lines take the changed-text strength, by the same rule as the static rows (wholeLine). The unified
@@ -302,8 +302,8 @@ const wholeChanges = ViewPlugin.fromClass(class {
       read: () => undefined,
       write: () => {
         for (const line of this.view.contentDOM.querySelectorAll('.cm-deletedChunk > .cm-deletedLine')) {
-          const text = line.firstElementChild
-          line.classList.toggle('cm-fullChange', !!text && [...text.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || !node.textContent))
+          const changed = [...line.querySelectorAll('.cm-deletedText')].reduce((length, node) => length + (node.textContent?.length ?? 0), 0)
+          line.classList.toggle('cm-fullChange', changed === line.textContent?.length)
         }
       },
     })
@@ -336,29 +336,83 @@ function wholeLines(state: EditorState): DecorationSet {
 }
 
 // Colours the whole text with Shiki, after a pause in typing. Until fresh colours arrive, the old ones move with the text.
-function shikiColours(language: string | null): Extension {
+function shikiColours(language: string | null, deletions: boolean): Extension {
   if (!language) return []
   return ViewPlugin.fromClass(class {
     decorations: DecorationSet = Decoration.none
     timer: ReturnType<typeof setTimeout> | undefined
     gone = false
+    original: Text | undefined
+    removed: Segment[][] | undefined
+    painted = new WeakMap<Element, Segment[][]>()
     // A new syntax theme re-colours the text; the old colours stay until the new ones arrive.
     offRecolour = onRecolour(() => this.schedule(0))
     constructor(readonly view: EditorView) {
       // Colours tokenised already (by the static rows shown before this editor) apply on its first frame.
       const cached = cachedTokens(view.state.doc.toString(), language)
       if (cached) this.decorations = colourDecorations(cached, view.state.doc)
-      else this.schedule(0)
+      if (deletions) {
+        this.original = getOriginalDoc(view.state)
+        this.removed = cachedTokens(this.original.toString(), language)
+      }
+      if (!cached || (deletions && !this.removed)) this.schedule(0)
+      this.paintRemoved()
     }
     update(update: ViewUpdate) {
-      if (!update.docChanged) return
-      this.decorations = this.decorations.map(update.changes)
-      this.schedule(150)
+      const original = deletions ? getOriginalDoc(update.state) : undefined
+      if (update.docChanged || original !== this.original) {
+        this.original = original
+        this.removed = original && cachedTokens(original.toString(), language)
+        this.decorations = this.decorations.map(update.changes)
+        this.schedule(150)
+      }
+      this.paintRemoved()
+    }
+    paintRemoved() {
+      // Merge owns deleted widgets; apply cached original-file tokens once per drawn block.
+      const lines = this.removed, original = this.original
+      if (!lines || !original) return
+      this.view.requestMeasure({ key: this, read: () => undefined, write: () => {
+        for (const block of this.view.contentDOM.querySelectorAll<HTMLElement>('.cm-deletedChunk')) {
+          if (this.painted.get(block) === lines) continue
+          const pos = this.view.posAtDOM(block)
+          const chunk = getChunks(this.view.state)?.chunks.find(chunk => chunk.fromB === pos)
+          if (!chunk) continue
+          const first = original.lineAt(chunk.fromA).number
+          block.querySelectorAll('.cm-deletedLine').forEach((line, index) => {
+            const text = line.textContent ?? '', marks: Span[] = []
+            if (!text) return
+            let offset = 0
+            for (const node of line.firstElementChild?.childNodes ?? []) {
+              const end = offset + (node.textContent?.length ?? 0)
+              if (node instanceof Element && node.classList.contains('cm-deletedText')) marks.push([offset, end])
+              offset = end
+            }
+            const dom = line.firstElementChild
+            if (!dom) return
+            dom.replaceChildren(...emphasize(text, lines[first + index - 1] ?? [{ text }], marks).map(piece => {
+              const span = document.createElement('span')
+              span.textContent = piece.text
+              span.className = `tok${piece.changed ? ' cm-deletedText' : ''}`
+              if (piece.light) span.style.setProperty('--tok-light', piece.light)
+              if (piece.dark) span.style.setProperty('--tok-dark', piece.dark)
+              return span
+            }))
+          })
+          this.painted.set(block, lines)
+        }
+      } })
     }
     schedule(delay: number) {
       clearTimeout(this.timer)
       this.timer = setTimeout(() => {
         const doc = this.view.state.doc
+        const original = this.original
+        if (original) void tokenize(original.toString(), language, () => this.gone || this.original !== original).then(lines => {
+          if (!lines || this.gone || this.original !== original) return
+          this.removed = lines
+          this.paintRemoved()
+        })
         void tokenize(doc.toString(), language, () => this.gone || this.view.state.doc !== doc).then((lines) => {
           if (!lines || this.gone || this.view.state.doc !== doc) return
           this.decorations = colourDecorations(lines, doc)
