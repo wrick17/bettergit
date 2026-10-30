@@ -51,7 +51,7 @@ export async function runRefresh(folder: string | null, refresh: () => Promise<{
 // Runs one write in each repo, a few repos at a time. A busy repo is skipped and named, and every failure is kept with its repo.
 // Returns each failed repo's path and reason, or null when a batch is already running.
 export async function runBatch(folder: string | null, title: string, verb: string, key: string, discover: RepoNode[] | (() => Promise<RepoNode[]>),
-  action: (path: string) => Promise<unknown>, reload: () => void): Promise<{ repo: string; reason: string }[] | null> {
+  action: (path: string) => Promise<unknown>, reload: () => void, concurrency = 4): Promise<{ repo: string; reason: string }[] | null> {
   if (batchRunning()) return null
   // Claim before discovery too, so a delayed scan cannot queue a second batch behind the current one.
   set({ folder, running: true, text: `${title}: finding repositories…`, problems: [], failed: false })
@@ -71,8 +71,8 @@ export async function runBatch(folder: string | null, title: string, verb: strin
   const queue = [...repos]
   let done = 0
   try {
-    // Four repos at a time, as Refresh runs. Main still runs fetches into one repository's shared refs one at a time.
-    await Promise.all(Array.from({ length: 4 }, async () => {
+    // Main still runs fetches into one repository's shared refs one at a time.
+    await Promise.all(Array.from({ length: Math.min(concurrency, repos.length) }, async () => {
       for (let node = queue.shift(); node; node = queue.shift()) {
         set({ folder, running: true, text: `${title}: ${done} of ${repos.length}, ${verb} ${node.name}`, problems: [], failed: false })
         if (busyKey(node.path)) skipped.push(`${node.name}: skipped, another action was running`)

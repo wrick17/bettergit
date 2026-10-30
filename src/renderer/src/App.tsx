@@ -214,12 +214,12 @@ export function App() {
         case 'toggle-sidebar': return toggleSidebar.current()
         case 'reveal-repo': return repo ? void api.reveal(repo).catch((failure: unknown) => reportErrorRef.current(failure, `Reveal ${repo.split('/').pop()} in Finder`, repo)) : undefined
         case 'fetch-all': return void runBatch(null, 'Fetch All', 'fetching', 'fetch', async () => flatten(await api.getTree()),
-          fetchRepo, () => setRevision((value) => value + 1))
+          fetchRepo, () => setRevision((value) => value + 1), config?.settings.batchConcurrency)
           .then((failures) => reportBatchRef.current('Fetch All', failures), (failure: unknown) => reportErrorRef.current(failure, 'Fetch All'))
       }
     })
     return off
-  }, [refreshTree])
+  }, [refreshTree, config?.settings.batchConcurrency])
 
   // Keep the page in step with macOS light/dark when the setting is "system". Until the config arrives, the mode restored
   // at launch stays.
@@ -351,10 +351,10 @@ export function App() {
             const shown = flatten([folder]).filter((node) => !config.hidden.some((path) => node.path === path || node.path.startsWith(path + '/')))
             const reload = () => setRevision((value) => value + 1)
             const title = `${kind === 'fetch' ? 'Fetch All' : 'Pull All'} in ${folder.name}`
-            if (kind === 'fetch') return reportBatch(title, await runBatch(folder.path, title, 'fetching', 'fetch', shown, fetchRepo, reload))
+            if (kind === 'fetch') return reportBatch(title, await runBatch(folder.path, title, 'fetching', 'fetch', shown, fetchRepo, reload, config.settings.batchConcurrency))
             // Fast-forward only: a bulk pull never makes merge commits or leaves conflicts. A diverged repo is refused and named.
             const message = `Pull ${shown.length} ${shown.length === 1 ? 'repository' : 'repositories'} in ${folder.name}?\n\nEach fast-forwards its current branch to its upstream. A repo that has diverged, has no upstream, or would overwrite local files is left unchanged and reported.`
-            if (!shown.length || await confirmOverBlur(message)) reportBatch(title, await runBatch(folder.path, title, 'pulling', 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reload))
+            if (!shown.length || await confirmOverBlur(message)) reportBatch(title, await runBatch(folder.path, title, 'pulling', 'pull-ff', shown, (path) => api.pull(path, 'ff-only'), reload, config.settings.batchConcurrency))
           })().catch((failure: unknown) => reportError(failure, kind === 'fetch' ? 'Fetch All' : 'Pull All'))}
           onRefreshAll={refreshAll}
           onRepoAction={(node: RepoNode, action) => {

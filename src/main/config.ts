@@ -10,6 +10,7 @@ export interface Settings {
   theme: ThemeMode
   backgroundFetch: boolean
   fetchIntervalMinutes: number
+  batchConcurrency: number
   idleThresholdSeconds: number
   // Scales the whole window. 1 is the default size.
   textZoom: number
@@ -64,6 +65,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     theme: 'system',
     backgroundFetch: true,
     fetchIntervalMinutes: 10,
+    batchConcurrency: 4,
     idleThresholdSeconds: 120,
     textZoom: 1,
     languages: {},
@@ -88,6 +90,7 @@ function normalizeSettings(input: unknown): Settings {
     backgroundFetch: typeof source.backgroundFetch === 'boolean' ? source.backgroundFetch : DEFAULT_CONFIG.settings.backgroundFetch,
     // A zero or non-numeric interval would make the fetch timer spin, so only a positive number is kept.
     fetchIntervalMinutes: Number.isFinite(source.fetchIntervalMinutes) && source.fetchIntervalMinutes! > 0 ? source.fetchIntervalMinutes! : DEFAULT_CONFIG.settings.fetchIntervalMinutes,
+    batchConcurrency: Number.isSafeInteger(source.batchConcurrency) && source.batchConcurrency! > 0 ? source.batchConcurrency! : DEFAULT_CONFIG.settings.batchConcurrency,
     textZoom: typeof source.textZoom === 'number' ? Math.min(1.6, Math.max(0.8, source.textZoom)) : DEFAULT_CONFIG.settings.textZoom,
     languages,
     editor,
