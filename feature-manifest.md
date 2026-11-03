@@ -82,7 +82,7 @@ The original 2026-11-03 snapshot was master `95c93813` (PR #53), package 0.1.14.
 
 - Every change reaches master through a GitHub PR merged with `gh pr merge --merge --delete-branch` (merge commit). Then fast-forward local master and delete the finished worktree and branch. No local merges or direct pushes to master. Supersedes the 2026-10-17 "one PR stack, merge at the end" delivery (S).
 - Before pushing tag `v<version>`, the release PR adds a `## [<version>] - <date>` CHANGELOG section with the correct version and date; the workflow publishes it as release notes and fails without it.
-- During repo work, exactly one BetterGit dev window runs the latest completed change. After a release, stop dev, install the published build in `~/Applications`, and leave exactly one window of it open.
+- During repo work, exactly one BetterGit dev window runs the latest completed change. After a release, stop dev, install the published build in `~/Applications`, and leave exactly one window of it open. If a BetterGit window is closed and reopened, keep it on the same monitor and preserve its bounds.
 - Released and installed: v0.1.14 (PR #52, workflow run 41585765493 passed tests/typecheck/build; DMG SHA-256 matched the GitHub digest; one installed window).
 
 ### Historical material in this file
