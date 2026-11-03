@@ -1,6 +1,7 @@
 ## Live app window
 - When starting work on this repo, stop the release build and start a dev build. Keep exactly one BetterGit dev window running the latest completed change or merge so the user can check progress live.
 - Renderer-only changes: let the dev server reload the window. Main or preload changes: quit and relaunch BetterGit with the same command it was started with.
+- Before closing or relaunching BetterGit, record its monitor, macOS Space, and window bounds. Restore and verify all three after reopening, including when switching between dev and installed builds.
 - Keep exactly one BetterGit window. Never open a second instance or leave stale BetterGit processes running; kill only BetterGit processes.
 - When work happens in a separate worktree, update the window at verified checkpoints and say whether it is running master or the worktree branch.
 
