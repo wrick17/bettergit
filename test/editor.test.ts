@@ -644,6 +644,54 @@ test('RepoPane keeps the newest status and divergence when an older refresh fini
   expect(find(render(), (p) => !!p.status)?.status).toEqual(current)
 })
 
+test('panel toggles follow panel order and History commits never control Changes files', async () => {
+  let cursor = 0
+  const ChangesView = () => null
+  const HistoryView = () => null
+  const app = await loadEntry('../src/renderer/src/App.tsx', {
+    react: { ...React,
+      useState: (initial: unknown) => [cursor++ === 0 ? { changes: [] } : initial, () => {}],
+      useRef: (current: unknown) => ({ current }), useMemo: (make: () => unknown) => make(),
+      useCallback: (callback: unknown) => callback, useEffect() {},
+    },
+    'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime,
+    'react-dom': { createPortal: (node: React.ReactNode) => node },
+    './editor-launch': editorLaunch,
+    './OpenInAppButton': { useSelectedApp: () => null },
+    './repo-busy': { useRepoBusy: () => null, blockedReason: () => null },
+    './RepoMenu': { repoItems: () => [] },
+    './Icons': { toggleLabel: (state: string) => state },
+    './ChangesView': { ChangesView }, './HistoryView': { HistoryView },
+  }, '\nmodule.exports.RepoPane = RepoPane', { window: { bettergit: {} } })
+  const props = {
+    titlebar: {}, repo: { path: '/repo', name: 'repo' }, tab: 'history',
+    sidebarOpen: true, listOpen: true, detailOpen: true, diffOpen: true,
+    onToggleSidebar() {}, onToggleList: () => { props.listOpen = !props.listOpen },
+    onToggleDetail: () => { props.detailOpen = !props.detailOpen },
+    onToggleDiff: () => { props.diffOpen = !props.diffOpen }, onError() {},
+  }
+  const elements = (node: any): any[] => [node].flat(Infinity).flatMap((child) =>
+    React.isValidElement<any>(child) ? [child, ...elements(child.props.children)] : [])
+  const render = () => { cursor = 0; return elements(app.RepoPane(props)) }
+  const toggles = () => elements(render().find((node) => node.props.className === 'pane-toggles').props.children)
+  const view = () => render().find((node) => node.type === (props.tab === 'history' ? HistoryView : ChangesView)).props
+  const labels = () => toggles().map((node) => node.props.label.split(':')[0])
+  expect(labels()).toEqual(['Sidebar', 'Commit list', 'Commit files', 'Code diff'])
+  toggles()[1].props.onClick()
+  expect(view().listOpen).toBe(false)
+  props.tab = 'changes'
+  expect(labels()).toEqual(['Sidebar', 'File list', 'Code diff'])
+  expect(view()).toMatchObject({ listOpen: true, detailOpen: true, diffOpen: true })
+  toggles()[1].props.onClick()
+  expect(view()).toMatchObject({ listOpen: false, detailOpen: true, diffOpen: true })
+  toggles()[2].props.onClick()
+  expect(view()).toMatchObject({ listOpen: false, diffOpen: false })
+  toggles()[1].props.onClick()
+  expect(view()).toMatchObject({ listOpen: true, diffOpen: false })
+  props.tab = 'history'
+  expect(view()).toMatchObject({ listOpen: false, detailOpen: true, diffOpen: false })
+})
+
 test('App supplies the working-copy editor bridge and Open in buttons independent of Git busy state', async () => {
   const launches: Array<[string, string?]> = []
   const api = { openInEditor: async (repo: string, file?: string) => { launches.push([repo, file]) } }
