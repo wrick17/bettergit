@@ -162,7 +162,7 @@ test('registry images are bounded data URLs inferred from bytes, with no arbitra
     requests.push(url.href)
     if (url.href === icon) return new Response(null, { status: 302, headers: { location: storedIcon } })
     if (url.href === storedIcon) return new Response(png, { headers: { 'content-type': 'application/octet-stream' } })
-    if (url.pathname === '/large.png') return new Response(png, { headers: { 'content-length': String(512 * 1024 + 1) } })
+    if (url.pathname === '/large.png') return new Response(png, { headers: { 'content-length': String(2 * 1024 * 1024 + 1) } })
     return new Response('<html><script>throw 1</script></html>', { headers: { 'content-type': 'image/png' } })
   })
   expect(await registry.extensionImage(icon)).toBe(`data:image/png;base64,${png.toString('base64')}`)
@@ -208,9 +208,47 @@ test('Flow Icons README assets and Shields badges use an image-only public-addre
   expect(requests).toEqual(['https://img.shields.io/redirect'])
   requests.length = 0
   expect(await registry.extensionImage(`${raw}README.md`)).toBeNull()
-  expect(await registry.extensionImage('https://raw.githubusercontent.com/other/repo/main/logo.png')).toBeNull()
   privateAddress = true
   expect(await registry.extensionImage(`${raw}logo.png`)).toBeNull()
+  expect(requests).toEqual([])
+})
+
+test('GitHub README images such as the Catppuccin previews load through checked github.com /raw/ redirects', async () => {
+  // From the Catppuccin.catppuccin-vsc 3.19.0 README; github.com answers 302 to a commit-pinned raw file (seen 2026-11-03).
+  const latte = 'https://github.com/catppuccin/vscode/raw/HEAD/assets/latte.webp'
+  const stored = 'https://raw.githubusercontent.com/catppuccin/vscode/befc9e6fc41980f4241408f7049755d47c06ff45/assets/latte.webp'
+  const hero = 'https://github.com/catppuccin/vscode/raw/HEAD/assets/preview.webp'
+  // The real hero preview is 776 KB, over the old 512 KB cap.
+  const webp = (size: number) => Buffer.concat([Buffer.from('RIFF\0\0\0\0WEBPVP8 ', 'latin1'), Buffer.alloc(size - 16)])
+  const requests: string[] = []
+  const lookups: string[] = []
+  let privateAddress = false
+  const registry = await registryWithFetch(async (url) => {
+    requests.push(url.href)
+    if (url.hostname === 'github.com') {
+      const location = url.pathname.includes('/evil/') ? 'https://evil.example/latte.webp' : url.href.replace('https://github.com/catppuccin/vscode/raw/HEAD/', 'https://raw.githubusercontent.com/catppuccin/vscode/befc9e6fc41980f4241408f7049755d47c06ff45/')
+      return new Response(null, { status: 302, headers: { location } })
+    }
+    if (url.pathname.endsWith('/huge.webp')) return new Response(webp(2 * 1024 * 1024 + 1))
+    return new Response(webp(url.pathname.endsWith('/preview.webp') ? 776 * 1024 : 172 * 1024))
+  }, async (host) => {
+    lookups.push(host)
+    return [{ address: privateAddress && host === 'raw.githubusercontent.com' ? '10.0.0.1' : '140.82.112.3', family: 4 }]
+  })
+  expect(await registry.extensionImage(latte) === `data:image/webp;base64,${webp(172 * 1024).toString('base64')}`).toBe(true)
+  expect(requests).toEqual([latte, stored])
+  expect(lookups).toEqual(['github.com', 'raw.githubusercontent.com'])
+  expect(await registry.extensionImage(hero)).toStartWith('data:image/webp;base64,')
+  expect(await registry.extensionImage('https://raw.githubusercontent.com/catppuccin/vscode/main/assets/huge.webp')).toBeNull()
+  expect(await registry.extensionImage('https://github.com/evil/repo/raw/HEAD/latte.webp')).toBeNull()
+  expect(requests.at(-1)).toBe('https://github.com/evil/repo/raw/HEAD/latte.webp')
+  privateAddress = true
+  expect(await registry.extensionImage(latte)).toBeNull()
+  expect(requests.at(-1)).toBe(latte)
+  requests.length = 0
+  for (const url of ['https://github.com/catppuccin/vscode/blob/main/assets/latte.webp', 'https://github.com/catppuccin/vscode/raw/HEAD/install.sh', 'https://raw.githubusercontent.com/catppuccin/vscode/main/README.md', 'https://gist.github.com/a/raw/b/latte.webp', 'http://github.com/catppuccin/vscode/raw/HEAD/assets/latte.webp']) {
+    expect(await registry.extensionImage(url)).toBeNull()
+  }
   expect(requests).toEqual([])
 })
 

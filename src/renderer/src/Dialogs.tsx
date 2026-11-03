@@ -467,7 +467,7 @@ function ThemeSelect({ id, kind, value, wanted, builtIn, extensions, themes, onC
         {status && <Icon name={loading ? 'loader' : 'warning'} className={loading ? 'action-spin' : undefined} />}
       </span>
       <select id={id} value={value} aria-busy={loading} onFocus={preload} onPointerDown={preload} onChange={(event) => onChange(event.target.value)}>
-        <option value="">{builtIn}</option>
+        <optgroup label="Included"><option value="">{builtIn}</option></optgroup>
         {!listed && <option value={value}>{extensions ? 'Not installed' : 'Loading…'}</option>}
         {groups.map(({ extension, choices }) => (
           <optgroup key={extension.id} label={extension.name}>

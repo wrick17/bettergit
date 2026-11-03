@@ -23,6 +23,8 @@ const MAX_FILE = 20 * 1024 * 1024
 // Theme, include and manifest JSON. The largest real one seen is 1.5 MB (vscode-icons); the cap bounds parse memory.
 const MAX_JSON = 4 * 1024 * 1024
 const MAX_ICON = 512 * 1024
+// One remote logo, badge or README image. Catppuccin's README hero preview is 776 KB (seen 2026-11-03).
+const MAX_IMAGE = 2 * 1024 * 1024
 const MAX_README = 1024 * 1024
 // Caps on one icon theme, checked from the map and file sizes before any image is read. Bytes count once per icon id,
 // since each id carries its own copy of the data URL to the renderer. vscode-icons, the largest seen, has 1,668 images
@@ -432,8 +434,11 @@ function imageAsset(value: unknown): URL | null {
   try {
     const url = new URL(text(value))
     if (url.protocol !== 'https:' || url.port || url.username || url.password || /\.vsix(?:$|\/)/i.test(url.pathname)) return null
-    if (OPEN_VSX_HOSTS.has(url.hostname) || url.hostname === 'img.shields.io' ||
-      (url.hostname === 'raw.githubusercontent.com' && /^\/thang-nm\/Flow-Icons\/main\/(?:logo|preview|preview_light|freeCodeCamp|packs|alternatives|icons|you\/(?:sequoia_moonlight|ayu_dark))\.png$/.test(url.pathname))) return url
+    if (OPEN_VSX_HOSTS.has(url.hostname) || url.hostname === 'img.shields.io') return url
+    // Public GitHub repository images: raw files, and github.com /raw/ links, which redirect to raw files.
+    const image = /\.(?:png|jpe?g|gif|webp|svg)$/i.test(url.pathname)
+    if (image && (url.hostname === 'raw.githubusercontent.com' || url.hostname === 'user-images.githubusercontent.com' ||
+      (url.hostname === 'github.com' && /^\/[^/]+\/[^/]+\/raw\//.test(url.pathname)))) return url
     return null
   } catch {
     return null
@@ -451,7 +456,7 @@ export async function extensionImage(value: unknown): Promise<string | null> {
   const url = imageAsset(value)
   if (!url) return null
   try {
-    const data = await readBody(await fetchOk(url.href, isImageUrl), MAX_ICON, 'The extension image is larger than 512 KB.')
+    const data = await readBody(await fetchOk(url.href, isImageUrl), MAX_IMAGE, 'The extension image is larger than 2 MB.')
     // The registry serves some PNGs as application/octet-stream. Identify bytes, never trust the declared MIME.
     const head = data.subarray(0, 12)
     let mime: string | null = null
