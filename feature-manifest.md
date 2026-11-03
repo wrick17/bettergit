@@ -1,20 +1,101 @@
 # BetterGit Feature Manifest
 
-Date: 2026-10-16. Product and acceptance record updated 2026-10-17 through requirements A-Z and the conflict Reset requirement (revision r14: final product acceptance status; G records and S delivery still active). 2026-10-19 addendum: the Settings sheet fix and VS Code colour and file icon themes (Themes row), with source and headless evidence on branch `t3/vscode-theme-extensions`; not yet reviewed, natively checked or published.
+Date: 2026-10-16. **The current decision record (2026-11-03) below is authoritative.** Where an older row, snapshot or decision disagrees with it, the older text is historical evidence and is kept unchanged. Product and acceptance record updated 2026-10-17 through requirements A-Z and the conflict Reset requirement (revision r14: final product acceptance status; G records and S delivery still active). 2026-10-19 addendum: the Settings sheet fix and VS Code colour and file icon themes (Themes row), with source and headless evidence on branch `t3/vscode-theme-extensions`; not yet reviewed, natively checked or published.
 
 ## Summary
 
-BetterGit is a Mac-only Git desktop client for private, unsigned local use. The GitHub repository is public, verified 2026-10-17 as `wrick17/bettergit`; repository visibility does not decide distribution scope. It runs on Electron 44, React 19, and TypeScript, built with electron-vite 6 and Vite 8. Git runs through the git CLI as subprocesses. The app has a multi-repo sidebar, staged and unstaged changes with commit, unified and split diffs, a commit graph with commit actions, stash and pull/push/reset actions, background fetch while the user is active, and live file watching. Config is a JSON file in the Electron userData folder. Session restore, independent panel toggles, sidebar Settings, Lucide action icons, vscode-icons folders, move-note rows, and parsed commit stats remain part of the baseline.
+Historical summary (2026-10-17; distribution, window and panel-toggle claims are superseded by the current decision record): BetterGit is a Mac-only Git desktop client for private, unsigned local use. The GitHub repository is public, verified 2026-10-17 as `wrick17/bettergit`; repository visibility does not decide distribution scope. It runs on Electron 44, React 19, and TypeScript, built with electron-vite 6 and Vite 8. Git runs through the git CLI as subprocesses. The app has a multi-repo sidebar, staged and unstaged changes with commit, unified and split diffs, a commit graph with commit actions, stash and pull/push/reset actions, background fetch while the user is active, and live file watching. Config is a JSON file in the Electron userData folder. Session restore, independent panel toggles, sidebar Settings, Lucide action icons, vscode-icons folders, move-note rows, and parsed commit stats remain part of the baseline.
 
 This project is ongoing. r17 records a source-validation snapshot from 2026-10-17 19:10 UTC; it precedes Git publication, and live delivery status is tracked by the PR stack. At the snapshot, all C, B, H, J, P, R and K review remediations were source green. V's R9 source fixed the native Git-file gitdir false block (27 focused tests, 210 assertions, typecheck 0, whitespace clean), but its fresh review 7 was still running, so V was not yet accepted. Native R30 (B, H, C, R, J, P) and R31 (full TEMP build: R staged and missing-path refusal, V independent and remote-tracking cases, cleanup restored, original app untouched) passed. Delivery heads 1-6 passed exact reviews and checks; head 6 (709f57dd…) ran the full suite at 185 pass, 988 assertions, build 0. Its first run failed at setup on glued Bun flags and was rerun with `--timeout=30000`; no product assertion failed. Head 7-10 checks and the final complete suite and equality check were still pending. Y's native gap closed in R26 (r15), and R27 verified the actual macOS Reduce Motion branch with the original OFF setting restored (r16). Earlier full-suite receipts (delivery head 0299c552…, 265 pass; R29, 277 pass, 2214 assertions) are historical, not current proof. R23 ran the full root suite (265 pass, 0 fail) and verified the live Reset build natively; R22 passed physical paint, viewport, themes, narrow width and focus; R24 passed the exact H filtered-empty case. At this snapshot G's final records and S delivery were open: one 10-layer stack of small normal commits existed locally, with no push or PR, and the end-of-stack master merge was authorized but waiting on its gates. The parent task and future backlog stay open. Historical command counts remain separate snapshots; this documentation pass ran no source tests, typecheck, build, or app actions.
 
-## Active task tracker (2026-10-17)
+## Current decision record (2026-11-03)
 
-Central TODO for the current pass. Source means code present, supported by the recorded worker checks or a bounded source read. Live means native verification of the specific frozen build and cases named. Source completion alone does not close acceptance. The root coordinates the final combined review, publication, and native pass. r14: rows marked Accepted are closed by the root's final acceptance (R23 full suite and live build, R22-R24 native passes); open native gaps are named in their rows. Earlier bounded proof stays attributed to its own build.
+Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.json` 0.1.14. Sources: CHANGELOG.md 0.0.1-0.1.14, master history (PRs #41-#53), the source files named below, and the 2026-11-03 task journals. Status words: **shipped** (released in a published version), **merged** (on master, not yet released), **pending** (requested, not implemented or not verified). Automated and native evidence are named separately; nothing here claims native proof that was not run.
 
-Current runtime (r14, from the R23/R24 handoffs and a fresh `ps` read): exactly one Electron app, PID 35262, window 81436, on second display 3 at (-465, -1410, 2560, 1410), viewport 2560x1410. R23 published renderer `index-DHzXaI8z.js` 0203f813…e2a3f, CSS `index-BD_e11z2.css` 35fa9aa6…, main 907d3036…, preload 182b5e79…. Watcher PID 44937 is intentionally stopped (`TN`). Historical: R21 found macOS locked with the renderer hidden and inner 1100x900; the user unlocked, and R22 then passed physical paint, viewport, themes, 1100 narrow width and focus. Preserve the user's state, the existing window and all seven human fixture cases; do not reload, resume the watcher or build into watched `out` without root coordination. PIDs 46276, 35759 and older are historical.
+### Product scope and distribution
 
-Model routing: after the user logged in again, the Claude provider's main model is actual Opus. Handshake session a28d48bb-fe2a-4aa8-84bb-c975dad5a43b showed incoming Opus, and the main API messages of the hide task a37bb166… and the Reset task eb13ef59… were verified Opus. Earlier Haiku routing and auth failures stay recorded as historical, attributed as they happened; no policy change and no Opus-only claim for auxiliary calls is made. Sol wrote code only during the user's explicit temporary fallback, and that work is retained. From here, code, design and report work goes to Opus; reviews, runtime and Git go to Sol. The root orchestrates only.
+- Mac-only, Apple silicon. Releases are public GitHub Releases on `wrick17/bettergit`: one `BetterGit-<version>-arm64.dmg` per tag, built by `.github/workflows/release.yml` and `scripts/release-mac.sh` with electron-builder. Supersedes "private, unsigned local use" and "packaging/code signing planned".
+- Signing: without the Apple signing secrets the build is ad-hoc signed and not notarized (the state of v0.1.14). The scripts support Developer ID signing and notarization when the full secret set exists; a partial set fails the build.
+- In-app updates (0.1.8): check at launch and daily, download only on click, Restart to Update replaces the app at its installed path; refused while a Git write runs or edits are unsaved. Packaged swap is covered by automated tests, not native proof.
+- Window: opaque native background, no vibrancy (0.1.0, 0.1.3; `src/main/index.ts` `backgroundColor`). Supersedes the "transparent window" rows.
+- Single instance (0.1.14): a second launch exits and focuses or reopens the one window (`requestSingleInstanceLock`, `second-instance`). Supersedes "Single-instance lock planned/open".
+- Startup (0.1.14): a missing saved source folder is skipped and logged; the window opens before the runtime starts, so a missing folder can no longer stop the app from opening.
+
+### Panels (merged in #53, release pending as 0.1.15)
+
+- The sidebar is common to both tabs. History has three panels after it: commits, commit files, diff. Changes has two: files, diff. There is no commit-list control in Changes.
+- Toolbar panel buttons match the panels on the current tab, in panel order: Changes = Sidebar, Files, Diff; History = Sidebar, Commits, Files, Diff.
+- Session fields keep their names and schema: `listOpen` controls only History commits; `detailOpen` controls files on both tabs; `diffOpen` controls the code diff on both tabs. Hiding History commits never hides Changes files.
+- Responsive auto-fold still applies (Changes files use the list fold threshold, History files the details threshold). An explicit toolbar choice pins the panel and overrides auto-fold (`panelPins`). State persists in the session; no new session schema.
+- Supersedes "Three independent tab-row panel toggles" (Appearance and UI table) for semantics; the toggles stay independent per panel.
+- Evidence: `test/editor.test.ts` panel-toggle regression; Terra full suite 514 pass / 4315 assertions / 0 fail; Helium browser suite 29 tests / 533 assertions; real App disposable-fixture check of order, tab switch, files vs diff independence, session remount and narrow pin PASS. No native window-count check (macOS query denied).
+
+### Git operation safety (0.1.14)
+
+- An in-progress rebase, merge, cherry-pick or revert shows a Continue / Abort banner above the tabs, also when no files changed. Continue refuses while conflicts are unresolved; Abort asks first. Busy state and a refresh run on success and failure.
+- BetterGit refuses Continue or Abort when a Git autostash is pending (`rebase-merge/autostash`, `rebase-apply/autostash`, `MERGE_AUTOSTASH`), so Git cannot restore ignored files over new local content. It refuses to continue a replay with a pending merge commit instead of guessing its parent. The user finishes these in a terminal. Unsupported rebase scripts and apply-mode steps also go to the terminal.
+- Pull, merge, rebase and checkout never overwrite ignored or untracked files (`--no-overwrite-ignore`, overwrite guards); merge and rebase take a backup ref first.
+
+### Branches and refs (0.1.14 unless noted)
+
+- History remote-ref menu, first four actions: create a local tracking branch, merge, rebase, delete the remote branch. Each acts on the exact full ref and hash shown; destructive ones confirm. Remote delete uses a lease on the shown hash and refuses a stale ref.
+- Checkout picker: compact and flat, opens with the current branch focused (including nested names), shows L/R markers and full names, filter selects the first match. Create and Switch stay in the picker. Builds on the 0.0.2 sectioned picker and 0.1.3 branch actions.
+
+### Changes and diff (0.1.14 unless noted)
+
+- Diff text can be selected and copied in unified and split, including removed lines and while the inline editor is mounted. Labels are excluded from copies. Selected chunks stay mounted while scrolling. Limit: copy covers the main selection only; text in virtual rows that were never mounted during a very fast scroll is not copied.
+- File headers show the complete file path, and light mode shows no gray gaps (the browser test asserts a 0 px gap).
+- Changes filename filter: Stage All stages only the visible, filtered unstaged paths; an empty filter result shows its own empty state.
+- Find can be scoped to one file from that file's header; it searches only that file.
+- Destructive file actions confirm inline with two clicks (0.1.11). Fully staged files show only in Staged, unstaged only in Changes, partially staged in both (0.1.10).
+
+### Toolbar, notifications and fetch
+
+- Fetch and Pull are direct toolbar actions; the Fetch dropdown keeps all fetch and pull modes (0.1.7, 0.1.14).
+- Transient toasts dismiss after 5 s (`TOAST_MS = 5000`). Failures also go to the persistent notification list, which keeps unread entries across restarts (0.1.6). Toasts are transient; the notification list is the persistent record.
+- Background fetch every 10 minutes while the user is active, never pulls or pushes, backs off after transient failures (0.1.5, 0.1.10). Fetch All / Pull All concurrency is a General setting, default 4 (0.1.13).
+
+### Themes and extensions (baseline 2026-10-19, 0.0.2, 0.0.8, 0.1.10)
+
+- Light theme, Dark theme and File icons pickers choose installed VS Code extensions from Open VSX or a local `.vsix`; the System/Light/Dark mode picks the active colour theme. The built-in BetterGit look is the default. Extensions are untrusted input: only contributed theme JSON and images are read, no code runs, paths stay inside the extension folder, sizes are capped, icons reach the page as data URLs. Settings combines themes and extension management in one Themes section; Details shows an extension's README without downloading the extension. Marketplace details and downloads use the system network connection.
+- **Theme picker groups: source complete and verified.** The user chose "Included" (2026-11-03, superseding "Default" and "Built-in") for the group containing the built-in BetterGit Dark/Light entry in each theme dropdown. `Dialogs.tsx` `ThemeSelect` wraps the built-in option in `<optgroup label="Included">`; option values are unchanged, so saved choices still match. Extension themes stay grouped by extension name. Combined Settings fixture verified all three Included groups on 2026-11-03.
+
+### Other standing decisions (baseline kept from Key decisions and CHANGELOG)
+
+- Editor and apps: open repositories and files in the saved editor or terminal app; only existing paths inside known repositories, no shell, nothing created; launching works while Git is busy (R, 0.1.1).
+- Commit identity: show the effective author and edit Git identity per repository or globally (0.1.10).
+- Diffs: unified by default with split as an option, auto-unified below 900 px pane width (0.0.7); Shiki with the JavaScript regex engine (CSP forbids WASM); word emphasis stronger than line tint; moved-code detection with connectors; hide whitespace through Git's own filter, view-only; formatted Markdown diff, raw by default; 3/10/25/All context that keeps editors, unsaved text and scroll (0.0.8); collapse/expand all; lock files and diffs over 400 changed lines start collapsed; per-hunk stage/unstage/discard with raw-byte guards; editing the working tree in the diff (⌘S saves, Esc discards). ⌘F finds across the diff, including collapsed files and folded lines.
+- Conflicts: inline resolver in the standard diff, never stages on Save; Accept Combination only when compatible and hidden otherwise; Reset rebuilds Git's conflict from the real stages; Use Ours / Use Theirs replace the file and leave it unmerged; Stage appears once no markers remain (0.1.9).
+- History: graph of local branches and remotes only; commit context menu (Shift+F10) for checkout, branch, tag, cherry-pick, revert, amend message, compare; backup refs before reset, cherry-pick and revert; hidden branches with Show all (0.1.3); HEAD follows branch switches.
+- Persistence: repo, tab, commit, file, draft, search, pane visibility, widths, preferences, context, tree, scroll, compare and per-file collapse persist across quit, reload and switching; transient operations are never replayed. Config is atomic JSON in userData, with invalid JSON moved aside.
+- Busy state: one canonical per-repo lock for all foreground writes and background fetch, visible spinners and friendly blocked reasons; external Git processes are not excluded. Help > Show Command Log records each Git command without messages or credentials (0.1.9).
+- Sidebar: multi-repo tree from scanned folders, hide/show hidden, reorder (drag, Alt+Arrow), ahead/behind and dirty counts, per-repo and per-folder Fetch/Pull/Refresh, Pull All fast-forward only. Removing a source never deletes files.
+- Non-goals kept: no AI features, no token storage (machine Git credentials only), no interactive rebase, blame or worktree UI.
+
+### Pending
+
+- **Extension Details README images inline: source complete and verified.** README images, including previews inside `<details>`/`<summary>`, render inline through the main-process image bridge. The image policy permits Open VSX, Shields, and image-suffixed raw.githubusercontent.com and user-images.githubusercontent.com URLs and github.com owner/repo/raw URLs; it checks public DNS and every redirect, validates image bytes, and caps remote images at 2 MiB. Installed icons retain their 512 KiB cap. The actual Electron bridge and Settings fixture decoded Catppuccin’s hero and four previews; three dead user-images links fell back to links, as unavailable or offline images do. No renderer errors were observed.
+- **Release 0.1.15: PENDING publication.** The panel fix (#53), README image fix, Included theme grouping and this decision record are prepared for release. Not tagged or published.
+
+### Delivery rules (user requirements)
+
+- Every change reaches master through a GitHub PR merged with `gh pr merge --merge --delete-branch` (merge commit). Then fast-forward local master and delete the finished worktree and branch. No local merges or direct pushes to master. Supersedes the 2026-10-17 "one PR stack, merge at the end" delivery (S).
+- Before pushing tag `v<version>`, the release PR adds a `## [<version>] - <date>` CHANGELOG section with the correct version and date; the workflow publishes it as release notes and fails without it.
+- During repo work, exactly one BetterGit dev window runs the latest completed change. After a release, stop dev, install the published build in `~/Applications`, and leave exactly one window of it open.
+- Released and installed: v0.1.14 (PR #52, workflow run 41585765493 passed tests/typecheck/build; DMG SHA-256 matched the GitHub digest; one installed window).
+
+### Historical material in this file
+
+- The 2026-10-17 tracker, its runtime PIDs, model-routing notes, r12-r17 snapshots, test counts and "ACTIVE"/"IN PROGRESS" G and S rows are historical. They are not the current task state. Agent routing is defined by the user's agent instructions, not by this manifest.
+- Gap: this manifest does not reconstruct how the 2026-10-17 local delivery stack reached master, or 0.0.1-0.1.13 test receipts; see CHANGELOG.md and the PR history.
+
+## Task tracker snapshot (2026-10-17, historical)
+
+Historical: everything in this section reflects 2026-10-17; see the current decision record above. Central TODO for that pass. Source means code present, supported by the recorded worker checks or a bounded source read. Live means native verification of the specific frozen build and cases named. Source completion alone does not close acceptance. The root coordinates the final combined review, publication, and native pass. r14: rows marked Accepted are closed by the root's final acceptance (R23 full suite and live build, R22-R24 native passes); open native gaps are named in their rows. Earlier bounded proof stays attributed to its own build.
+
+Runtime at r14 (historical, from the R23/R24 handoffs and a fresh `ps` read): exactly one Electron app, PID 35262, window 81436, on second display 3 at (-465, -1410, 2560, 1410), viewport 2560x1410. R23 published renderer `index-DHzXaI8z.js` 0203f813…e2a3f, CSS `index-BD_e11z2.css` 35fa9aa6…, main 907d3036…, preload 182b5e79…. Watcher PID 44937 is intentionally stopped (`TN`). Historical: R21 found macOS locked with the renderer hidden and inner 1100x900; the user unlocked, and R22 then passed physical paint, viewport, themes, 1100 narrow width and focus. Preserve the user's state, the existing window and all seven human fixture cases; do not reload, resume the watcher or build into watched `out` without root coordination. PIDs 46276, 35759 and older are historical.
+
+Model routing at r14 (historical; not current routing): after the user logged in again, the Claude provider's main model is actual Opus. Handshake session a28d48bb-fe2a-4aa8-84bb-c975dad5a43b showed incoming Opus, and the main API messages of the hide task a37bb166… and the Reset task eb13ef59… were verified Opus. Earlier Haiku routing and auth failures stay recorded as historical, attributed as they happened; no policy change and no Opus-only claim for auxiliary calls is made. Sol wrote code only during the user's explicit temporary fallback, and that work is retained. From here, code, design and report work goes to Opus; reviews, runtime and Git go to Sol. The root orchestrates only.
 
 | ID | Item | Source | Live | Owner | Remaining TODO |
 |---|---|---|---|---|---|
@@ -282,7 +363,7 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 | Layout | Divider arrow keys step 12 px, Shift steps 48 px; double-click resets | done | `Splitter.tsx` (`onKeyDown`, `onDoubleClick`, `commit`) |
 | Layout | Sidebar, Changes-list, and History-list widths remembered | done | `Splitter.tsx` (`useResizable`); callers use `bettergit.sidebarWidth`, `bettergit.changesListWidth`, `bettergit.historyListWidth` in localStorage |
 | Layout | Toggle sidebar | done | `menu.ts` (`Cmd+Shift+S`), `App.tsx` |
-| Layout | Three independent tab-row panel toggles, persisted | done | `App.tsx` (`pane-toggles`) uses Sidebar, File list/Commit list, and Detail labels, constant across open/closed state; `Icons.tsx` sets `aria-pressed` and maps `paneList` to Columns3; `session.ts` persists visibility |
+| Layout | Three independent tab-row panel toggles, persisted | done; semantics superseded 2026-11-03 (see current decision record, Panels) | `App.tsx` (`pane-toggles`) uses Sidebar, File list/Commit list, and Detail labels, constant across open/closed state; `Icons.tsx` sets `aria-pressed` and maps `paneList` to Columns3; `session.ts` persists visibility |
 | Layout | Traffic-light clearance with sidebar closed | done | `App.tsx` adds `sidebar-closed`; `styles.css` adds 84 px toolbar left padding |
 | Text | Page zoom: Small 0.9, Default 1, Large 1.15, Largest 1.3 | done | `Dialogs.tsx` (`TEXT_SIZES`), `src/main/index.ts` (`setZoomFactor`), `config.ts` clamps saved values to 0.8 through 1.6 |
 | Visual | Shared surface blur token | done in source | `styles.css` tokenizes glass blur; I later used it for the scrim too. Historical hardcoded 8 px blur was superseded. 2026-10-19: the scrim dropped the blur for a plain dim, because a blurred scrim became the dialog's backdrop root and showed a smeared page through the dialog glass (Themes). New-source material regression remains pending |
@@ -316,18 +397,18 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 
 | Area | Feature | Status | Evidence |
 |---|---|---|---|
-| Platform | Mac-only window (hidden inset title bar, transparent, no native vibrancy) | done | `src/main/index.ts` (`titleBarStyle`, `transparent`). Vibrancy removed 2026-10-22: the user reported Spaces swipes as much smoother without it |
+| Platform | Mac-only window (hidden inset title bar, opaque native background since 0.1.0/0.1.3, no native vibrancy) | done | `src/main/index.ts` (`titleBarStyle`, `transparent`). Vibrancy removed 2026-10-22: the user reported Spaces swipes as much smoother without it |
 | Build | electron-vite dev and build scripts | done | `package.json` (`dev`, `build`, `start`), `electron.vite.config.ts` |
 | Build | Bun for tests and sample generation | done | `package.json` (`test: bun test`, `sample`) |
 | Build | Typecheck script | done | `package.json` has `typecheck: tsc --noEmit -p tsconfig.json`. Historical baseline and later worker checkpoints passed. This documentation pass did not rerun typecheck; G needs a combined current-source result |
-| Build | Packaging with electron-builder | planned | Not in `package.json` |
-| Build | Code signing | planned | Private, unsigned local build |
+| Build | Packaging with electron-builder | done; superseded 2026-11-03 | Historical: not in `package.json`. Now `dist` script, `scripts/release-mac.sh`, `.github/workflows/release.yml` |
+| Build | Code signing | ad-hoc by default; Developer ID optional | Historical: private, unsigned local build. Now ad-hoc signed, not notarized, unless the full signing secret set exists (current decision record) |
 | Tests | Unit tests for git ops, history, diffs, graph, scan, dirty counts | done | Historical 2026-10-16 baseline: 20 tests, 3 files, 45 assertions, 0 failures. Later frozen snapshot: 117 tests, 12 files, 565 assertions, 0 failures. Newer focused counts appear under J/K/R/H/X and are separate, overlapping checkpoints, not one full-suite total |
 | Tests | Tests for config, watcher, background fetch, moves UI | partial | Historical absence is superseded in part by lock/background concurrency and focused renderer/render/async checks. These do not prove native UI, full watcher behavior or background timing. Remaining config/watcher coverage is not audited by this document pass |
 | Sample | Sample workspace generator | done | `scripts/create-sample-workspace.ts`, `fixtures/` (gitignored) |
 | Dev loop | watch-build rebuilds main/preload/renderer; watch-app restarts only on main/preload hash changes | partial, runtime externally managed | No matching repository scripts in the recorded baseline. A temporary `watch-app.cjs` now exists outside the repo, watcher PID 44937, intentionally TN. It rebuilds on source saves and main/preload saves can kill/relaunch the app. Desired safe renderer reload and hash-gated main/preload restart remain a product workflow requirement, not accepted repository tooling |
 | Dev loop | Avoid app.relaunch on rebuild to prevent duplicate instances | done (code verified, not run) | Baseline source had no `app.relaunch`. Keep one window and the desired hash-gated restart policy; the external paused watcher is not proof of the requested safe repository workflow |
-| Dev loop | Single-instance lock | planned | No `requestSingleInstanceLock` found |
+| Dev loop | Single-instance lock | shipped 0.1.14 | Historical: none found. Now `src/main/index.ts` `requestSingleInstanceLock` and `second-instance` |
 | Updates | Check for Updates: automatic check at launch and every 24 h (packaged only, silent unless an update exists) and from the app menu's Check for Updates…, which also shows up to date or the failure | source 2026-10-28 | `src/main/updater.ts` (`check`), `src/main/update.ts` (`latestRelease`, `pickRelease`: fixed `wrick17/bettergit` latest stable release, higher x.y.z only, exactly one `BetterGit-<v>-arm64.dmg` with a non-null sha256 digest and a size cap; the download URL is built from the tag), `src/main/menu.ts`; `test/update.test.ts` |
 | Updates | One-click update: Update downloads (never automatically), Restart to Update replaces the running app at its own installed path and name and reopens that path | source 2026-10-28; packaged swap and macOS App Management not yet natively proven | `update.ts` (`download`: streamed SHA-256 and size check; `stage`: read-only mount, bundle ID, version, arch, `codesign --verify --deep --strict`, same signing team when the running app has one, always detached; `installTarget`: canonical bundle from the executable, refuses dev, translocated, and read-only or unwritable folders such as a disk image, with a releases-page fallback; `SWAP_SCRIPT`: waits up to 60 s for the PID, moves the old app aside, moves the staged app in, opens it, and puts the old app back if a move or the launch fails; `settleUpdates` clears the folder on the next launch and reports an update that did not install), `updater.ts`, `repo-lock.ts` (`closeRepoLocks`: no restart during a Git write, no new write once accepted), `UpdateStatus.tsx` (restart refused, and the quit cancelled, while file edits or conflict choices are unsaved), `NotificationHub.tsx`; `test/update.test.ts` (scratch fixtures, real tiny DMG), `test/repo-lock.test.ts`, `test/browser.test.ts` |
 
@@ -355,7 +436,7 @@ Feature rows describe source coverage unless they explicitly cite bounded native
 
 ## Key decisions
 
-The product decisions below retain the original baseline and the later overrides. Implementation notes are updated where later source or bounded native evidence supersedes the earlier status. Delivery and full acceptance remain open.
+The product decisions below are historical; the current decision record (2026-11-03) overrides them where they differ. They retain the original baseline and the later overrides. Implementation notes are updated where later source or bounded native evidence supersedes the earlier status. Delivery and full acceptance remain open.
 
 - Keep Electron and a Mac-only scope for the transparent window and the hidden inset title bar, as configured in `src/main/index.ts`.
 - Aim for a current VS Code / better-source-control feel with floating frosted-glass panels and no 2000s-era styling. This is the supplied design direction; code confirms panel blur and BSC graph/action grouping, not visual fidelity.
@@ -446,7 +527,7 @@ Counts are supplied review totals. States summarize current source coverage, not
 ## Constraints and non-goals
 
 - Mac only. The window uses macOS-only options.
-- Private, unsigned LOCAL USE until distribution scope is chosen. No distribution pipeline. This product decision is separate from the public `wrick17/bettergit` repository, verified through GitHub metadata on 2026-10-17.
+- Historical (superseded 2026-11-03 by public GitHub Releases DMGs): private, unsigned LOCAL USE until distribution scope is chosen. No distribution pipeline. This product decision is separate from the public `wrick17/bettergit` repository, verified through GitHub metadata on 2026-10-17.
 - Git must be installed. The app adds `/usr/bin`, `/usr/local/bin`, and `/opt/homebrew/bin` to PATH.
 - No token storage and no account picker. Credentials come from the machine.
 - Background fetch never pulls or pushes.
@@ -469,7 +550,7 @@ Counts are supplied review totals. States summarize current source coverage, not
 | Detached/tag-only commits hidden in history | `--branches --remotes` omits commits reachable only from detached HEAD or tags, as well as backup-only histories. | risk |
 | Background fetch status | Earlier frozen native run confirmed no renderer spinner/Stage All lock and raw blocked text during background fetch. J wires main/preload/App snapshot events with friendly progress/reasons; accepted at r14. | fixed |
 | Idle threshold has no UI | `idleThresholdSeconds` works in background fetch but has no Settings input. | in progress |
-| Single-instance lock missing | Two app instances can run on the same config. | open |
+| Single-instance lock missing | Historical: two app instances could run on the same config. Fixed in 0.1.14. | fixed |
 | Corner-radius scale unaudited | Tokens cover panel 12, card 8, chip 6, sm/default/lg 7/10/16, pill 999 px; dialogs now use lg. Literal radii remain; consistency and window corners have not been visually checked. | unverified |
 | Light mode | Listed I/N/Q cases passed bounded frozen dark/light native checks at 900/1800. R20 checked conflict light/dark syntax in the DOM; R22 then passed physical light/dark paint, narrow width and focus. | verified r14 |
 | 240 Hz target | Aspiration. Not measured. | unverified |
@@ -488,7 +569,7 @@ Counts are supplied review totals. States summarize current source coverage, not
 | Comparison context control | Comparison requests use fixed `-U3`; changing the shared History context preference reloads commit detail, not the active comparison. | risk |
 | Path check is lexical | Historical lexical-prefix-only guard allowed symlink aliases/outside descendants. Canonical validated real roots and shared real/symlink lock identity now reject unknown/outside paths in reported tests. R also validates existing editor paths; accepted at r14. This does not establish every config patch boundary or external-process exclusion. | fixed in scope |
 | Commit message duplication | `commitDetails` returns the full message via `%B`; `CommitMenu.tsx` combines subject and that body again for copy/amend, which can duplicate the subject. | risk |
-| No packaging | No packaging/signing pipeline is configured; distribution needs a packaging and signing decision. | open |
+| No packaging | Historical: no packaging/signing pipeline. Superseded: GitHub Releases DMG, ad-hoc signed and not notarized by default. Notarization is not in place. | superseded |
 | Test gaps | Original no-config/watcher/background/UI-test claim is partly superseded by lock/background overlap and focused renderer/async tests. Full config/watcher/timing and native coverage are still not established. Focused pass totals are not a combined full-suite result. | partial |
 | Commit graph port | Code comment says ported from better-source-control. Upstream not compared. | unverified |
 | History collapse vs scroll collision | The confirmed shared history-diff key overwrote collapse with numeric scroll. B split history-files/history-diff, passed the old-key mutation regression and bounded reload/scroll-700 native check. | fixed, bounded B proof |
@@ -593,6 +674,6 @@ Results are separate checkpoints. Do not add overlapping focused totals or use a
 - Performance, including the 240 Hz target and the 1,000-repo sidebar, remains unmeasured. Full watcher invalidation, background-fetch timing and every session/panel transition have no blanket native acceptance.
 - Clone, push, pull, reset, cherry-pick and revert against real remotes remain outside this document pass. Earlier temporary failing-push and temporary staging fixtures are the bounded exception recorded under J/P, not production remote-operation proof.
 - Repository custom watch-build/watch-app tooling is not accepted. Preserve the stopped external watcher and one existing window until the root coordinates publication.
-- Code signing, packaging and distribution remain undecided and unconfigured. The public `wrick17/bettergit` repository does not change the private, unsigned local-use scope. S has local layered commits only (current status in Todoist and PR history): finishing the partition, push, ONE coherent PR stack, completed Codex review of the exact current HEAD before every merge, and the final merge to master are future work.
+- Historical (superseded 2026-11-03, see current decision record): code signing, packaging and distribution remain undecided and unconfigured. The public `wrick17/bettergit` repository does not change the private, unsigned local-use scope. S has local layered commits only (current status in Todoist and PR history): finishing the partition, push, ONE coherent PR stack, completed Codex review of the exact current HEAD before every merge, and the final merge to master are future work.
 - Final post-native status reconciliation belongs to the later acceptance pass. This record does not mark the project complete.
 - 2026-10-19 Themes: Electron was not run, so the extension IPC handlers, the .vsix open panel and the launch-time icon preload have no native proof. No lint or format tooling is configured. Open VSX download integrity beyond HTTPS is not checked.

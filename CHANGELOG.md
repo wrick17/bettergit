@@ -2,6 +2,14 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.15] - 2026-11-03
+
+### Fixed
+
+- Keep History commit controls separate from Changes files, and make file and diff controls independent.
+- Show supported README images inline in extension details, including previews inside expandable sections.
+- Group the built-in theme choices under Included.
+
 ## [0.1.14] - 2026-11-03
 
 ### Improved
