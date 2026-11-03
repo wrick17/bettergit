@@ -12,7 +12,7 @@ import { savedView, saveView } from './session'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
 import { DraftActions, EditableDiff, prepareSource, useUnsaved, type EditBridge } from './DiffEditor'
 import { blockedReason, workingLabel } from './repo-busy'
-import { useFindSource } from './find'
+import { openFindIn, useFindSource } from './find'
 import { chunked, range, RowChunk } from './row-chunk'
 import { holdPlace, suspendHold } from './scroll-anchor'
 import './intraline.css'
@@ -217,6 +217,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
 
   useSourceAnchor(containerRef, current, formatMarkdown, shown.files, wrap)
   useFindSource(containerRef, shown.files, (path) => setChoices((prev) => ({ ...prev, [path]: true })))
+  const findIn = useCallback((path: string) => { if (containerRef.current) openFindIn(containerRef.current, path) }, [])
   // Each moved block gets a curve from its old place to its new one. Positions are measured from the
   // rendered cells, so the arrows follow the layout and survive window resizes.
   useLayoutEffect(() => {
@@ -376,6 +377,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             open={open}
             untracked={!!stage?.untrackedPaths?.has(path)}
             onToggle={toggleFile}
+            onFind={findIn}
             layout={current}
             formatted={formatted}
             language={languageFor(path, overrides)}
@@ -422,7 +424,7 @@ export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, context }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, onFind, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, context }: {
   file: DiffFile
   context: number
   fileIndex: number
@@ -430,6 +432,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   open: boolean
   untracked: boolean
   onToggle: (path: string, open: boolean) => void
+  onFind: (path: string) => void
   layout: DiffLayout
   formatted: boolean
   language: string | null
@@ -550,7 +553,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   })
   return (
     <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
-      <FileHeader unsaved={unsaved} file={file} stat={stat} open={open} onToggle={toggle} stage={stage} untracked={untracked}
+      <FileHeader unsaved={unsaved} file={file} stat={stat} open={open} onToggle={toggle} onFind={file.hunks.length ? () => onFind(path) : undefined} stage={stage} untracked={untracked}
         actions={text && <DraftActions edit={text} path={path} />} />
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
@@ -957,13 +960,14 @@ function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHun
   )
 }
 
-// The sticky header for one file: collapse toggle, status, name with its folder, how many lines were added and
-// removed, then its actions.
-function FileHeader({ file, stat, open, onToggle, stage, untracked = false, actions, unsaved }: {
+// The sticky header for one file: collapse toggle, status, its repo-relative path (the name emphasized), how many lines
+// were added and removed, then its actions.
+function FileHeader({ file, stat, open, onToggle, onFind, stage, untracked = false, actions, unsaved }: {
   file: DiffFile
   stat: { adds: number; dels: number }
   open: boolean
   onToggle: () => void
+  onFind?: () => void
   stage?: Props['stage']
   untracked?: boolean
   unsaved?: boolean
@@ -979,18 +983,26 @@ function FileHeader({ file, stat, open, onToggle, stage, untracked = false, acti
         <Icon name={open ? 'chevronDown' : 'chevron'} />
       </button>
       <span className={`kind kind-${file.status}`}>{STATUS_LETTER[file.status]}</span>
-      <span className="path">
-        <span className="path-name">{name}</span>
-        {dir && <span className="path-dir">{dir}</span>}
-      </span>
+      <FullPath dir={dir} name={name} path={path} />
       <span className="stat" aria-label={`${stat.adds} added, ${stat.dels} removed`}>
         <span className="add">+{stat.adds}</span>
         <span className="del">−{stat.dels}</span>
       </span>
       {actions}
+      {onFind && <IconButton icon="search" label={`Find in ${path}`} className="diff-file-find" onClick={onFind} />}
       {editor && <OpenInEditorButton file={file} bridge={editor} />}
       {stage && <FileStageActions unsaved={unsaved} path={path} stage={stage} untracked={untracked} />}
     </header>
+  )
+}
+
+// A repo-relative path as one line: the folder, muted, truncates first; the file name stays bold and whole.
+export function FullPath({ dir, name, path }: { dir: string; name: string; path: string }) {
+  return (
+    <span className="path full-path" title={path}>
+      {dir && <span className="path-dir">{dir}/</span>}
+      <span className="path-name">{name}</span>
+    </span>
   )
 }
 

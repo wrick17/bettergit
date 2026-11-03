@@ -84,19 +84,34 @@ const tags = [{ name: 'v1.0.0', fullRef: 'refs/tags/v1.0.0', hash }, { name: 're
 const stashes = [{ ref: 'stash@{0}', message: 'WIP on main: topic' }]
 const worktrees = [{ path: '/picker-test', branch: 'main', hash, locked: false, current: true }, { path: '/elsewhere', branch: null, hash, locked: false, current: false }]
 
-test('sections fold refs by prefix, count them, and filter every section by whole name', () => {
+test('sections list refs flat by whole name, count them, and filter every section by whole name', () => {
   const sections = refs.buildSections({ branches: [...branches, { ...branches[0], name: 'feat/a', fullRef: 'refs/heads/feat/a', current: false },
     { ...branches[0], name: 'feat/b', fullRef: 'refs/heads/feat/b', current: false }], tags, stashes, worktrees: null })
   const labels = (rows: refs.Row[]) => rows.map((row) => `${row.level}:${row.label}${row.type === 'section' ? `(${row.count ?? '…'})` : ''}${row.type !== 'item' && !row.expanded ? '+' : ''}`)
-  // Branches open, others folded; folders sit where their first branch does and start folded unless they hold HEAD.
-  expect(labels(refs.flattenRows(sections, '', new Set()))).toEqual(['1:Branches(3)', '2:main', '2:feat+', '1:Remotes(2)+', '1:Tags(2)+', '1:Stashes(1)+', '1:Worktrees(…)+'])
-  const opened = refs.flattenRows(sections, '', new Set(['f:local:feat/', 's:remote', 'f:remote:origin/', 's:tag']))
-  expect(labels(opened)).toEqual(['1:Branches(3)', '2:main', '2:feat', '3:a', '3:b', '1:Remotes(2)', '2:origin', '3:Topic+', '2:upstream+',
-    '1:Tags(2)', '2:v1.0.0', '2:release+', '1:Stashes(1)+', '1:Worktrees(…)+'])
-  expect(refs.parentIndex(opened, 4)).toBe(2)
+  // Branches open, others folded. Nested names are never folded into folders.
+  expect(labels(refs.flattenRows(sections, '', new Set()))).toEqual(['1:Branches(3)', '2:main', '2:feat/a', '2:feat/b', '1:Remotes(2)+', '1:Tags(2)+', '1:Stashes(1)+', '1:Worktrees(…)+'])
+  const opened = refs.flattenRows(sections, '', new Set(['s:local', 's:remote', 's:tag']))
+  expect(labels(opened)).toEqual(['1:Branches(3)+', '1:Remotes(2)', '2:origin/Topic/Long-Name', '2:upstream/Topic/Long-Name',
+    '1:Tags(2)', '2:v1.0.0', '2:release/2609', '1:Stashes(1)+', '1:Worktrees(…)+'])
+  expect(refs.parentIndex(opened, 3)).toBe(1)
   // Filtering opens matching sections, lists whole names, and hides sections without a match.
   expect(labels(refs.flattenRows(sections, 'TOPIC', new Set()))).toEqual(['1:Remotes(2)', '2:origin/Topic/Long-Name', '2:upstream/Topic/Long-Name', '1:Stashes(1)', '2:WIP on main: topic', '1:Worktrees(…)'])
   expect(labels(refs.flattenRows(sections, 'topic', new Set(['s:remote'])))[0]).toBe('1:Remotes(2)+')
+})
+
+test('the picker opens on the checked-out branch even when it is nested and sorts last, and a query starts on its first match', async () => {
+  const h = await harness()
+  const local = (name: string, current = false): Branch => ({ ...branches[0], name, fullRef: `refs/heads/${name}`, current })
+  const list = [local('dev'), local('feat/KP-1630'), local('feat/task/HCP-407', true)]
+  const view = (query = '') => renderToStaticMarkup(h.choices({ branches: list, query, active: null, onQuery() {}, onActive() {}, onPick() {}, id: 'cur', disabled: false }))
+  const selectedRow = (markup: string) => markup.match(/<div[^>]*aria-selected="true"[^>]*>.*?branch-choice-name">([^<]*)</)
+  const browse = view()
+  expect(selectedRow(browse)?.[1]).toBe('feat/task/HCP-407')
+  // Focus and the checked-out mark are separate: the current row says so to assistive tech and carries its own pill.
+  expect(selectedRow(browse)?.[0]).toContain('aria-current="true"')
+  expect(browse.match(/aria-current="true"/g)).toHaveLength(1)
+  expect(browse).toContain('>Current</span>')
+  expect(selectedRow(view('feat'))?.[1]).toBe('feat/KP-1630')
 })
 
 test('local branches show unpushed and fetched-but-unpulled counts, both when diverged, and a gone upstream', async () => {
@@ -284,4 +299,65 @@ test('the branch menu never checks out on open, gives remote rows no push-only a
   expect(h.stats()).toEqual({ closed: 0, refreshed: 1, changed: 1, confirms: 2 })
   h.key('Escape'); await flush()
   expect(h.stats().closed).toBe(1)
+})
+
+// The history commit menu's branch actions, compiled in memory as the picker harness is, with the bridge and confirm faked.
+async function commitMenu(api: Record<string, unknown>, confirm: (message: string) => boolean) {
+  const compiled = await Bun.build({ entrypoints: [new URL('../src/renderer/src/CommitMenu.tsx', import.meta.url).pathname], format: 'cjs', target: 'node', external: ['*'] })
+  expect(compiled.success).toBe(true)
+  const module = { exports: {} as any }
+  const imports: Record<string, unknown> = {
+    react: React, 'react/jsx-runtime': jsx, 'react/jsx-dev-runtime': jsxDev,
+    './confirm': { confirmOverBlur: async (message: string) => confirm(message) },
+    './prefs': { hiddenBranches: () => [], setHiddenBranches() {} },
+    './repo-busy': busy,
+  }
+  runInNewContext(await compiled.outputs[0].text(), {
+    module, exports: module.exports, require: (id: string) => imports[id] ?? {}, window: { bettergit: api }, Error, Promise,
+  })
+  return module.exports.commitItems as typeof import('../src/renderer/src/CommitMenu').commitItems
+}
+
+test('the commit menu offers each ref at the commit its own actions, and a stopped merge still reloads', async () => {
+  const calls: unknown[][] = []
+  const confirms: string[] = []
+  const api = {
+    remotes: async () => [{ name: 'origin', url: '' }],
+    switchBranch: async (...args: unknown[]) => { calls.push(['switch', ...args]) },
+    deleteRemoteBranch: async (...args: unknown[]) => { calls.push(['delete-remote', ...args]) },
+    mergeBranch: async (...args: unknown[]) => { calls.push(['merge', ...args]); throw new Error('CONFLICT (content): Merge conflict in a.ts') },
+  }
+  const commitItems = await commitMenu(api, (message) => { confirms.push(message); return true })
+  const commit = { hash, subject: 's', parents: [], refs: [] } as any
+  let changed = 0
+  const errors: string[] = []
+  const items = commitItems({
+    repo: '/menu-test', commit, message: 's', head: hash, branch: 'task/HCP-407', upstream: null, webBase: null,
+    refs: { branches: ['task/HCP-407', 'dev'], remotes: ['origin/feat/HCP-405-base'] },
+    onOpenChanges() {}, onCompare() {}, onChanged: () => { changed++ }, onError: (failure) => errors.push((failure as Error).message),
+  }, { setPrompt() {}, setNotice() {}, pending: null })
+  const remote = items.filter((item) => item.group === 'remote:origin/feat/HCP-405-base').map((item) => item.label)
+  // Sublime Merge's first four for a remote ref, then copy.
+  expect(remote).toEqual(['Create Local Branch from origin/feat/HCP-405-base', 'Merge origin/feat/HCP-405-base into task/HCP-407…',
+    'Rebase task/HCP-407 onto origin/feat/HCP-405-base…', 'Delete origin/feat/HCP-405-base…', "Copy 'origin/feat/HCP-405-base'"])
+  // The checked-out branch gets no actions of its own; another local branch does.
+  expect(items.some((item) => item.group === 'ref:task/HCP-407')).toBe(false)
+  expect(items.filter((item) => item.group === 'ref:dev').map((item) => item.label)[0]).toBe('Checkout dev')
+  const pick = (label: string) => items.find((item) => item.label === label)!.onClick()
+
+  pick('Create Local Branch from origin/feat/HCP-405-base'); await flush()
+  expect(calls.at(-1)).toEqual(['switch', '/menu-test', { fullRef: 'refs/remotes/origin/feat/HCP-405-base', hash }])
+
+  pick('Delete origin/feat/HCP-405-base…'); await flush()
+  expect(confirms.at(-1)).toContain('Delete the branch feat/HCP-405-base from the remote origin?')
+  expect(confirms.at(-1)).toContain('refs/heads/feat/HCP-405-base on origin (refs/remotes/origin/feat/HCP-405-base here)')
+  expect(confirms.at(-1)).toContain('Local branches, including any that track it, are kept.')
+  expect(calls.at(-1)).toEqual(['delete-remote', '/menu-test', { fullRef: 'refs/remotes/origin/feat/HCP-405-base', hash }])
+
+  // A merge that stops on a conflict fails, yet the status is read again so the Continue and Abort bar shows.
+  const before = changed
+  pick('Merge origin/feat/HCP-405-base into task/HCP-407…'); await flush()
+  expect(calls.at(-1)).toEqual(['merge', '/menu-test', { fullRef: 'refs/remotes/origin/feat/HCP-405-base', hash }])
+  expect(errors).toEqual(['CONFLICT (content): Merge conflict in a.ts'])
+  expect(changed).toBe(before + 1)
 })

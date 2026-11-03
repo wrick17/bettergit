@@ -151,6 +151,11 @@ export const REPO_WORKING_LABELS: Record<string, string> = {
   'rename-branch': 'Renaming branch…',
   'set-upstream': 'Setting upstream…',
   'unset-upstream': 'Unsetting upstream…',
+  'delete-remote-branch': 'Deleting remote branch…',
+  'merge-branch': 'Merging…',
+  'rebase-branch': 'Rebasing…',
+  'continue-operation': 'Continuing…',
+  'abort-operation': 'Aborting…',
   reset: 'Resetting…',
   stash: 'Stashing…',
   pop: 'Popping stash…',
@@ -201,20 +206,21 @@ export function blockedReason(busy: string | null): string | undefined {
   return busy === null ? undefined : `Another action is running: ${workingLabel(busy)}`
 }
 
-// A write, then a reload. A failed write goes to onError and returns false, and the reload does not run.
+// A write, then a reload. A failed write goes to onError and returns false, and the reload does not run unless `always`:
+// a merge, rebase or continue that fails can still leave the repo stopped part way, so its status must be read again.
 // A failed reload also goes to onError, but the write still returns true, so a refresh cannot fail a finished Git write.
 export async function runRepoWrite(
   repo: string,
   key: string,
   action: () => Promise<unknown>,
-  { onError, reload }: { onError: (failure: unknown) => void; reload: () => void },
+  { onError, reload, always = false }: { onError: (failure: unknown) => void; reload: () => void; always?: boolean },
 ): Promise<boolean> {
   const ok = await runRepoAction(repo, key, action, onError)
-  if (!ok) return false
+  if (!ok && !always) return false
   try {
     reload()
   } catch (failure) {
     onError(failure)
   }
-  return true
+  return ok
 }

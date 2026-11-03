@@ -46,6 +46,53 @@ const changed = () => {
   listeners.forEach((listener) => listener())
 }
 
+// One file find is narrowed to, set by a file header's Find button. Its matches and highlights stay inside that file.
+export interface FindScope {
+  container: HTMLElement
+  path: string
+}
+let scope: FindScope | null = null
+const pathOfFile = (file: DiffFile) => file.newPath ?? file.oldPath ?? ''
+
+export function setFindScope(next: FindScope | null) {
+  if (next?.container === scope?.container && next?.path === scope?.path) return
+  scope = next
+  for (const element of [...marks.keys()]) unmark(element)
+  for (const element of containers) watch(element)
+  changed()
+}
+
+// Narrows find to one file and asks the app to open the find bar (App listens for OPEN_FIND_EVENT).
+export const OPEN_FIND_EVENT = 'bettergit:open-find'
+export function openFindIn(container: HTMLElement, path: string) {
+  setFindScope({ container, path })
+  window.dispatchEvent(new Event(OPEN_FIND_EVENT))
+}
+
+export function useFindScope(): FindScope | null {
+  useSyncExternalStore(subscribe, () => version)
+  return scope
+}
+
+// Every match in the sources on screen, in page order, kept to the scoped file while find is narrowed to one.
+export function scopedMatches(list: FindSource[], query: string, limit = Infinity): Array<{ source: FindSource; match: Match }> {
+  const out: Array<{ source: FindSource; match: Match }> = []
+  for (const source of list) {
+    if (scope && source.container.current !== scope.container) continue
+    for (const match of findMatches(source.files, query)) {
+      if (scope && pathOfFile(source.files[match.file]) !== scope.path) continue
+      out.push({ source, match })
+      if (out.length >= limit) return out
+    }
+  }
+  return out
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
 export function useFindSource(container: RefObject<HTMLDivElement | null>, files: DiffFile[], openFile: (path: string) => void) {
   const open = useRef(openFile)
   open.current = openFile
@@ -150,7 +197,7 @@ function unmark(element: Element) {
 function mark(element: Element) {
   unmark(element)
   const highlight = matchHighlight()
-  if (!needle || !highlight || !element.isConnected) return
+  if (!needle || !highlight || !element.isConnected || !inScope(element)) return
   const ranges: Range[] = []
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
   const nodes: Text[] = []
@@ -168,6 +215,10 @@ function mark(element: Element) {
   if (!ranges.length) return
   ranges.forEach((range) => highlight.add(range))
   marks.set(element, ranges)
+}
+
+function inScope(element: Element) {
+  return !scope || (scope.container.contains(element) && element.closest<HTMLElement>('[data-path]')?.dataset.path === scope.path)
 }
 
 // The range covering text offsets [start, end) across consecutive text nodes.
@@ -192,10 +243,7 @@ function rangeIn(nodes: Text[], start: number, end: number): Range | null {
 
 // The sources on screen, in page order. Re-read whenever a diff mounts, unmounts or gets new files.
 export function useFindSources(): FindSource[] {
-  useSyncExternalStore((listener) => {
-    listeners.add(listener)
-    return () => { listeners.delete(listener) }
-  }, () => version)
+  useSyncExternalStore(subscribe, () => version)
   const next = [...sources]
     .filter((source) => source.container.current?.isConnected && source.container.current.getClientRects().length > 0)
     .sort((a, b) => (a.container.current!.compareDocumentPosition(b.container.current!) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))

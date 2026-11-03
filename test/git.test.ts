@@ -14,6 +14,7 @@ import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
 import { deleteUntracked, discardPaths, fetchAll, push } from '../src/main/git/ops'
 import { deleteBranch, renameBranch, setUpstream, unsetUpstream } from '../src/main/git/ops'
+import { abortOperation, continueOperation, deleteRemoteBranch, mergeBranch, rebaseBranch } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
 import { cleanup, freshSample } from './helpers'
 import type { ConflictFingerprint } from '../src/shared/conflict'
@@ -2107,4 +2108,189 @@ test('commit identity follows effective author precedence and writes only the se
     const child = Bun.spawnSync([process.execPath, '-e', script], { cwd: path.resolve(import.meta.dir, '..'), env: { ...env, HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_NOSYSTEM: '1' }, stderr: 'pipe' })
     expect(child.exitCode, child.stderr.toString()).toBe(0)
   } finally { cleanup(home) }
+})
+
+describe('stopped operations and branch merge or rebase', () => {
+  const dirs: string[] = []
+  afterAll(() => dirs.forEach(cleanup))
+  const sha = async (dir: string, ref = 'HEAD') => (await git(dir, ['rev-parse', ref])).trim()
+  const subjects = async (dir: string, range: string) => (await git(dir, ['log', '--format=%s', range])).trim().split('\n').filter(Boolean)
+  const select = async (dir: string, fullRef: string) => {
+    const branch = (await readBranches(dir)).find((entry) => entry.fullRef === fullRef)
+    expect(branch).toBeDefined()
+    return { fullRef, hash: branch!.hash }
+  }
+  const save = async (dir: string, files: Record<string, string>, message: string) => {
+    for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text)
+    await git(dir, ['add', '-f', '--', ...Object.keys(files)])
+    await git(dir, ['commit', '-qm', message])
+    return sha(dir)
+  }
+  // main and topic both change f.txt from base, so replaying either onto the other stops on a conflict.
+  // topic's second commit tracks .env, which .gitignore ignores, so only a continue can reach it.
+  const fixture = async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-operation-'))
+    dirs.push(dir)
+    await git(dir, ['init', '-q', '-b', 'main'])
+    await git(dir, ['config', 'user.name', 'Operation Test'])
+    await git(dir, ['config', 'user.email', 'operation@example.com'])
+    await save(dir, { '.gitignore': '.env\n', 'f.txt': 'base\n' }, 'base')
+    await git(dir, ['switch', '-q', '-c', 'topic'])
+    const conflicting = await save(dir, { 'f.txt': 'topic\n' }, 'topic edit')
+    const tracksEnv = await save(dir, { '.env': 'FROM_TOPIC=1\n' }, 'track env')
+    await git(dir, ['switch', '-q', 'main'])
+    await save(dir, { 'f.txt': 'main\n' }, 'main edit')
+    return { dir, conflicting, tracksEnv }
+  }
+  // Takes the HEAD side of the conflict, so the resolution leaves no file changed.
+  const resolveAsHead = async (dir: string) => {
+    await git(dir, ['checkout', '--ours', '--', 'f.txt'])
+    await git(dir, ['add', '--', 'f.txt'])
+  }
+
+  test('a rebase stopped on a conflict stays detected with no changed files, and continue checks the commits left to replay', async () => {
+    const { dir } = await fixture()
+    await git(dir, ['switch', '-q', 'topic'])
+    const onto = await sha(dir, 'main')
+    await expect(rebaseBranch(dir, await select(dir, 'refs/heads/main'))).rejects.toThrow()
+    await resolveAsHead(dir)
+    const status = await readStatus(dir)
+    expect(status.changes).toEqual([])
+    expect(status.operation).toBe('rebase')
+    // A stale button for another operation is refused.
+    await expect(continueOperation(dir, 'merge')).rejects.toThrow('A rebase is in progress, not a merge')
+    // The next todo step tracks .env, so an ignored local .env must stop the continue before Git replaces it.
+    writeFileSync(path.join(dir, '.env'), 'LOCAL=1\n')
+    await expect(continueOperation(dir, 'rebase')).rejects.toThrow(/\.env/)
+    expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('LOCAL=1\n')
+    expect((await readStatus(dir)).operation).toBe('rebase')
+    unlinkSync(path.join(dir, '.env'))
+    await continueOperation(dir, 'rebase')
+    // The emptied commit is dropped and the next one is replayed onto main.
+    expect((await readStatus(dir)).operation).toBeNull()
+    expect(await subjects(dir, `${onto}..HEAD`)).toEqual(['track env'])
+    expect(await sha(dir, 'HEAD^')).toBe(onto)
+  })
+
+  test('an emptied cherry-pick in a sequence is skipped, and the pick after it is checked before it writes', async () => {
+    const { dir, conflicting, tracksEnv } = await fixture()
+    const start = await sha(dir)
+    expect((await gitRaw(dir, ['cherry-pick', conflicting, tracksEnv])).code).not.toBe(0)
+    await resolveAsHead(dir)
+    expect((await readStatus(dir)).changes).toEqual([])
+    expect((await readStatus(dir)).operation).toBe('cherry-pick')
+    // The stopped pick heads Git's todo list; the check skips it and reaches the .env pick behind it.
+    writeFileSync(path.join(dir, '.env'), 'LOCAL=1\n')
+    await expect(continueOperation(dir, 'cherry-pick')).rejects.toThrow(/\.env/)
+    expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('LOCAL=1\n')
+    unlinkSync(path.join(dir, '.env'))
+    await continueOperation(dir, 'cherry-pick')
+    expect((await readStatus(dir)).operation).toBeNull()
+    expect(await subjects(dir, `${start}..HEAD`)).toEqual(['track env'])
+  })
+
+  test('merge and rebase refuse an ignored file the branch tracks, continue refuses unresolved files, and abort restores HEAD', async () => {
+    const { dir } = await fixture()
+    const start = await sha(dir)
+    writeFileSync(path.join(dir, '.env'), 'LOCAL=1\n')
+    const topic = await select(dir, 'refs/heads/topic')
+    await expect(mergeBranch(dir, topic)).rejects.toThrow(/\.env/)
+    await expect(rebaseBranch(dir, topic)).rejects.toThrow(/\.env/)
+    expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('LOCAL=1\n')
+    expect((await readStatus(dir)).operation).toBeNull()
+    unlinkSync(path.join(dir, '.env'))
+    // A selection whose commit moved since it was shown is refused.
+    await expect(mergeBranch(dir, { ...topic, hash: start })).rejects.toThrow('Selected branch disappeared or changed')
+
+    await expect(mergeBranch(dir, topic)).rejects.toThrow()
+    expect((await readStatus(dir)).operation).toBe('merge')
+    await expect(continueOperation(dir, 'merge')).rejects.toThrow('Resolve and stage every conflicted file first.')
+    await abortOperation(dir, 'merge')
+    expect((await readStatus(dir)).operation).toBeNull()
+    expect(await sha(dir)).toBe(start)
+
+    await expect(rebaseBranch(dir, topic)).rejects.toThrow()
+    expect((await readStatus(dir)).operation).toBe('rebase')
+    await abortOperation(dir, 'rebase')
+    expect((await readStatus(dir)).operation).toBeNull()
+    expect(await sha(dir)).toBe(start)
+    expect((await git(dir, ['branch', '--show-current'])).trim()).toBe('main')
+    await expect(abortOperation(dir, 'rebase')).rejects.toThrow('No rebase is in progress')
+  })
+
+  for (const operation of ['rebase', 'merge'] as const) {
+    test(`a ${operation} started with --autostash is left for the terminal, so its stash never replaces a recreated ignored file`, async () => {
+      const { dir } = await fixture()
+      // side changes f.txt from base like main does, so either replay stops on a conflict.
+      await git(dir, ['switch', '-q', '-c', 'side', 'main^'])
+      await save(dir, { 'f.txt': 'side\n' }, 'side edit')
+      if (operation === 'merge') await git(dir, ['switch', '-q', 'main'])
+      writeFileSync(path.join(dir, '.env'), 'STASHED=1\n')
+      await git(dir, ['add', '-f', '--', '.env'])
+      const head = await sha(dir)
+      expect((await gitRaw(dir, operation === 'rebase' ? ['rebase', '--autostash', 'main'] : ['merge', '--autostash', 'side'])).code).not.toBe(0)
+      writeFileSync(path.join(dir, '.env'), 'NEW=1\n')
+      await resolveAsHead(dir)
+      const stopped = await sha(dir)
+      const stash = operation === 'rebase' ? readFileSync(path.join(dir, '.git/rebase-merge/autostash'), 'utf8') : await sha(dir, 'MERGE_AUTOSTASH')
+      for (const act of [continueOperation, abortOperation]) {
+        await expect(act(dir, operation)).rejects.toThrow(`git ${operation} --continue or git ${operation} --abort`)
+      }
+      expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('NEW=1\n')
+      expect((await readStatus(dir)).operation).toBe(operation)
+      expect(await sha(dir)).toBe(stopped)
+      expect(operation === 'rebase' ? readFileSync(path.join(dir, '.git/rebase-merge/autostash'), 'utf8') : await sha(dir, 'MERGE_AUTOSTASH')).toBe(stash)
+      if (operation === 'merge') expect(stopped).toBe(head)
+    })
+  }
+
+  test('continuing a cherry-pick sequence refuses a merge commit left to replay, whose -m parent it cannot model', async () => {
+    const { dir } = await fixture()
+    // M adds .env relative to its second parent only, so a first-parent check would miss what -m 2 writes.
+    await git(dir, ['switch', '-q', '-c', 'p2', 'main^'])
+    await save(dir, { 'y.txt': 'y\n' }, 'p2')
+    await git(dir, ['switch', '-q', '-c', 'p1', 'main^'])
+    await save(dir, { '.env': 'FROM_MERGE=1\n' }, 'p1')
+    await git(dir, ['merge', '-q', '--no-ff', '-m', 'M', 'p2'])
+    const merge = await sha(dir)
+    // X changes f.txt relative to its second parent, against main's edit, so the sequence stops on it first.
+    await git(dir, ['switch', '-q', '-c', 'x2', 'main^'])
+    await save(dir, { 'z.txt': 'z\n' }, 'x2')
+    await git(dir, ['switch', '-q', '-c', 'x1', 'main^'])
+    await save(dir, { 'f.txt': 'x1\n' }, 'x1')
+    await git(dir, ['merge', '-q', '--no-ff', '-m', 'X', 'x2'])
+    const conflicting = await sha(dir)
+    await git(dir, ['switch', '-q', 'main'])
+    expect((await gitRaw(dir, ['cherry-pick', '-m', '2', conflicting, merge])).code).not.toBe(0)
+    await resolveAsHead(dir)
+    writeFileSync(path.join(dir, '.env'), 'LOCAL=1\n')
+    const stopped = await sha(dir)
+    await expect(continueOperation(dir, 'cherry-pick')).rejects.toThrow('a commit left to replay is a merge')
+    expect(readFileSync(path.join(dir, '.env'), 'utf8')).toBe('LOCAL=1\n')
+    expect((await readStatus(dir)).operation).toBe('cherry-pick')
+    expect(await sha(dir)).toBe(stopped)
+  })
+
+  test('deleting a remote branch is refused once someone pushed to it after it was shown', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-remote-delete-'))
+    dirs.push(dir)
+    const remote = path.join(dir, 'remote.git'), local = path.join(dir, 'local'), other = path.join(dir, 'other')
+    await git(dir, ['init', '-q', '--bare', '-b', 'main', remote])
+    await git(dir, ['clone', '-q', remote, other])
+    await git(other, ['config', 'user.name', 'Remote Test'])
+    await git(other, ['config', 'user.email', 'remote@example.com'])
+    await save(other, { 'a.txt': 'one\n' }, 'one')
+    await git(other, ['push', '-q', 'origin', 'main', 'main:feature'])
+    await git(dir, ['clone', '-q', remote, local])
+    const shown = await select(local, 'refs/remotes/origin/feature')
+    await save(other, { 'a.txt': 'two\n' }, 'two')
+    await git(other, ['push', '-q', 'origin', 'main:feature'])
+    await expect(deleteRemoteBranch(local, shown)).rejects.toThrow(/stale info/)
+    expect(await sha(remote, 'refs/heads/feature')).toBe(await sha(other))
+    await expect(deleteRemoteBranch(local, await select(local, 'refs/heads/main'))).rejects.toThrow('is a local branch')
+    await git(local, ['fetch', '-q'])
+    await deleteRemoteBranch(local, await select(local, 'refs/remotes/origin/feature'))
+    expect((await gitRaw(remote, ['rev-parse', '--verify', '--quiet', 'refs/heads/feature'])).code).not.toBe(0)
+    expect((await readBranches(local)).some((branch) => branch.fullRef === 'refs/remotes/origin/feature')).toBe(false)
+  })
 })

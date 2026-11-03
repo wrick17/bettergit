@@ -16,6 +16,7 @@ const api = window.bettergit
 // Rows have one fixed height, so the list renders only what is on screen even with thousands of tags.
 const ROW = 28
 const OVERSCAN = 8
+const LIST_MAX = 13 * ROW
 
 // Controlled so filtering, keyboard activation and exact identities share one list. `active` is a row key, so a
 // background refresh or a fold keeps the highlight on the same ref.
@@ -45,18 +46,20 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, hid
     for (const branch of branches) if (!branch.remote && branch.upstreamRef) map.set(branch.upstreamRef, [...map.get(branch.upstreamRef) ?? [], branch.name])
     return map
   }, [branches])
-  // Folds flipped while browsing persist; folds flipped while filtering last only for that query.
+  // Sections folded or opened while browsing persist; those flipped while filtering last only for that query.
   const [browseToggled, setBrowseToggled] = useState<ReadonlySet<string>>(() => new Set())
   const [filterToggled, setFilterToggled] = useState<{ query: string; keys: ReadonlySet<string> }>({ query: '', keys: new Set() })
   const filtering = query.trim() !== ''
   const toggled = filtering ? (filterToggled.query === query ? filterToggled.keys : EMPTY) : browseToggled
   const rows = useMemo(() => flattenRows(sections, query, toggled), [sections, query, toggled])
   const list = useRef<HTMLDivElement>(null)
-  const [view, setView] = useState({ top: 0, height: 560 })
-  useLayoutEffect(() => { if (list.current) list.current.scrollTop = 0 }, [query])
+  const [view, setView] = useState({ top: 0, height: LIST_MAX })
 
+  // Browsing starts on the checked-out branch, wherever it sorts; a typed query starts on its first match.
   const found = active === null ? -1 : rows.findIndex((row) => row.key === active)
-  const selected = found >= 0 ? found : Math.max(0, rows.findIndex((row) => row.type === 'item'))
+  const checkedOut = filtering ? -1 : rows.findIndex((row) => row.type === 'item' && row.entry.item.kind === 'branch' && !!row.entry.current)
+  const selected = found >= 0 ? found : checkedOut >= 0 ? checkedOut : Math.max(0, rows.findIndex((row) => row.type === 'item'))
+  useLayoutEffect(() => { if (list.current) { list.current.scrollTop = 0; reveal(selected) } }, [query])
   const toggle = (key: string) => {
     const flip = (keys: ReadonlySet<string>) => { const next = new Set(keys); if (!next.delete(key)) next.add(key); return next }
     if (filtering) setFilterToggled({ query, keys: flip(toggled) })
@@ -65,7 +68,7 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, hid
   const activate = (index: number) => {
     const row = rows[index]
     if (!row) return
-    if (row.type !== 'item') return toggle(row.key)
+    if (row.type === 'section') return toggle(row.key)
     if (!disabled && !row.entry.disabled) onPick(row.entry.item)
   }
   const reveal = (index: number) => {
@@ -91,19 +94,19 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, hid
       if (box) menuFor(selected, { x: box.left + 24, y: box.bottom })
       return
     }
-    // Left and right fold the tree only while the box is empty, so they still move the caret in a typed query.
+    // Left and right fold sections only while the box is empty, so they still move the caret in a typed query.
     if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && (filtering || !row)) return
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(event.key)) return
     event.preventDefault()
     if (disabled || !rows.length) return
     if (event.key === 'Enter') return activate(selected)
     if (event.key === 'ArrowRight') {
-      if (row.type !== 'item' && !row.expanded) toggle(row.key)
-      else if (row.type !== 'item' && rows[selected + 1]?.level > row.level) move(selected + 1)
+      if (row.type === 'section' && !row.expanded) toggle(row.key)
+      else if (row.type === 'section' && rows[selected + 1]?.level > row.level) move(selected + 1)
       return
     }
     if (event.key === 'ArrowLeft') {
-      if (row.type !== 'item' && row.expanded) return toggle(row.key)
+      if (row.type === 'section' && row.expanded) return toggle(row.key)
       const parent = parentIndex(rows, selected)
       if (parent >= 0) move(parent)
       return
@@ -114,6 +117,8 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, hid
   const start = Math.max(0, Math.floor(view.top / ROW) - OVERSCAN)
   const end = Math.min(rows.length, Math.ceil((view.top + view.height) / ROW) + OVERSCAN)
   const optionId = (index: number) => `${id}-option-${index}`
+  // As tall as its rows, up to a cap, so a short list leaves no empty sheet below it.
+  const height = Math.min(Math.max(rows.length, 1) * ROW, LIST_MAX)
   const label = tags === undefined ? 'Search local and remote branches' : 'Search branches, tags, stashes and worktrees'
   return <div className="branch-search">
     <input
@@ -122,7 +127,7 @@ export function BranchChoices({ branches, current, tags, stashes, worktrees, hid
       value={query} onChange={(event) => onQuery(event.target.value)} onKeyDown={navigate}
       placeholder={label} disabled={disabled} autoComplete="off" spellCheck={false}
     />
-    <div className="branch-choices" role="tree" id={`${id}-list`} aria-label="Branches and refs" aria-busy={disabled || undefined} ref={list}
+    <div className="branch-choices" role="tree" id={`${id}-list`} aria-label="Branches and refs" aria-busy={disabled || undefined} ref={list} style={{ height }}
       onScroll={(event) => setView({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
       <div style={{ height: rows.length * ROW, paddingTop: start * ROW }}>
         {rows.slice(start, end).map((row, offset) => <RowView key={row.key} row={row} id={optionId(start + offset)} conflicts={conflicts}
@@ -147,12 +152,16 @@ function RowView({ row, id, conflicts, tracking, selected, disabled, onClick, on
   return <div
     id={id} role="treeitem" aria-level={row.level} aria-selected={selected}
     aria-expanded={row.type === 'item' ? undefined : row.expanded} aria-disabled={inert || undefined}
+    aria-current={entry?.current || undefined}
     className={`branch-choice ${row.type}${selected ? ' selected' : ''}${entry?.current ? ' current' : ''}`}
     style={{ paddingLeft: 10 + (row.level - 1) * 16 }} title={entry ? `${entry.path}${entry.detail ? `\n${entry.detail}` : ''}` : undefined}
     onMouseDown={(event) => event.preventDefault()} onClick={onClick}
     onContextMenu={onMenu && ((event) => { event.preventDefault(); onMenu({ x: event.clientX, y: event.clientY }) })}
   >
-    {row.type === 'item' ? <span className="branch-twisty" /> : <Icon name={row.expanded ? 'chevronDown' : 'chevron'} className="branch-twisty" />}
+    {/* A branch row marks local or remote in the twisty's place, as Sublime Merge's L and R. */}
+    {row.type !== 'item' ? <Icon name={row.expanded ? 'chevronDown' : 'chevron'} className="branch-twisty" />
+      : branch ? <span className={`branch-twisty branch-kind${branch.remote ? ' remote' : ''}`} aria-hidden="true">{branch.remote ? 'R' : 'L'}</span>
+      : <span className="branch-twisty" />}
     <span className="branch-choice-name">{row.label}</span>
     {row.type === 'section' && <span className="count">{row.count ?? '…'}</span>}
     {branch && <TrackBadges branch={branch} conflicts={entry!.current ? conflicts : 0} />}
@@ -384,7 +393,7 @@ export function BranchPicker({ repo, branches, headHash, conflicts, onRefresh, o
   const title = mode === 'switch' ? 'Checkout' : mode === 'base' ? 'Choose a base branch' : mode === 'create' ? 'Create branch'
     : mode === 'rename' ? 'Rename branch' : `Set upstream for ${target?.name ?? ''}`
   const subtitle = mode === 'switch'
-    ? 'Remote branches create or reuse a local tracking branch. Tags check out detached. Stashes apply and stay listed. Worktrees open. Right-click a branch for more.'
+    ? 'Enter checks out. A remote branch creates or reuses its local tracking branch; a tag checks out detached. Right-click a branch for more.'
     : mode === 'rename' ? 'Renames the local branch. It never replaces another branch, and nothing changes on a remote.'
     : mode === 'upstream' ? `Choose the branch ${target?.name ?? ''} pulls from. ${target?.upstream ? `Now: ${target.upstream}.` : 'It has none now.'}`
     : 'Creates an independent local branch and switches to it.'

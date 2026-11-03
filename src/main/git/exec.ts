@@ -145,6 +145,8 @@ function gitEnv(options: GitOptions): NodeJS.ProcessEnv {
     GIT_PAGER: 'cat',
     PAGER: 'cat',
     GIT_TERMINAL_PROMPT: '0',
+    // No terminal to edit in: commands that would open an editor (rebase --continue, commit on a merge) keep the prepared message.
+    GIT_EDITOR: ':',
     GIT_OPTIONAL_LOCKS: options.optionalLocks === false ? '1' : '0',
     GIT_ASKPASS: '',
     SSH_ASKPASS_REQUIRE: 'never',

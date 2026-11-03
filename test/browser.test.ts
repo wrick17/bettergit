@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { git } from '../src/main/git/exec'
@@ -33,7 +33,8 @@ beforeAll(async () => {
   if (!build.success) throw new Error(build.logs.join('\n'))
   const script = (await build.outputs.find((output) => output.path.endsWith('.js'))!.text()).replace(/<\/script/g, '<\\/script')
   const css = readFileSync(`${root}/src/renderer/src/diff-editor.css`, 'utf8') + readFileSync(`${root}/src/renderer/src/styles.css`, 'utf8')
-  browser = await playwright.chromium.launch()
+  // BETTERGIT_TEST_CHROMIUM points at another Chromium build where Playwright's own is not installed.
+  browser = await playwright.chromium.launch(process.env.BETTERGIT_TEST_CHROMIUM ? { executablePath: process.env.BETTERGIT_TEST_CHROMIUM } : {})
   page = await browser.newPage({ viewport: { width: 800, height: 600 } })
   // A real origin, so the modules can read localStorage.
   await page.route('http://bettergit.test/', (route: any) => route.fulfill({
@@ -187,6 +188,18 @@ test.skipIf(!playwright)('file and hunk destruction reaches Git only on the seco
     expect(writes).toEqual(['stage', 'unstage', 'stage', 'unstage'])
     writes.length = 0
     await page.evaluate(() => (window as any).under.setDiffLayout('unified'))
+    // The layout switch renders in the background. Moving the pointer off an armed button disarms it, so a header that
+    // moved under the pointer between the two clicks made the second click arm again. Click once the rows are unified
+    // and the button holds still.
+    await page.waitForFunction(() => !document.querySelector('.diff :is(.split-row, .ed-split, .cm-mergeView)'))
+    await page.locator('.diff-file[data-path="scratch.txt"] .diff-file-actions .discard').evaluate(async (button: HTMLElement) => {
+      for (let still = 0, last = ''; still < 3;) {
+        await new Promise(requestAnimationFrame)
+        const box = JSON.stringify(button.getBoundingClientRect())
+        still = box === last ? still + 1 : 0
+        last = box
+      }
+    })
     const fileButton = (name: string) => page.locator('.diff-file-actions').getByRole('button', { name, exact: true })
     const deleteButton = fileButton('Delete untracked file scratch.txt')
     await deleteButton.click()
@@ -608,7 +621,8 @@ test.skipIf(!playwright)('file headers match the Files pane fill and remain full
         visibility: getComputedStyle(file).contentVisibility, headerFill: style.backgroundColor, filesFill: getComputedStyle(document.querySelector('.file-list, .commit-info')!).backgroundColor, image: style.backgroundImage }
     })
     expect([result.left, result.width, result.radius, result.border]).toEqual([0, 0, '0px', '0px'])
-    expect([result.gap, result.overflow, result.horizontal, result.visibility, result.image]).toEqual([8, 'auto', 0, 'auto', 'none'])
+    // Files sit flush, so no canvas shows between them.
+    expect([result.gap, result.overflow, result.horizontal, result.visibility, result.image]).toEqual([0, 'auto', 0, 'auto', 'none'])
     expect(result.headerFill).toBe(result.filesFill)
     await page.locator('.diff-pane').evaluate((pane: HTMLElement) => { pane.scrollTop = 100 })
     const sticky = await page.evaluate(() => document.querySelector('.diff-file > header')!.getBoundingClientRect().top - document.querySelector('.diff-pane')!.getBoundingClientRect().top)
@@ -715,11 +729,16 @@ test.skipIf(!playwright)('built-in and extension themes paint an opaque window b
       const data = context.getImageData(0, 0, bitmap.width, bitmap.height).data
       let translucent = 0
       for (let index = 3; index < data.length; index += 4) if (data[index] < 255) translucent++
-      return { translucent, corner: [...data.slice(0, 4)] }
+      // A pixel only the window paints: below the panes, clear of their rounded corners and shadows.
+      const window = 4 * ((bitmap.height - 2) * bitmap.width + bitmap.width - 2)
+      return { translucent, window: [...data.slice(window, window + 4)] }
     }, shot)
     expect({ theme, translucent: paint.translucent }).toEqual({ theme, translucent: 0 })
     if (theme === 'extension-dark') {
-      expect(paint.corner).toEqual([1, 4, 9, 255])
+      // The compositor rasterises this layered page with ±1 in one channel on some tiles (seen across 0,4,9 to 1,5,9 while
+      // the computed colour stayed #010409), so each channel may be off by one. The built-in dark window is far from it.
+      const off = paint.window.map((value: number, index: number) => Math.abs(value - [1, 4, 9, 255][index]))
+      expect(Math.max(...off), `window pixel ${paint.window}`).toBeLessThanOrEqual(1)
       expect(panes.list).toBe('rgb(1, 4, 9)')
     } else expect(Number(panes.list.match(/[\d.]+/g)![3])).toBeLessThan(1)
   }
@@ -1972,4 +1991,197 @@ test.skipIf(!playwright)('an update downloads only on click, and the restart is 
     w.hubRoot.unmount()
     document.getElementById('hub-host')?.remove()
   })
+})
+
+// Mouse gestures on the diff, as the user makes them. Both return the point used.
+const pointIn = async (selector: string, dx = 40) => {
+  const box = (await page.locator(selector).first().boundingBox())!
+  return { x: box.x + dx, y: box.y + box.height / 2 }
+}
+const drag = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 8 })
+  await page.mouse.up()
+}
+const selected = () => page.evaluate(() => window.getSelection()!.toString())
+
+test.skipIf(!playwright)('Changes diff: full paths, label-free selection, removed lines select and copy, filtered stage-all stages only listed files', async () => {
+  page.setDefaultTimeout(10000)
+  const repo = mkdtempSync(path.join(tmpdir(), 'bettergit-select-'))
+  const staged: string[][] = []
+  const lines = (name: string) => Array.from({ length: 40 }, (_, i) => `const value${i + 1} = 'line ${i + 1} in ${name}'`).join('\n') + '\n'
+  try {
+    await git(repo, ['init', '-q'])
+    await git(repo, ['config', 'user.name', 'Test'])
+    await git(repo, ['config', 'user.email', 'test@example.test'])
+    mkdirSync(path.join(repo, 'src'))
+    writeFileSync(path.join(repo, 'a.ts'), lines('a'))
+    writeFileSync(path.join(repo, 'src/b.ts'), lines('b'))
+    await git(repo, ['add', 'a.ts', 'src/b.ts'])
+    await git(repo, ['commit', '-qm', 'Test baseline'])
+    writeFileSync(path.join(repo, 'a.ts'), lines('a').replace("line 5 in a'", "line 5 CHANGED in a'").replace("line 30 in a'", "line 30 CHANGED in a'"))
+    writeFileSync(path.join(repo, 'src/b.ts'), lines('b').replace("line 9 in b'", "line 9 CHANGED in b'"))
+    await page.exposeFunction('selStatus', () => readStatus(repo))
+    await page.exposeFunction('selWorking', async (isStaged: boolean, context: number, file?: string, hideWhitespace?: boolean) => ({ files: await workingDiff(repo, isStaged, context, file, hideWhitespace), moves: [] }))
+    await page.exposeFunction('selRead', (file: string) => readFileSync(path.join(repo, file), 'utf8'))
+    await page.exposeFunction('selStage', async (paths: string[]) => { staged.push(paths); await git(repo, ['add', '--', ...paths]) })
+    await page.setViewportSize({ width: 1400, height: 900 })
+    await page.evaluate(async (repo: string) => {
+      const w = window as any
+      const { createElement, createRoot, flushSync, ChangesView, setContextLines, setDiffLayout, setIgnoreWhitespace } = w.under
+      setContextLines(3); setDiffLayout('unified'); setIgnoreWhitespace(false)
+      localStorage.setItem('bettergit.changesView', 'list')
+      Object.assign(w.bettergit, {
+        commitIdentity: async () => ({ name: 'Test', email: 'test@example.test', error: null }),
+        working: (_repo: string, isStaged: boolean, context: number, file?: string, hideWhitespace?: boolean) => w.selWorking(isStaged, context, file, hideWhitespace),
+        readFile: (_repo: string, file: string) => w.selRead(file),
+        stage: (_repo: string, paths: string[]) => w.selStage(paths),
+      })
+      document.getElementById('root')!.style.cssText = 'display:flex;height:850px;width:1400px'
+      w.selRoot = createRoot(document.getElementById('root'))
+      let revision = 0
+      w.selRender = async () => {
+        const status = await w.selStatus()
+        flushSync(() => w.selRoot.render(createElement(ChangesView, { repo, status, revision: revision++, listOpen: true, detailOpen: true, onChanged: w.selRender, onError: (error: unknown) => { throw error } })))
+      }
+      await w.selRender()
+    }, repo)
+    await page.waitForSelector('.diff-file[data-path="a.ts"] .ed-line[data-new="6"]')
+
+    // One repo-relative path per header and per list row, the name not repeated.
+    expect(await page.locator('.diff-file[data-path="src/b.ts"] > header .path').textContent()).toBe('src/b.ts')
+    expect(await page.locator('.file-list .group li .path').allTextContents()).toEqual(['a.ts', 'src/b.ts'])
+
+    // A drag across the hunk's action row copies code, not button labels.
+    await drag(await pointIn('.diff-file[data-path="a.ts"] .ed-line[data-new="3"] code'), await pointIn('.diff-file[data-path="a.ts"] .ed-line[data-new="6"] code', 120))
+    let text = await selected()
+    expect(text).toContain("value4 = 'line 4 in a'")
+    expect(text).toContain('line 5 CHANGED')
+    expect(text).not.toMatch(/Stage hunk|Discard hunk/)
+
+    // In the editor, a drag from a removed line selects the removed text itself and runs on into the current lines.
+    await page.mouse.click(1390, 890)
+    await page.locator('.diff-file[data-path="a.ts"] .ed-line[data-new="2"] code').click()
+    const removed = '.diff-file[data-path="a.ts"] .cm-deletedLine'
+    await page.waitForSelector(removed)
+    await drag(await pointIn(removed, 60), await pointIn('.diff-file[data-path="a.ts"] .cm-line:has-text("value7 ")', 120))
+    text = await selected()
+    expect(text).toContain("lue5 = 'line 5 in a'")
+    expect(text).toContain("const value5 = 'line 5 CHANGED in a'\nconst value6")
+    // Tab still reaches the editor's text, which is editable again.
+    await page.keyboard.press('Tab')
+    expect(await page.evaluate(() => {
+      const content = document.querySelector('.diff-file[data-path="a.ts"] .cm-content')!
+      return content.getAttribute('contenteditable') === 'true' && document.activeElement === content
+    })).toBe(true)
+
+    // An editor selection across the removed lines marks them and copies them in place.
+    await drag(await pointIn('.diff-file[data-path="a.ts"] .cm-line:has-text("value3 ")', 20), await pointIn('.diff-file[data-path="a.ts"] .cm-line:has-text("value7 ")', 120))
+    expect(await page.locator('.diff-file[data-path="a.ts"] .cm-deletedSelected').count()).toBe(1)
+    const copied = await page.evaluate(() => {
+      const clipboardData = new DataTransfer()
+      document.querySelector('.diff-file[data-path="a.ts"] .cm-content')!.dispatchEvent(new ClipboardEvent('copy', { clipboardData, bubbles: true, cancelable: true }))
+      return clipboardData.getData('text/plain')
+    })
+    expect(copied).toContain("const value4 = 'line 4 in a'\nconst value5 = 'line 5 in a'\nconst value5 = 'line 5 CHANGED in a'\nconst value6")
+
+    // Editing still works after selecting removed text.
+    await drag(await pointIn(removed, 60), await pointIn(removed, 140))
+    await page.locator('.diff-file[data-path="a.ts"] .cm-line:has-text("value2 ")').first().click()
+    await page.keyboard.press('End')
+    await page.keyboard.type(' // typed')
+    expect(await page.evaluate(() => {
+      const { mountedEditors } = (window as any).under
+      return mountedEditors.get(document.querySelector('.diff-file[data-path="a.ts"] .diff-editor')).view.state.doc.line(2).text
+    })).toBe("const value2 = 'line 2 in a' // typed")
+    await page.keyboard.press('Escape')
+
+    // A filter narrows the list and the diffs, and Stage all then stages only the listed file.
+    await page.fill('input[aria-label="Filter changed files by path"]', 'b.ts')
+    expect(await page.locator('.file-list .group li .path').allTextContents()).toEqual(['src/b.ts'])
+    await page.waitForFunction(() => !document.querySelector('.diff-file[data-path="a.ts"]'))
+    await page.getByRole('button', { name: 'Stage 1 matching file', exact: true }).click()
+    await page.waitForFunction(async () => (await (window as any).selStatus()).changes.some((change: any) => change.path === 'src/b.ts' && change.staged))
+    expect(staged).toEqual([['src/b.ts']])
+    expect((await readStatus(repo)).changes.filter((change) => change.staged).map((change) => change.path)).toEqual(['src/b.ts'])
+
+    // A filter that matches nothing says so, apart from a clean tree.
+    await page.fill('input[aria-label="Filter changed files by path"]', 'nothing-matches')
+    await page.getByText('No changed files match “nothing-matches”.').waitFor()
+    expect(await page.locator('.diff-pane .empty-title').innerText()).toBe('No matching files')
+  } finally {
+    await page.evaluate(() => { (window as any).selRoot?.unmount(); document.getElementById('root')!.style.cssText = '' })
+    await page.setViewportSize({ width: 800, height: 600 })
+    page.setDefaultTimeout(30000)
+    cleanup(repo)
+  }
+}, 60000)
+
+test.skipIf(!playwright)('a selection keeps its rows mounted while the pane scrolls far away, and lets them go once cleared', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, DiffView, setDiffLayout } = w.under
+    setDiffLayout('unified')
+    const lines = Array.from({ length: 600 }, (_, i) => ({ type: 'context', text: `row ${i + 1} text`, oldNo: i + 1, newNo: i + 1 }))
+    const files = [{ oldPath: 'long.txt', newPath: 'long.txt', status: 'modified', binary: false, hunks: [{ header: '@@ -1,600 +1,600 @@', lines }] }]
+    const pane = document.createElement('div')
+    pane.className = 'diff-pane'
+    pane.style.cssText = 'height:400px;overflow:auto'
+    document.getElementById('root')!.appendChild(pane)
+    w.longRoot = createRoot(pane)
+    flushSync(() => w.longRoot.render(createElement(DiffView, { files, moves: [] })))
+  })
+  try {
+    const row = (index: number) => `.diff-pane [data-source-row="0:0:${index}"] code`
+    await page.waitForSelector(row(1))
+    await drag(await pointIn(row(1)), await pointIn(row(4), 80))
+    expect(await selected()).toContain('text\nrow 3 text\nrow 4 text')
+    const scrolled = (top: number) => page.evaluate(async (top: number) => {
+      document.querySelector<HTMLElement>('.diff-pane')!.scrollTop = top
+      for (let frame = 0; frame < 10; frame++) await new Promise(requestAnimationFrame)
+      return !!document.querySelector('[data-source-row="0:0:1"]')
+    }, top)
+    // Far past the mount margin, the selected rows stay, so the selection keeps its start.
+    expect(await scrolled(9000)).toBe(true)
+    expect(await selected()).toContain('text\nrow 3 text\nrow 4 text')
+    // Cleared, they unmount like any rows off screen.
+    await page.evaluate(() => window.getSelection()!.removeAllRanges())
+    expect(await scrolled(9100)).toBe(false)
+  } finally {
+    await page.evaluate(() => { (window as any).longRoot.unmount(); document.querySelector('#root > .diff-pane')?.remove() })
+  }
+})
+
+test.skipIf(!playwright)('a file header Find button narrows find to that file until the scope is cleared', async () => {
+  const file = (name: string, texts: string[]) => ({ oldPath: name, newPath: name, status: 'modified', binary: false,
+    hunks: [{ header: `@@ -1,${texts.length} +1,${texts.length} @@`, lines: texts.map((text, i) => ({ type: 'context', text, oldNo: i + 1, newNo: i + 1 })) }] })
+  await page.evaluate((files: unknown) => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, DiffView, FindBar } = w.under
+    w.scopeRoot = createRoot(document.getElementById('root')!)
+    flushSync(() => w.scopeRoot.render([
+      createElement('div', { key: 'pane', className: 'diff-pane', style: { height: '500px', overflow: 'auto' } }, createElement(DiffView, { files, moves: [] })),
+      createElement(FindBar, { key: 'bar', open: true, focusKey: 0, onClose: () => undefined }),
+    ]))
+  }, [file('a.txt', ['needle one', 'needle two', 'a needle three']), file('dir/b.txt', ['b needle', 'plain'])])
+  try {
+    await page.fill('.find-bar input', 'needle')
+    expect(await page.textContent('.find-count')).toBe('1 of 4')
+    await page.getByRole('button', { name: 'Find in dir/b.txt', exact: true }).click()
+    expect(await page.getAttribute('.find-bar input', 'placeholder')).toBe('Find in b.txt')
+    expect(await page.textContent('.find-count')).toBe('1 of 1')
+    // Only the scoped file's matches are highlighted.
+    expect(await page.evaluate(() => (CSS as any).highlights.get('find-match')?.size)).toBe(1)
+    await page.getByRole('button', { name: 'Search all diffs', exact: true }).click()
+    expect(await page.textContent('.find-count')).toBe('1 of 4')
+  } finally {
+    await page.evaluate(() => {
+      const w = window as any
+      w.under.setFindQuery('')
+      w.under.setFindScope(null)
+      w.under.clearHighlight()
+      w.scopeRoot.unmount()
+    })
+  }
 })

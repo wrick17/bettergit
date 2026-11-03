@@ -264,7 +264,7 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   })
   const handlers = new Map<string, (...args: any[]) => unknown>()
   const app = Object.assign(new EventEmitter(), {
-    setName: () => {}, getPath: () => root, whenReady: () => new Promise<void>(() => {}),
+    setName: () => {}, getPath: () => root, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}),
   })
   await loadEntry('../src/main/index.ts', {
     electron: {
@@ -482,7 +482,7 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   // The Actions trigger is an icon button like the sync actions, so it shows no text.
   expect(toolbar).not.toContain('>Actions<')
   expect(toolbar).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*class="icon-button"[^>]*aria-label="Actions"/)
-  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Push', 'Push options', 'Actions'])
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options', 'Actions'])
   // Fetch and Push open dropdowns of git commands; the force pushes are marked dangerous.
   const options = (key: string) => items.find((item) => item.key === key)!.menu!
   expect(options('fetch').map((item) => item.label)).toEqual(['fetch', 'fetch --tags', 'fetch --prune', 'pull', 'pull --ff-only', 'pull --rebase', 'pull --rebase --autostash'])
@@ -502,6 +502,12 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
     expect(running.find((item) => item.key === 'fetch')).toMatchObject({ busy: true, label: repoBusy.workingLabel(key), blocked: undefined })
     expect(running.find((item) => item.key === 'push')!.blocked).toBe(`Another action is running: ${repoBusy.workingLabel(key)}`)
   }
+  // The quick Pull button runs the same merge pull as the pull option, under the same busy key.
+  calls.length = 0
+  await items.find((item) => item.key === 'pullMerge')!.onClick()
+  await Promise.resolve()
+  expect(runs.at(-1)).toBe('pull-merge')
+  expect(calls).toEqual([['pull', '/repo', 'merge']])
   expect(options('push').map((item) => item.label)).toEqual(['push', 'push --force', 'push --force-with-lease', 'push --no-verify'])
   expect(options('push').filter((item) => item.danger).map((item) => item.key)).toEqual(['push-force', 'push-lease'])
   expect([...options('fetch'), ...options('push')].every((item) => item.detail)).toBe(true)

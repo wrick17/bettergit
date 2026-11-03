@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Commit } from '../../main/git/history'
 import { confirmOverBlur } from './confirm'
 import type { BarItem } from './OverflowBar'
+import { hiddenBranches, setHiddenBranches } from './prefs'
 import { PromptDialog } from './PromptDialog'
 import { ActionError, blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
 
@@ -17,6 +18,10 @@ export interface CommitInput {
   // The full commit message, subject and body, as git stores it.
   message: string
   head: string | null
+  // The checked-out branch's name, or null when HEAD is detached.
+  branch?: string | null
+  // The branches at this commit now, by short name, as commitRefs reads them. Null until they are read.
+  refs?: { branches: string[]; remotes: string[] } | null
   upstream: string | null
   webBase: string | null
   onOpenChanges: () => void
@@ -41,8 +46,9 @@ export function remoteWebBase(remotes: { name: string; url: string }[]): string 
 }
 
 // Git changes the repository, so the parent reloads after a successful write. Failures go to the error banner.
-function runGit({ repo, onChanged, onError }: CommitInput, key: string, action: () => Promise<unknown>) {
-  return runRepoWrite(repo, key, action, { onError, reload: () => onChanged?.() })
+// `always` reloads after a failure too, for writes that can stop part way on a conflict.
+function runGit({ repo, onChanged, onError }: CommitInput, key: string, action: () => Promise<unknown>, always = false) {
+  return runRepoWrite(repo, key, action, { onError, reload: () => onChanged?.(), always })
 }
 
 export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
@@ -67,7 +73,58 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   }
   const cherryPick = () => run('cherry', () => api.cherryPick(repo, hash).then((backup: string) => ui.setNotice(`Cherry-picked. Backup saved as ${backup}.`)))
 
+  // Each branch at this commit, by exact ref at this commit, so main refuses one that moved or was replaced since.
+  const deleteLocal = async (name: string) => {
+    const fullRef = `refs/heads/${name}`
+    if (!(await confirmOverBlur(`Delete the local branch ${name}?\n\nGit refuses if it has commits not merged into its upstream, or into HEAD when it has none. No remote branch is deleted.`))) return
+    if (await run('delete-branch', () => api.deleteBranch(repo, { fullRef, hash }))) setHiddenBranches(repo, hiddenBranches(repo).filter((ref) => ref !== fullRef))
+  }
+  // The remote is named from the configured remotes, longest match first, since a remote's name may hold a slash.
+  const deleteRemote = async (name: string) => {
+    let remote = name.slice(0, name.indexOf('/'))
+    try {
+      remote = (await api.remotes(repo)).map((entry) => entry.name).filter((entry) => name.startsWith(`${entry}/`))
+        .sort((a, b) => b.length - a.length)[0] ?? remote
+    } catch { /* the first path segment is Git's default layout; main resolves the exact remote again */ }
+    const branchName = name.slice(remote.length + 1)
+    const message = `Delete the branch ${branchName} from the remote ${remote}?\n\nThis pushes a deletion of refs/heads/${branchName} on ${remote} (refs/remotes/${name} here), for everyone who uses that remote. Git refuses if it moved since your last fetch. Local branches, including any that track it, are kept.`
+    if (await confirmOverBlur(message)) void run('delete-remote-branch', () => api.deleteRemoteBranch(repo, { fullRef: `refs/remotes/${name}`, hash }))
+  }
+  const into = input.branch ?? 'HEAD'
+  // Both stop on a conflict, so they reload on failure too, which shows the Continue and Abort bar.
+  const merge = async (name: string, fullRef: string) => {
+    if (!(await confirmOverBlur(`Merge ${name} into ${into}?\n\nGit fast-forwards when it can, or adds a merge commit. On a conflict the merge stops, so you can resolve the files in Changes, then Continue or Abort. A backup ref of ${into} is kept.`))) return
+    void runGit(input, 'merge-branch', () => api.mergeBranch(repo, { fullRef, hash }).then((backup: string) => ui.setNotice(`Merged ${name}. Backup saved as ${backup}.`)), true)
+  }
+  const rebase = async (name: string, fullRef: string) => {
+    if (!(await confirmOverBlur(`Rebase ${into} onto ${name}?\n\nIts commits not on ${name} are replayed on top of it with new hashes, so pushing them again after an earlier push needs a force push. On a conflict the rebase stops, so you can resolve the files in Changes, then Continue or Abort. A backup ref of ${into} is kept.`))) return
+    void runGit(input, 'rebase-branch', () => api.rebaseBranch(repo, { fullRef, hash }).then((backup: string) => ui.setNotice(`Rebased onto ${name}. Backup saved as ${backup}.`)), true)
+  }
+  const integrate = (name: string, fullRef: string, group: string): BarItem[] => [
+    { key: `merge:${fullRef}`, icon: 'pullMerge', ...state('merge-branch', `Merge ${name} into ${into}…`), group, onClick: () => void merge(name, fullRef) },
+    { key: `rebase:${fullRef}`, icon: 'pullRebase', ...state('rebase-branch', `Rebase ${into} onto ${name}…`), group, onClick: () => void rebase(name, fullRef) },
+  ]
+  const branchItems: BarItem[] = [
+    ...(input.refs?.branches ?? []).filter((name) => name !== input.branch).flatMap((name): BarItem[] => [
+      { key: `checkout:${name}`, icon: 'branch', ...state('switch', `Checkout ${name}`), group: `ref:${name}`,
+        onClick: () => void run('switch', () => api.switchBranch(repo, { fullRef: `refs/heads/${name}`, hash })) },
+      ...integrate(name, `refs/heads/${name}`, `ref:${name}`),
+      { key: `delete:${name}`, icon: 'trash', ...state('delete-branch', `Delete ${name}`), danger: true, group: `ref:${name}`, onClick: () => void deleteLocal(name) },
+      { key: `copy:${name}`, icon: 'copy', label: `Copy '${name}'`, group: `ref:${name}`, onClick: () => copy('branch name', name) },
+    ]),
+    // As Sublime Merge's remote ref menu: create its local branch, merge, rebase, delete, copy. Creating checks out a local
+    // branch that tracks it, or reuses the one that already tracks it exactly.
+    ...(input.refs?.remotes ?? []).flatMap((name): BarItem[] => [
+      { key: `track:${name}`, icon: 'branch', ...state('switch', `Create Local Branch from ${name}`), group: `remote:${name}`,
+        onClick: () => void run('switch', () => api.switchBranch(repo, { fullRef: `refs/remotes/${name}`, hash })) },
+      ...integrate(name, `refs/remotes/${name}`, `remote:${name}`),
+      { key: `delete-remote:${name}`, icon: 'trash', ...state('delete-remote-branch', `Delete ${name}…`), danger: true, group: `remote:${name}`, onClick: () => void deleteRemote(name) },
+      { key: `copy-remote:${name}`, icon: 'copy', label: `Copy '${name}'`, group: `remote:${name}`, onClick: () => copy('branch name', name) },
+    ]),
+  ]
+
   return [
+    ...branchItems,
     { key: 'changes', icon: 'diff', label: 'Show diff', group: 'open', onClick: onOpenChanges },
     { key: 'remote', icon: 'externalLink', label: 'Open Changes on Remote', disabled: !webBase, group: 'open', onClick: openRemote },
     { key: 'hash', icon: 'hash', label: 'Copy Commit Hash', group: 'copy', onClick: () => copy('commit hash', hash) },

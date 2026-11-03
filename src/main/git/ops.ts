@@ -4,7 +4,7 @@ import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
 import { canonicalRepoPath } from '../repo-lock'
 import { GitError, git, gitOk, gitRaw, type GitOptions } from './exec'
-import { readStatus } from './status'
+import { readStatus, REPO_OPERATIONS, type RepoOperation, type RepoStatus } from './status'
 
 export interface Branch {
   name: string
@@ -365,6 +365,19 @@ export async function deleteBranch(repo: string, selection: BranchSelection): Pr
   await git(repo, ['branch', '--delete', '--', branch.name])
 }
 
+// Deletes the remote branch the picker showed, on the one remote whose fetch mapping names it. The lease is the exact
+// commit shown, so the remote refuses the delete if anyone pushed to the branch since. Local branches and their
+// tracking settings stay; Git drops only the remote-tracking ref once the remote accepts.
+export async function deleteRemoteBranch(repo: string, selection: BranchSelection): Promise<void> {
+  const branch = selectedBranch(await readBranches(repo), selection)
+  if (!branch.remote) throw new Error(`${branch.name} is a local branch. Use Delete to remove it.`)
+  const { name, remote } = await trackingName(repo, branch.fullRef)
+  if (remote.startsWith('-')) throw new Error(`Unsupported remote name: ${remote}`)
+  await assertBranchName(repo, name)
+  const target = `refs/heads/${name}`
+  await git(repo, ['push', `--force-with-lease=${target}:${branch.hash}`, remote, `:${target}`])
+}
+
 // --move never overwrites an existing branch (that is -M). Git moves settings only in the repository config, so refuse
 // tracking from other config sources rather than silently dropping it. The new name gets the same checks as a created branch.
 export async function renameBranch(repo: string, selection: BranchSelection, name: string): Promise<void> {
@@ -661,6 +674,129 @@ export async function revertCommit(repo: string, hash: string): Promise<string> 
   const backup = await createBackupRef(repo, 'revert')
   await git(repo, ['revert', '--no-edit', commit])
   return backup
+}
+
+// Merges the branch the menu showed, by its exact commit, into HEAD. Git's message names the branch, as git merge <name> would.
+export async function mergeBranch(repo: string, selection: BranchSelection): Promise<string> {
+  const branch = await otherBranch(repo, selection, 'merge')
+  const merged = await previewMerge(repo, 'HEAD', branch.hash)
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, merged.tree), merged.moved)
+  const source = `${branch.remote ? 'remote-tracking ' : ''}branch '${branch.name}' of .`
+  const message = (await git(repo, ['fmt-merge-msg'], { input: `${branch.hash}\t\t${source}\n` })).trim()
+  const backup = await createBackupRef(repo, 'merge')
+  await git(repo, ['merge', '--no-overwrite-ignore', '--no-edit', '-m', message, branch.hash])
+  return backup
+}
+
+// Rebases HEAD onto the branch the menu showed, by its exact commit. --no-autostash keeps rebase.autoStash from
+// reapplying uncommitted changes onto a tree nobody checked; Git refuses to rebase over them instead.
+export async function rebaseBranch(repo: string, selection: BranchSelection): Promise<string> {
+  const branch = await otherBranch(repo, selection, 'rebase')
+  const writes = await rebaseWrites(repo, branch.hash, branch.hash)
+  await assertNoUntrackedOverwrite(repo, writes.paths, writes.moved)
+  const backup = await createBackupRef(repo, 'rebase')
+  await git(repo, ['rebase', '--no-autostash', branch.hash])
+  return backup
+}
+
+async function otherBranch(repo: string, selection: BranchSelection, verb: string): Promise<Branch> {
+  const branch = selectedBranch(await readBranches(repo), selection)
+  if (branch.current) throw new Error(`${branch.name} is checked out. Choose another branch to ${verb}.`)
+  const status = await readStatus(repo)
+  if (!status.headHash) throw new Error(`Create a commit first, then ${verb}.`)
+  if (status.operation) throw new Error(`A ${status.operation} is in progress. Continue or abort it first.`)
+  return branch
+}
+
+// The operation the renderer showed must still be the one stopped in the repo, so a stale button never acts on another.
+async function stoppedOperation(repo: string, operation: unknown): Promise<{ operation: RepoOperation; status: RepoStatus; gitDir: string }> {
+  if (!REPO_OPERATIONS.includes(operation as RepoOperation)) throw new Error('Unknown operation.')
+  const status = await readStatus(repo)
+  if (status.operation !== operation) {
+    throw new Error(status.operation ? `A ${status.operation} is in progress, not a ${operation}. Refresh and try again.` : `No ${operation} is in progress. Refresh and try again.`)
+  }
+  const gitDir = (await git(repo, ['rev-parse', '--absolute-git-dir'])).trim()
+  // Finishing or aborting a rebase or merge started with --autostash applies that stash, which can replace ignored or
+  // untracked files with no check. Refused before Git runs, so the stash stays where Git keeps it.
+  const autostash = operation === 'rebase'
+    ? await fs.access(path.join(gitDir, 'rebase-merge/autostash')).then(() => true, () => fs.access(path.join(gitDir, 'rebase-apply/autostash')).then(() => true, () => false))
+    : operation === 'merge' && await gitOk(repo, ['rev-parse', '--verify', '--quiet', 'MERGE_AUTOSTASH'])
+  if (autostash) {
+    throw new Error(`This ${operation} put uncommitted changes aside with --autostash, and Git puts them back when it finishes or aborts, without checking for ignored files. Nothing changed. Finish it in a terminal with git ${operation} --continue or git ${operation} --abort; the stash stays saved until then.`)
+  }
+  return { operation: operation as RepoOperation, status, gitDir }
+}
+
+// Commits the resolution and lets the operation go on. An empty resolution is skipped, as Git asks for a cherry-pick
+// or revert; a rebase drops it on its own, and a merge commit may be empty.
+export async function continueOperation(repo: string, requested: unknown): Promise<void> {
+  const { operation, status, gitDir } = await stoppedOperation(repo, requested)
+  if (status.changes.some((change) => change.conflicted)) throw new Error('Resolve and stage every conflicted file first.')
+  if (operation === 'merge') {
+    await git(repo, ['commit', '--no-edit'])
+    return
+  }
+  const empty = !status.changes.some((change) => change.staged)
+  if (empty && operation !== 'rebase') {
+    // A skip resets the files to HEAD, so leftover edits must be staged or discarded first.
+    if (status.changes.some((change) => change.unstaged && change.kind !== 'untracked')) {
+      throw new Error('Nothing is staged, but some files still have changes. Stage your resolution, or discard the rest, then continue.')
+    }
+    await assertNoUntrackedOverwrite(repo, ...await pendingWrites(repo, operation, gitDir, (await git(repo, ['rev-parse', 'HEAD^{tree}'])).trim()))
+    await git(repo, [operation, '--skip'])
+    return
+  }
+  await assertNoUntrackedOverwrite(repo, ...await pendingWrites(repo, operation, gitDir, (await git(repo, ['write-tree'])).trim()))
+  await git(repo, [operation, '--continue'])
+}
+
+// Abort puts back the commit the operation started from, so its files are checked like a reset to it.
+export async function abortOperation(repo: string, requested: unknown): Promise<void> {
+  const { operation, gitDir } = await stoppedOperation(repo, requested)
+  const saved = async (file: string) => (await fs.readFile(path.join(gitDir, file), 'utf8').catch(() => '')).trim()
+  const start = operation === 'rebase' ? await saved('rebase-merge/orig-head') || await saved('rebase-apply/orig-head')
+    : operation === 'merge' ? 'HEAD' : await saved('sequencer/head') || 'HEAD'
+  await assertNoUntrackedOverwrite(repo, await treePaths(repo, await resolveCommit(repo, start)))
+  await git(repo, [operation, '--abort'])
+}
+
+// Todo commands that replay a commit's change, and those that write no files.
+const REPLAYS = new Set(['pick', 'p', 'reword', 'r', 'edit', 'e', 'fixup', 'f', 'squash', 's', 'revert'])
+const NO_WRITES = new Set(['drop', 'd', 'noop', 'break', 'b', 'label', 'l', 'update-ref', 'u'])
+
+// What continuing writes after the resolution in `tree` is committed: each commit left in Git's todo list, replayed as
+// rebaseWrites does, up to the next conflict. Commands not modeled here (exec, merge, reset) are refused.
+async function pendingWrites(repo: string, operation: Exclude<RepoOperation, 'merge'>, gitDir: string, tree: string): Promise<[string[], string[]]> {
+  const unchecked = (why: string) => new Error(`Could not check which files continuing this ${operation} would write, so nothing changed: ${why}. Continue it in a terminal.`)
+  if (operation === 'rebase' && await fs.access(path.join(gitDir, 'rebase-apply')).then(() => true, () => false)) throw unchecked('it replays commits as patches')
+  const todo = await fs.readFile(path.join(gitDir, operation === 'rebase' ? 'rebase-merge/git-rebase-todo' : 'sequencer/todo'), 'utf8').catch(() => '')
+  // The sequencer keeps the stopped commit at the top of its todo list; continuing commits it rather than replaying it.
+  const stopped = operation === 'rebase' ? ''
+    : (await git(repo, ['rev-parse', '--verify', '--quiet', operation === 'revert' ? 'REVERT_HEAD' : 'CHERRY_PICK_HEAD']).catch(() => '')).trim()
+  const paths: string[] = []
+  const moved: string[] = []
+  let ours = tree
+  let first = true
+  for (const line of todo.split('\n')) {
+    const [command, ...rest] = line.trim().split(/\s+/)
+    if (!command || command.startsWith('#') || NO_WRITES.has(command)) continue
+    if (!REPLAYS.has(command)) throw unchecked(`its todo list runs ${command}`)
+    const commit = await resolveCommit(repo, rest.find((word) => !word.startsWith('-')) ?? '')
+    const isStopped = first && commit === stopped
+    first = false
+    if (isStopped) continue
+    // A merge commit replays against the parent its -m option names, which this does not model.
+    const [, parent, ...others] = (await git(repo, ['rev-list', '--parents', '-n', '1', commit])).trim().split(' ')
+    if (others.length) throw unchecked('a commit left to replay is a merge')
+    // A revert applies the parent against the commit; reverting a root commit only deletes.
+    if (command === 'revert' && !parent) continue
+    const merged = command === 'revert' ? await previewMerge(repo, ours, parent!, commit) : await previewMerge(repo, ours, commit, parent ?? null)
+    paths.push(...(await git(repo, ['diff-tree', '-r', '-z', '--name-only', '--no-renames', '--diff-filter=d', ours, merged.tree])).split('\0').filter(Boolean))
+    moved.push(...merged.moved)
+    ours = merged.tree
+    if (merged.conflicted) break
+  }
+  return [paths, moved]
 }
 
 export async function checkoutDetached(repo: string, hash: string): Promise<void> {

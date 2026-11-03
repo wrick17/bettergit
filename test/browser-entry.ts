@@ -5,7 +5,7 @@ import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { EditableDiff, bufferedKey, lineColumnAt, mountedEditors } from '../src/renderer/src/DiffEditor'
 import { FindBar } from '../src/renderer/src/FindBar'
-import { clearHighlight, revealMatch, setFindQuery, useFindSource, watchFind } from '../src/renderer/src/find'
+import { clearHighlight, revealMatch, setFindQuery, setFindScope, useFindSource, watchFind } from '../src/renderer/src/find'
 import { typeKeys } from '../src/renderer/src/cm-editor'
 import { setSyntaxThemes } from '../src/renderer/src/highlight'
 import { SettingsDialog } from '../src/renderer/src/Dialogs'
@@ -42,5 +42,5 @@ function ActiveDiff({ files: patchFiles }: { files: DiffFile[] }) {
 }
 
 Object.assign(window, {
-  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
+  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, setFindScope, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
 })

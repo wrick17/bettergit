@@ -1,6 +1,12 @@
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { git } from './exec'
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'typechanged' | 'unmerged' | 'untracked'
+
+// A history operation stopped part way, as on a conflict. Named as the git subcommand that continues or aborts it.
+export type RepoOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert'
+export const REPO_OPERATIONS: readonly RepoOperation[] = ['rebase', 'merge', 'cherry-pick', 'revert']
 
 export interface FileChange {
   path: string
@@ -19,6 +25,8 @@ export interface RepoStatus {
   behind: number
   detached: boolean
   changes: FileChange[]
+  // Set by readStatus from the git dir, so a stopped rebase shows even with nothing left to change.
+  operation?: RepoOperation | null
 }
 
 const KIND: Record<string, ChangeKind> = {
@@ -91,8 +99,21 @@ function entryChanges(path: string, xy: string, originalPath?: string): FileChan
 }
 
 export async function readStatus(repo: string): Promise<RepoStatus> {
-  const output = await git(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all'], {
-    optionalLocks: true,
-  })
-  return parseStatus(output)
+  const [output, operation] = await Promise.all([
+    git(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all'], { optionalLocks: true }),
+    readOperation(repo),
+  ])
+  return { ...parseStatus(output), operation }
+}
+
+// The state files git keeps per worktree while an operation is stopped. REBASE_HEAD outlives a finished rebase, so a
+// rebase is read from its directory. rebase-apply with an applying file is git am, which BetterGit does not drive.
+export async function readOperation(repo: string): Promise<RepoOperation | null> {
+  const gitDir = (await git(repo, ['rev-parse', '--absolute-git-dir'], { optionalLocks: true })).trim()
+  const has = (name: string) => fs.access(path.join(gitDir, name)).then(() => true, () => false)
+  if (await has('rebase-merge') || (await has('rebase-apply') && !await has('rebase-apply/applying'))) return 'rebase'
+  if (await has('MERGE_HEAD')) return 'merge'
+  if (await has('CHERRY_PICK_HEAD')) return 'cherry-pick'
+  if (await has('REVERT_HEAD')) return 'revert'
+  return null
 }

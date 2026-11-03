@@ -83,6 +83,16 @@ test('a reload runs only after a successful write, and a failed reload is report
   expect(errors).toEqual(['rejected', 'status failed'])
 })
 
+test('a write that can stop part way reloads after a failure too, and still reports the failure', async () => {
+  const errors: string[] = []
+  let reloads = 0
+  const onError = (failure: unknown) => errors.push((failure as Error).message)
+  expect(await runRepoWrite('/repo-stop', 'continue-operation', async () => { throw new Error('CONFLICT') }, { onError, reload: () => { reloads++ }, always: true })).toBe(false)
+  expect(reloads).toBe(1)
+  expect(errors).toEqual(['CONFLICT'])
+  expect(busyKey('/repo-stop')).toBeNull()
+})
+
 test('a busy key names its operation, and a blocked control says what is running', () => {
   expect(workingLabel('discard:/src/a.ts')).toBe('Discarding…')
   expect(blockedReason(null)).toBeUndefined()

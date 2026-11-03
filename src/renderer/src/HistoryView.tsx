@@ -11,6 +11,7 @@ import { DiffRail } from './DiffRail'
 import { Icon } from './Icons'
 import { EmptyState } from './EmptyState'
 import { ActionMenu } from './OverflowBar'
+import { TOAST_MS } from './notifications'
 import { setHiddenBranches, useContextLines, useHiddenBranches, useIgnoreWhitespace } from './prefs'
 import { useRepoBusy } from './repo-busy'
 import { useResizable } from './Splitter'
@@ -285,6 +286,12 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     setMenu((current) => (current?.hash === selected ? current : null))
   }, [selected])
 
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), TOAST_MS)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
   // The commit menu closes on an outside press or Escape, like the other popovers. Escape returns focus to the list.
   const menuOpen = menu !== null
   useEffect(() => {
@@ -496,6 +503,12 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     commit: picked,
     message: current.details.body.trim(),
     head,
+    branch,
+    // Hidden branches stay out of the menu, as they do from the row's ref labels.
+    refs: refs?.hash === picked.hash ? {
+      branches: refs.refs.branches.filter((name) => !hiddenNames.has(name)),
+      remotes: refs.refs.remotes.filter((name) => !hiddenNames.has(name)),
+    } : null,
     upstream,
     webBase,
     onOpenChanges: () => (diffOpen ? diffRef.current?.scrollTo({ top: 0 }) : onShowDiff()),

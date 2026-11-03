@@ -60,13 +60,32 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('a second launch focuses the existing window, and a launch without the single-instance lock exits', async () => {
+  const exits: number[] = []
+  const appWith = (locked: boolean) => Object.assign(new EventEmitter(), {
+    setName() {}, requestSingleInstanceLock: () => locked, exit: (code: number) => { exits.push(code) }, whenReady: () => new Promise<void>(() => {}),
+  })
+  const imports = { 'node:path': path, './repo-lock': locks, './git/dirty': { DirtyCounter: class {} }, './watch': { SourceWatcher: class {} } }
+  const shown: string[] = []
+  const window = { isMinimized: () => true, restore: () => shown.push('restore'), show: () => shown.push('show'), focus: () => shown.push('focus') }
+  const first = appWith(true)
+  await load('../src/main/index.ts', { ...imports, electron: { app: first } }, '\nconfig = testConfig; mainWindow = testWindow', {
+    testConfig: configModule.normalizeConfig({}), testWindow: window,
+  })
+  first.emit('second-instance')
+  expect(shown).toEqual(['restore', 'show', 'focus'])
+  expect(exits).toEqual([])
+  await load('../src/main/index.ts', { ...imports, electron: { app: appWith(false) } })
+  expect(exits).toEqual([0])
+})
+
 test('clone holds the update restart guard through registration and cannot start after shutdown', async () => {
   const cloning = deferred(), registering = deferred()
   let cloneCalls = 0, registerCalls = 0
   const handlers = new Map<string, (...args: any[]) => unknown>()
-  const app = Object.assign(new EventEmitter(), { setName() {}, whenReady: () => new Promise<void>(() => {}) })
+  const app = Object.assign(new EventEmitter(), { setName() {}, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}) })
   await load('../src/main/index.ts', {
-    electron: { app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) } },
+    electron: { app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) }, BrowserWindow: { getAllWindows: () => [] } },
     'node:path': path, './repo-lock': locks,
     './git/dirty': { DirtyCounter: class {} }, './watch': { SourceWatcher: class {} },
     './git/ops': { clone: async () => { cloneCalls++; await cloning.promise } },
@@ -93,6 +112,7 @@ test('clone holds the update restart guard through registration and cannot start
     cloning.resolve(); registering.resolve()
     await running
     locks.reopenRepoLocks()
+    app.emit('will-quit')
   }
 })
 
@@ -268,7 +288,7 @@ test('the IPC bridge publishes claims before work, releases failures, and cleans
   const events = new EventEmitter()
   const app = Object.assign(new EventEmitter(), {
     setName: () => {},
-    whenReady: () => new Promise<void>(() => {}),
+    requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}),
   })
   let sent = 0
   const window = { webContents: { send: (channel: string, payload: unknown) => {
@@ -391,7 +411,7 @@ test('discovered aliases share foreground, conflict-save, background and rendere
   const handlers = new Map<string, (...args: any[]) => unknown>()
   const events = new EventEmitter()
   const app = Object.assign(new EventEmitter(), {
-    setName: () => {}, whenReady: () => new Promise<void>(() => {}),
+    setName: () => {}, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}),
   })
   let stageHold: ReturnType<typeof deferred> | null = null
   let resolutionHold: ReturnType<typeof deferred> | null = null
@@ -562,7 +582,7 @@ test('manual fetch refreshes cached sidebar counts for a linked worktree without
   const counts: RepoCounts[] = []
   const counter = new DirtyCounter((_repo, value) => counts.push(value))
   const handlers = new Map<string, (...args: any[]) => unknown>()
-  const app = Object.assign(new EventEmitter(), { setName() {}, whenReady: () => new Promise<void>(() => {}) })
+  const app = Object.assign(new EventEmitter(), { setName() {}, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}) })
   await load('../src/main/index.ts', {
     electron: { app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) }, BrowserWindow: { getAllWindows: () => [] } },
     'node:path': path, 'node:fs': { statSync }, './repo-lock': locks, './scan': scan,
@@ -597,7 +617,7 @@ test('background fetch keeps its schedule through config writes and fetches repo
     './git/status': { readStatus: async () => ({ upstream: 'origin/main' }) },
     './git/ops': { fetchAll: async (canonical: string) => { fetched.push(canonical) } },
   }, '', { setInterval, clearInterval }) as typeof import('../src/main/background')
-  const app = Object.assign(new EventEmitter(), { setName: () => {}, getPath: () => source, whenReady: () => new Promise<void>(() => {}) })
+  const app = Object.assign(new EventEmitter(), { setName: () => {}, getPath: () => source, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}) })
   await load('../src/main/index.ts', {
     electron: {
       app, ipcMain: { handle: (channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler) },

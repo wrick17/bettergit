@@ -5,7 +5,7 @@ import { flushSync } from 'react-dom'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, DiffHunk, MovedBlock } from '../../main/git/diff'
 import type { HunkAction, HunkRequest } from '../../main/git/hunks'
-import { DiffView, fileKey, hunkKey, type FileChoices } from './DiffView'
+import { DiffView, FullPath, fileKey, hunkKey, type FileChoices } from './DiffView'
 import { useActiveFile, useActiveFiles, useKeepInView, type ActiveFiles } from './active-file'
 import { DiffRail } from './DiffRail'
 import { confirmDropEdits, dropEdits, useUnsaved, type EditBridge } from './DiffEditor'
@@ -20,7 +20,7 @@ import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
 import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
 import { loadSession, savedView, savePlace, saveView, useScrollMemory } from './session'
-import { orderFiles, shareFiles, swapFile } from './widen'
+import { orderFiles, pickFiles, shareFiles, swapFile } from './widen'
 import { ConflictView, type ConflictViewProps } from './ConflictView'
 import type { Choice, ConflictDocument, ConflictFingerprint, ConflictSave } from '../../shared/conflict'
 
@@ -87,8 +87,10 @@ interface SectionProps {
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
-  // Stages or unstages every file in this section. Omitted for the conflicts section.
+  // Stages or unstages every file in this section, or only the files the filter shows. Omitted for the conflicts section.
   onToggleAll?: () => void
+  // Set while a filter hides some of the section's files, so the header button names what it changes.
+  filtered?: boolean
   // The write running in this repo, or null. Conflicting controls stay blocked until it settles.
   busy: string | null
   // The file at the top of the diff pane. Its row is marked, apart from the selection, and kept on screen.
@@ -144,6 +146,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     if (widened.context !== context) setWidened({ context, levels: NO_EXTRA })
   }, [context])
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'))
+  // Filters the file list and the diffs beside it by path. Case-insensitive; empty shows every change.
+  const [filter, setFilter] = useState('')
+  const needle = filter.trim().toLowerCase()
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadSession().places[repo]?.collapsed ?? []))
   // Each file's open or closed choice by path, shared by every working diff (all, staged, unstaged and selected), so a
   // file keeps its choice when a stage, discard, delete or refresh moves it to another diff. Only this view saves it.
@@ -218,24 +223,33 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
 
   const sections = useMemo(() => sectionsOf(shownStatus), [shownStatus])
   const { staged, unstaged, changes } = sections
+  const filtered = useMemo(() => needle ? filterSections(sections, needle) : sections, [sections, needle])
   // Each section's paths in the order its file list shows them, so the diffs list their files the same way.
   const order = useMemo(() => {
     const paths = (list: FileChange[]) => (view === 'tree' ? treeOrder(changeTree(list)) : list).map((change) => change.path)
-    return { staged: paths(staged), changes: paths(changes), conflicts: paths(conflicted) }
-  }, [staged, changes, conflicted, view])
-  const stagedShown = useMemo(() => allShown?.staged && orderFiles(allShown.staged, order.staged), [allShown?.staged, order])
-  const unstagedShown = useMemo(() => allShown?.unstaged && orderFiles(allShown.unstaged, order.changes), [allShown?.unstaged, order])
+    return { staged: paths(filtered.staged), changes: paths(filtered.changes), conflicts: paths(filtered.conflicted) }
+  }, [filtered, view])
+  // The picked file stays in its section's diff while the filter hides its row, so the pane never loses it.
+  const keep = (working: Working, paths: string[], also?: string) => {
+    if (!needle) return orderFiles(working, paths)
+    const listed = new Set(paths)
+    return orderFiles(pickFiles(working, (path) => listed.has(path) || path === also), paths)
+  }
+  const stagedShown = useMemo(() => allShown?.staged && keep(allShown.staged, order.staged), [allShown?.staged, order])
+  const unstagedShown = useMemo(() => allShown?.unstaged && keep(allShown.unstaged, order.changes), [allShown?.unstaged, order])
   const selectedShown = useMemo(() => diffShown && (selection?.staged
-    ? orderFiles(diffShown, order.staged)
-    : orderFiles(diffShown, order.changes)), [diffShown, selection?.staged, order])
+    ? keep(diffShown, order.staged, selection.path)
+    : keep(diffShown, order.changes, selection?.path)), [diffShown, selection?.staged, selection?.path, order])
   // What each diff on the pane gets, and whether it mounts. The pane is placed once every one shows what it was given, so
   // a switch of view (the selected file moving to the other section, say) lands in one frame, not in steps.
   const stagedFiles = stagedShown?.files ?? NO_FILES.files
   const unstagedFiles = unstagedShown?.files ?? NO_FILES.files
   const selectedFiles = selectedShown?.files ?? NO_FILES.files
   const allView = !selection && shownStatus.changes.length > 0
-  const showStaged = allView && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && staged.length > 0))
-  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && changes.length > 0))
+  const showStaged = allView && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && filtered.staged.length > 0))
+  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && filtered.changes.length > 0))
+  // Changes exist, but the filter matches none of them: the pane and the list say so, rather than "clean".
+  const filteredOut = !!needle && !clean && !filtered.staged.length && !filtered.changes.length && !filtered.conflicted.length
   const onScreenRef = useRef(new Map<string, DiffFile[]>())
   const [, setShownTick] = useState(0)
   const shownHandlers = useMemo(() => Object.fromEntries(['staged', 'unstaged', 'selection'].map((id) => [id, (files: DiffFile[]) => {
@@ -273,7 +287,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const listShown = useRef({ status: shownStatus, selection, stats })
   if (!detailOpen || !diffReady || onScreen) listShown.current = { status: shownStatus, selection, stats }
   const listed = listShown.current
-  const listChanges = useMemo(() => (listed.status === shownStatus ? sections : sectionsOf(listed.status)), [listed.status, shownStatus, sections])
+  const listChanges = useMemo(() => {
+    const all = listed.status === shownStatus ? sections : sectionsOf(listed.status)
+    return needle ? filterSections(all, needle) : all
+  }, [listed.status, shownStatus, sections, needle])
   const List = view === 'tree' ? Tree : Group
 
   // A widen belongs to this load and source file, even if the same path is selected again later.
@@ -672,8 +689,34 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               <IconButton icon="listTree" label={view === 'tree' ? 'Tree view: on' : toggleLabel('Tree view: off', 'show files in folders')} active={view === 'tree'} onClick={() => chooseView('tree')} />
             </div>
           </div>
+          {!clean && (
+            <div className="file-filter">
+              <Icon name="search" />
+              <input
+                type="search"
+                value={filter}
+                placeholder="Filter files"
+                aria-label="Filter changed files by path"
+                spellCheck={false}
+                onChange={(event) => setFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && filter) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setFilter('')
+                  }
+                }}
+              />
+            </div>
+          )}
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
             {clean && <p className="file-list-empty">No changed files</p>}
+            {filteredOut && (
+              <p className="file-list-empty">
+                No changed files match “{filter.trim()}”.{' '}
+                <button type="button" className="link-button" onClick={() => setFilter('')}>Clear filter</button>
+              </p>
+            )}
             {listChanges.conflicted.length > 0 && (
               <List
                 repo={repo}
@@ -703,7 +746,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               onSelect={(change) => choose(change, false)}
               onToggle={(change) => toggle(change, change.unstaged)}
               onDiscard={discard}
-              onToggleAll={unstaged.length ? () => togglePaths(unstaged.map((change) => change.path), true) : undefined}
+              onToggleAll={listChanges.unstaged.length ? () => togglePaths(listChanges.unstaged.map((change) => change.path), true) : undefined}
+              filtered={!!needle}
               busy={busy}
               activeFiles={activeFiles}
             />
@@ -718,7 +762,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               onToggleFolder={toggleFolder}
               onSelect={(change) => choose(change, true)}
               onToggle={(change) => toggle(change, false)}
-              onToggleAll={() => togglePaths(staged.map((change) => change.path), false)}
+              onToggleAll={() => togglePaths(listChanges.staged.map((change) => change.path), false)}
+              filtered={!!needle}
               busy={busy}
               activeFiles={activeFiles}
             />
@@ -758,6 +803,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       <DiffRail fold={code} label={selection ? splitPath(selection.path).name : 'Changes and staged diffs'}>
         <div className="diff-pane" ref={paneRef} onScroll={onPaneScroll} tabIndex={-1}>
           {!selection && shownStatus.changes.length === 0 && <EmptyState icon="clean" title="Working tree clean" hint="Nothing to commit. New edits show up here as you make them." />}
+          {!selection && filteredOut && <EmptyState icon="search" title="No matching files" hint={`None of the ${shownStatus.changes.length} changed files has “${filter.trim()}” in its path. Clear the filter to see them.`} />}
           {/* Every conflicted file, each in its own section, in the list's order. Picking one scrolls to it. */}
           {(!selection || conflictSelected) && order.conflicts.length > 0 && <h2 className="diff-section">Conflicts <span className="count">{order.conflicts.length}</span></h2>}
           {(!selection || conflictSelected) && order.conflicts.map((path) => {
@@ -771,7 +817,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 </section>
               )
           })}
-          {!selection && shownStatus.changes.length > 0 && (
+          {!selection && shownStatus.changes.length > 0 && !filteredOut && (
             <>
               <h2 className="diff-section">Changes {unstagedShown && unstagedShown !== LOAD_FAILED && <span className="count">{unstagedShown.files.length}</span>}</h2>
               {showUnstaged && (
@@ -868,6 +914,13 @@ function sectionsOf(status: RepoStatus) {
     changes: unstaged,
     conflicted: status.changes.filter((change) => change.conflicted),
   }
+}
+
+// The sections with only the files whose path holds `needle` (lower case).
+function filterSections(sections: ReturnType<typeof sectionsOf>, needle: string): ReturnType<typeof sectionsOf> {
+  const keep = (list: FileChange[]) => list.filter((change) => change.path.toLowerCase().includes(needle))
+  const unstaged = keep(sections.unstaged)
+  return { staged: keep(sections.staged), unstaged, changes: unstaged, conflicted: keep(sections.conflicted) }
 }
 
 // The file open last time, if it is still in the changes. A file that is gone opens with no selection.
@@ -970,14 +1023,14 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ repo, title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
+function Group({ repo, title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
   useKeepInView(sectionRef, inView)
   if (!changes.length) return null
   return (
     <section className="group" ref={sectionRef}>
-      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} filtered={filtered} busy={busy} />
       <ul>
         {changes.map((change) => {
           const active = selection?.path === change.path && selection.staged === staged
@@ -993,7 +1046,7 @@ function Group({ repo, title, changes, staged, selection, stats, onSelect, onTog
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ repo, title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, busy, activeFiles }: SectionProps) {
+function Tree({ repo, title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
   const folder = useMemo(() => changeTree(changes), [changes])
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
@@ -1011,7 +1064,7 @@ function Tree({ repo, title, changes, staged, selection, stats, collapsed, onTog
   }
   return (
     <section className="group" ref={sectionRef}>
-      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} busy={busy} />
+      <SectionHeader title={title} count={changes.length} staged={staged} onToggleAll={onToggleAll} filtered={filtered} busy={busy} />
       <div className="tree" role="tree">
         <TreeLevel folder={folder} section={title} collapsed={collapsed} onToggleFolder={onToggleFolder} renderFile={renderFile} />
       </div>
@@ -1027,14 +1080,17 @@ function useInView(activeFiles: ActiveFiles, staged: boolean): string | null {
 }
 
 // The section title with its count. The header button stages every file in an unstaged section, or unstages a staged one.
-function SectionHeader({ title, count, staged, onToggleAll, busy }: {
+function SectionHeader({ title, count, staged, onToggleAll, filtered, busy }: {
   title: string
   count: number
   staged: boolean
   onToggleAll?: () => void
+  filtered?: boolean
   busy: string | null
 }) {
   const key = staged ? 'unstage:all' : 'stage:all'
+  // While filtered, the button changes only the files listed, and says so.
+  const files = `${count} matching file${count === 1 ? '' : 's'}`
   return (
     <h3>
       {title} <span className="count">{count}</span>
@@ -1042,7 +1098,7 @@ function SectionHeader({ title, count, staged, onToggleAll, busy }: {
         <span style={{ marginLeft: 'auto' }}>
           <IconButton
             icon={staged ? 'minus' : 'plus'}
-            label={staged ? 'Unstage all changes' : 'Stage all changes'}
+            label={filtered ? `${staged ? 'Unstage' : 'Stage'} ${files}` : staged ? 'Unstage all changes' : 'Stage all changes'}
             busy={busy === key}
             blocked={busy !== null && busy !== key ? blockedReason(busy) : undefined}
             onClick={onToggleAll}
@@ -1127,10 +1183,7 @@ function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onD
       <span className={`file-with-action${discardAction ? ' has-row-action' : ''}`}>
         <button className="file" onClick={() => onSelect(change)}>
           <FileIcon name={name} />
-          <span className="path" title={change.path}>
-            <span className="path-name">{name}</span>
-            {showDir && dir && <span className="path-dir">{dir}</span>}
-          </span>
+          {showDir ? <FullPath dir={dir} name={name} path={change.path} /> : <span className="path" title={change.path}><span className="path-name">{name}</span></span>}
         </button>
         {discardAction && (
           <IconButton
