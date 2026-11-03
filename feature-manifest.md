@@ -10,7 +10,7 @@ This project is ongoing. r17 records a source-validation snapshot from 2026-10-1
 
 ## Current decision record (2026-11-03)
 
-Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.json` 0.1.14. Sources: CHANGELOG.md 0.0.1-0.1.14, master history (PRs #41-#53), the source files named below, and the 2026-11-03 task journals. Status words: **shipped** (released in a published version), **merged** (on master, not yet released), **pending** (requested, not implemented or not verified). Automated and native evidence are named separately; nothing here claims native proof that was not run.
+The original 2026-11-03 snapshot was master `95c93813` (PR #53), package 0.1.14. Latest release receipt: 0.1.16 is published and installed from tag `v0.1.16` at merge commit `aa33d1653eb6124cd3ec424b3382637112edadf3` (PR #55); release workflow 41594285622 passed. Sources include CHANGELOG.md, master history, the source files named below, and the 2026-11-03 task journals. Status words: **shipped** (released in a published version), **merged** (on master, not yet released), **pending** (requested, not implemented or not verified). Automated and native evidence are named separately; nothing here claims native proof that was not run.
 
 ### Product scope and distribution
 
@@ -21,14 +21,14 @@ Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.js
 - Single instance (0.1.14): a second launch exits and focuses or reopens the one window (`requestSingleInstanceLock`, `second-instance`). Supersedes "Single-instance lock planned/open".
 - Startup (0.1.14): a missing saved source folder is skipped and logged; the window opens before the runtime starts, so a missing folder can no longer stop the app from opening.
 
-### Panels (merged in #53, release pending as 0.1.16)
+### Panels (merged in #53, shipped in 0.1.16)
 
 - The sidebar is common to both tabs. History has three panels after it: commits, commit files, diff. Changes has two: files, diff. There is no commit-list control in Changes.
 - Toolbar panel buttons match the panels on the current tab, in panel order: Changes = Sidebar, Files, Diff; History = Sidebar, Commits, Files, Diff.
 - Session fields keep their names and schema: `listOpen` controls only History commits; `detailOpen` controls files on both tabs; `diffOpen` controls the code diff on both tabs. Hiding History commits never hides Changes files.
 - Responsive auto-fold still applies (Changes files use the list fold threshold, History files the details threshold). An explicit toolbar choice pins the panel and overrides auto-fold (`panelPins`). State persists in the session; no new session schema.
 - Supersedes "Three independent tab-row panel toggles" (Appearance and UI table) for semantics; the toggles stay independent per panel.
-- Evidence: `test/editor.test.ts` panel-toggle regression; Terra full suite 514 pass / 4315 assertions / 0 fail; Helium browser suite 29 tests / 533 assertions; real App disposable-fixture check of order, tab switch, files vs diff independence, session remount and narrow pin PASS. No native window-count check (macOS query denied).
+- Evidence: `test/editor.test.ts` panel-toggle regression; Terra full suite 514 pass / 4315 assertions / 0 fail; Helium browser suite 29 tests / 533 assertions; real App disposable-fixture check of order, tab switch, files vs diff independence, session remount and narrow pin PASS. The earlier native window-count query was denied; the installed 0.1.16 process later showed one full-size window via CoreGraphics.
 
 ### Git operation safety (0.1.14)
 
@@ -72,11 +72,11 @@ Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.js
 - Sidebar: multi-repo tree from scanned folders, hide/show hidden, reorder (drag, Alt+Arrow), ahead/behind and dirty counts, per-repo and per-folder Fetch/Pull/Refresh, Pull All fast-forward only. Removing a source never deletes files.
 - Non-goals kept: no AI features, no token storage (machine Git credentials only), no interactive rebase, blame or worktree UI.
 
-### Pending
+### README images and release receipt
 
-- **Extension Details README images inline: source complete and verified.** README images, including previews inside `<details>`/`<summary>`, render inline through the main-process image bridge. The image policy permits Open VSX, Shields, and image-suffixed raw.githubusercontent.com and user-images.githubusercontent.com URLs and github.com owner/repo/raw URLs; it checks public DNS and every redirect, validates image bytes, and caps remote images at 2 MiB. Installed icons retain their 512 KiB cap. The actual Electron bridge and Settings fixture decoded Catppuccin’s hero and four previews; three dead user-images links fell back to links, as unavailable or offline images do. No renderer errors were observed. README image width and height accept safe integers from 0 to 4096, optionally suffixed px. A full-styled Electron Settings fixture with the real image bridge verified Catppuccin’s hero, Latte and Frappé previews, modal scrolling and reachable Close control; transparent spacers measured 0 × 0 rather than 810 × 1145. Combined verification passed typecheck, production build, and 516 tests with 4,336 assertions.
+- **Extension Details README images inline: shipped in 0.1.16.** README images, including previews inside `<details>`/`<summary>`, render inline through the main-process image bridge. The image policy permits Open VSX, Shields, and image-suffixed raw.githubusercontent.com and user-images.githubusercontent.com URLs and github.com owner/repo/raw URLs; it checks public DNS and every redirect, validates image bytes, and caps remote images at 2 MiB. Installed icons retain their 512 KiB cap. The actual Electron bridge and Settings fixture decoded Catppuccin’s hero and four previews; three dead user-images links fell back to links, as unavailable or offline images do. No renderer errors were observed. README image width and height accept safe integers from 0 to 4096, optionally suffixed px. A full-styled Electron Settings fixture with the real image bridge verified Catppuccin’s hero, Latte and Frappé previews, modal scrolling and reachable Close control; transparent spacers measured 0 × 0 rather than 810 × 1145. Combined verification passed typecheck, production build, and 516 tests with 4,336 assertions.
 - **Release 0.1.15: not shipped.** The tag exists, but its workflow was cancelled before publication after oversized transparent README spacers were reported. The tag remains unchanged.
-- **Release 0.1.16: PENDING publication.** The panel fix, README image and spacer fixes, Included theme grouping and this decision record are prepared for release. Not tagged or published.
+- **Release 0.1.16: published and installed.** PR #55 merged as `aa33d1653eb6124cd3ec424b3382637112edadf3`, tagged `v0.1.16`; release workflow 41594285622 passed. The downloaded official DMG SHA-256 was `3498ee349b1444417842f4fbc376da44cc1554cda53e9a50b193160fc05779a1`, matching GitHub. Its ad-hoc signature verifies, but it is not notarized and Gatekeeper rejects it. Installed at `~/Applications/BetterGit.app`; the prior 0.1.14 app was retained as a backup. One main process, renderer, and full-size window were observed. Native post-install visual smoke has not been completed; the fully styled Electron fixture evidence above is separate.
 
 ### Delivery rules (user requirements)
 
