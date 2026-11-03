@@ -1048,6 +1048,60 @@ Mixed <strong>safe **Markdown**</strong> prose. [Guide](./guide.md)
   }
 })
 
+test.skipIf(!playwright)('Catppuccin README spacer images keep their HTML size, so previews follow the logo instead of blank space', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, flushSync, createRoot, SettingsDialog } = w.under
+    // Header and hero from the Catppuccin.catppuccin-vsc 3.19.0 README, with the real images' natural sizes.
+    const readme = `<h3 align="center">
+	<img src="https://raw.githubusercontent.com/catppuccin/catppuccin/main/assets/logos/exports/1544x1544_circle.png" width="100" alt="Logo"/><br/>
+	<img src="https://raw.githubusercontent.com/catppuccin/catppuccin/main/assets/misc/transparent.png" height="30" width="0px"/>
+	Catppuccin for <a href="https://code.visualstudio.com">VSCode</a>
+	<img src="https://raw.githubusercontent.com/catppuccin/catppuccin/main/assets/misc/transparent.png" height="30" width="0px"/>
+</h3>
+
+<p align="center">
+  <img src="https://github.com/catppuccin/vscode/raw/HEAD/assets/preview.webp"/>
+</p>`
+    const sizes: Record<string, [number, number]> = { '1544x1544_circle.png': [1544, 1544], 'transparent.png': [2481, 3508], 'preview.webp': [6064, 3928] }
+    Object.assign(w.bettergit, {
+      listExtensions: async () => [],
+      searchExtensions: async () => [{ namespace: 'Catppuccin', name: 'catppuccin-vsc', displayName: 'Catppuccin for VSCode', description: '', version: '3.19.0', downloads: 0 }],
+      extensionDetails: async () => ({ namespace: 'Catppuccin', name: 'catppuccin-vsc', displayName: 'Catppuccin for VSCode', description: '', version: '3.19.0', downloads: null, averageRating: null, reviewCount: null, icon: null, url: 'https://open-vsx.org/extension/Catppuccin/catppuccin-vsc', readme, readmeBaseUrl: 'https://open-vsx.org/api/Catppuccin/catppuccin-vsc/3.19.0/file/readme.md' }),
+      extensionImage: async (url: string) => {
+        const [width, height] = sizes[url.split('/').pop()!]
+        return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"/>`)}`
+      },
+    })
+    sessionStorage.setItem('bettergit.settingsSection', 'themes')
+    w.spacerRoot = createRoot(document.getElementById('root')!)
+    flushSync(() => w.spacerRoot.render(createElement(SettingsDialog, {
+      config: { sources: [], hidden: [], collapsed: [], groups: [], lastCloneDirectory: null, settings: { theme: 'dark', backgroundFetch: true, fetchIntervalMinutes: 10, idleThresholdSeconds: 120, textZoom: 1, languages: {}, editor: 'vscode', appearance: {} } },
+      onUpdate() {}, onClose: () => w.spacerRoot.unmount(),
+    })))
+  })
+  try {
+    await page.getByRole('button', { name: 'Details for Catppuccin for VSCode', exact: true }).click()
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll<HTMLImageElement>('.extension-readme img')]
+      return images.length === 4 && images.every((image) => image.complete && image.naturalWidth > 0)
+    }, undefined, { timeout: 3000 })
+    const layout = await page.evaluate(() => {
+      const box = (element: Element) => element.getBoundingClientRect()
+      const [logo, spacer, , hero] = [...document.querySelectorAll<HTMLImageElement>('.extension-readme img')]
+      return { spacer: box(spacer), gap: box(hero).top - box(logo).bottom, hero: box(hero), heroNatural: [hero.naturalWidth, hero.naturalHeight], readme: box(document.querySelector('.extension-readme')!) }
+    })
+    expect(layout.spacer.width).toBe(0)
+    expect(layout.spacer.height).toBeLessThanOrEqual(30)
+    expect(layout.gap).toBeLessThan(150)
+    expect(layout.heroNatural).toEqual([6064, 3928])
+    expect(layout.hero.width).toBeLessThanOrEqual(layout.readme.width)
+    expect(Math.abs(layout.hero.height - layout.hero.width * 3928 / 6064)).toBeLessThan(2)
+  } finally {
+    await page.evaluate(() => (window as any).spacerRoot?.unmount())
+  }
+})
+
 test.skipIf(!playwright)('README fenced JSON comments use theme tokens without changing text, inline code or unknown languages', async () => {
   // Settings excerpt from the shipped Flow Icons 2.0.10 jsonc fence.
   const code = '{\n  // Your license key\n  "flow-icons.licenseKey": "",\n\n  // Set default folder color\n  "flow-icons.folderColor": "gray",\n}'

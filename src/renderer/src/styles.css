@@ -1070,7 +1070,9 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .extension-readme pre { max-width: 100%; padding: 12px; overflow: auto; background: var(--sunken); border-radius: 6px; }
 .extension-readme pre code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0; background: transparent; }
 .extension-readme blockquote { border-left: 3px solid var(--line-strong); margin: 8px 0; padding-left: 12px; color: var(--text-2); }
-.extension-readme-image { display: block; max-width: 100%; height: auto; margin: 8px 0; }
+.extension-readme-image { display: block; max-width: 100%; margin: 8px 0; }
+/* A width keeps the aspect ratio when max-width narrows it; a height alone is honoured as given. */
+.extension-readme-image:is([width], :not([height])) { height: auto; }
 .extension-readme-image.inline { display: inline-block; vertical-align: middle; margin: 4px 0; }
 .extension-readme-table { max-width: 100%; overflow: auto; }
 .extension-readme table { border-collapse: collapse; }
