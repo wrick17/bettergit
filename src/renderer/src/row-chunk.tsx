@@ -42,6 +42,28 @@ function observeChunk(element: Element, onChange: (near: boolean) => void) {
   }
 }
 
+// A chunk holding part of the text selection stays mounted after it leaves the screen, so a drag past the screen keeps
+// its start and a copy gets every row it crossed. It unmounts once the selection no longer reaches it.
+// shortcut: a chunk scrolled past in one frame, without ever mounting, is copied empty; hold the range if that shows up.
+const held = new Map<Element, () => void>()
+function inSelection(element: Element) {
+  const selection = document.getSelection()
+  return !!selection && !selection.isCollapsed && selection.containsNode(element, true)
+}
+let watchingSelection = false
+function holdWhileSelected(element: Element, release: () => void) {
+  held.set(element, release)
+  if (watchingSelection) return
+  watchingSelection = true
+  document.addEventListener('selectionchange', () => {
+    for (const [chunk, done] of held) {
+      if (inSelection(chunk)) continue
+      held.delete(chunk)
+      done()
+    }
+  })
+}
+
 // `lines` (file:hunk:first:last source lines) lets find scroll an unmounted chunk into view so its rows mount.
 // A chunk holding a move's end stays mounted, so its connector always has both ends to measure.
 // `range` names what an editor-look chunk holds (old first:last, current first:last), so find can scroll to it.
@@ -66,10 +88,15 @@ export function RowChunk({ rows, lines, range, pinned, render, estimate }: { row
     const release = holdPlace(element, false, element.firstChild ? undefined : height.current)
     const unwatch = watchNear(element, check)
     const stop = observeChunk(element, (next) => {
-      if (!next && element.firstChild) height.current = element.offsetHeight
+      held.delete(element)
+      if (!next && element.firstChild) {
+        height.current = element.offsetHeight
+        if (inSelection(element)) return holdWhileSelected(element, () => setNear(false))
+      }
       setNear(next)
     })
     return () => {
+      held.delete(element)
       stop()
       unwatch()
       release()

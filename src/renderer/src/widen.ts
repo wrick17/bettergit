@@ -20,6 +20,19 @@ export function orderFiles(working: Working, paths: readonly string[]): Working 
   }
 }
 
+// Only the files whose path passes `keep`. Moves follow their files; a move with an end in a dropped file is dropped.
+export function pickFiles(working: Working, keep: (path: string) => boolean): Working {
+  const moved = new Map<number, number>()
+  const files = working.files.filter((file, index) => keep(file.newPath ?? file.oldPath ?? '') && !!moved.set(index, moved.size))
+  if (files.length === working.files.length) return working
+  const remap = (ref: LineRef): LineRef => ({ ...ref, file: moved.get(ref.file)! })
+  return {
+    files,
+    moves: working.moves.filter((move) => [...move.from, ...move.to].every((ref) => moved.has(ref.file)))
+      .map((move) => ({ from: move.from.map(remap), to: move.to.map(remap) })),
+  }
+}
+
 // A reload that finds a file unchanged keeps the loaded object, so its section does not re-render and its colours stay.
 // An unchanged reload returns the previous result itself.
 export function shareFiles(previous: Working | undefined, next: Working): Working {

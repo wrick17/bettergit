@@ -27,6 +27,16 @@ import { extensionDetails, extensionImage, extensionMetadata, installFromOpenVsx
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
 
+// One BetterGit per user: a second launch focuses the existing window instead of opening another.
+if (!app.requestSingleInstanceLock()) app.exit(0)
+app.on('second-instance', () => {
+  if (!config) return
+  if (!mainWindow) return createWindow()
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
+
 const configFile = () => path.join(app.getPath('userData'), 'config.json')
 let config: AppConfig
 let fetcher: BackgroundFetcher | null = null
@@ -275,6 +285,7 @@ function registerIpc() {
     ops.createBranch(repoPath, name, base))
   // The branch menu. Each names its branch by the exact ref and commit the picker showed; main refuses stale ones.
   handleWrite('repo:delete-branch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.deleteBranch(repoPath, selection))
+  handleWrite('repo:delete-remote-branch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.deleteRemoteBranch(repoPath, selection))
   handleWrite('repo:rename-branch', (_event, repoPath: string, selection: ops.BranchSelection, name: string) =>
     ops.renameBranch(repoPath, selection, name))
   handleWrite('repo:set-upstream', (_event, repoPath: string, selection: ops.BranchSelection, upstream: ops.BranchSelection) =>
@@ -302,6 +313,12 @@ function registerIpc() {
     ops.tagFromCommit(repoPath, name, hash))
   handleWrite('repo:cherry-pick', (_event, repoPath: string, hash: string) => ops.cherryPick(repoPath, hash))
   handleWrite('repo:revert', (_event, repoPath: string, hash: string) => ops.revertCommit(repoPath, hash))
+  // History and branch menus. Merge and rebase name the branch by the exact ref and commit shown; continue and abort
+  // name the operation shown, and main refuses either when the repo has moved on.
+  handleWrite('repo:merge-branch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.mergeBranch(repoPath, selection))
+  handleWrite('repo:rebase-branch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.rebaseBranch(repoPath, selection))
+  handleWrite('repo:continue-operation', (_event, repoPath: string, operation: unknown) => ops.continueOperation(repoPath, operation))
+  handleWrite('repo:abort-operation', (_event, repoPath: string, operation: unknown) => ops.abortOperation(repoPath, operation))
   handleWrite('repo:amend-message', (_event, repoPath: string, message: string, expectedHash: string) =>
     ops.amendMessage(repoPath, message, expectedHash))
   ipcMain.handle('repo:merge-base', (_event, repoPath: string, a: string, b: string) =>
@@ -532,8 +549,9 @@ app.whenReady().then(async () => {
   registerIpc()
   nativeTheme.themeSource = config.settings.theme
   installMenu()
-  await applyRuntime()
   createWindow()
+  // The window never waits on the watcher or fetcher: a slow or failing source must not leave the app windowless.
+  applyRuntime().catch((error) => console.error('Could not start the watcher or background fetch:', error))
   updater.start()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

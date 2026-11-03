@@ -27,8 +27,9 @@ export interface BarItem {
 
 const HOVER_DELAY = 150
 
-// The sync actions used most often stay one click away. The menu lists them too, so it names every action.
-const QUICK = new Set(['fetch', 'push'])
+// The sync actions used most often stay one click away, in item order: Fetch, Pull, Push. Pull fetches and merges in one
+// step; its other modes stay in Fetch's dropdown and the Actions menu, which lists every action.
+const QUICK = new Set(['fetch', 'pullMerge', 'push'])
 
 // The title-bar actions: the most frequent sync actions as icon buttons, then an "Actions" icon button whose menu lists
 // every action with its label and shortcut. The trigger has a fixed width, so busy or blocked states never shift the bar.

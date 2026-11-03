@@ -492,6 +492,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .path { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: calc(13.5px + var(--ui-delta)); }
 .path-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; white-space: nowrap; }
 .path-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5px + var(--ui-delta)); color: var(--muted-on); }
+/* One repo-relative path: the folder reads as its muted start and gives up width first, so the file name stays whole. */
+.full-path { gap: 0; }
+.full-path > .path-dir { flex: 0 100 auto; font-size: inherit; }
+.full-path > .path-name { flex: 0 1 auto; }
 .kind {
   display: inline-grid; place-items: center; flex: none;
   width: 17px; height: 17px; border-radius: var(--radius-chip);
@@ -558,10 +562,15 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .changes-view-toggle .icon-button svg { width: 14px; height: 14px; }
 .changes-view-toggle .icon-button.on { background: var(--segment-on); color: var(--text); box-shadow: var(--shadow-raised); }
 .file-list-empty { margin: 0; padding: 6px 16px; color: var(--text-3); font-size: calc(13px + var(--ui-delta)); }
+.file-list-empty .link-button { padding: 0; border: 0; background: none; box-shadow: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+/* Filters the file list and its diffs by path. */
+.file-filter { position: relative; flex: none; display: flex; align-items: center; padding: 4px 10px 6px; }
+.file-filter > svg { position: absolute; left: 20px; width: 13px; height: 13px; color: var(--text-3); pointer-events: none; }
+.file-filter > input { flex: 1; min-width: 0; height: 28px; padding-left: 28px; border-radius: var(--radius-sm); background: var(--sunken); font-size: calc(13px + var(--ui-delta)); }
 /* Files scrolled far off screen skip layout and paint; the last rendered height keeps the scrollbar stable. */
 /* Files off screen skip layout. Each file sets its own placeholder height (DiffView `estimate`), close to its real one, so
    a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
-.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 8px 0 0; }
+.diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 0; }
 .diff-file.editable { content-visibility: visible; }
 /* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
@@ -575,6 +584,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
 }
 .diff-file > header .path-name { font-weight: 600; }
+/* Copying code across files keeps each path but leaves out header controls, counts, hunk buttons, notes and fold bars. */
+.diff-file > header > :not(.path), .diff-section, .diff-toolbar, .hunk-actions, .ed-hunk-actions, .hunk-expand, .ed-fold, .move-note, .md-fragment-note { user-select: none; }
 /* Header controls: a chevron that collapses the file. The icon swaps between right and down, so it does not rotate. */
 .diff-file-toggle { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-chip); background: transparent; box-shadow: none; color: var(--text-3); }
 .diff-file-toggle svg { width: 10px; height: 10px; }
@@ -991,6 +1002,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   border-radius: var(--radius-card); background: var(--raised); box-shadow: inset 0 0 0 0.5px var(--glass-outline), var(--glass-shadow); font: calc(13px + var(--ui-delta))/1 var(--font-ui);
 }
 .find-bar input { width: 220px; height: 26px; padding: 0 8px; }
+.find-scope { display: inline-flex; align-items: center; gap: 2px; max-width: 160px; padding-left: 8px; border-radius: var(--radius-pill); background: var(--glass-chip); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.find-scope .icon-button { width: 20px; height: 20px; }
 .find-count { min-width: 64px; color: var(--text-3); font-variant-numeric: tabular-nums; text-align: right; }
 /* Every match is soft yellow; the current one is a solid orange drawn over it. Both keep dark text readable in either theme. */
 ::highlight(find-match) { background-color: var(--find-match); }
@@ -1086,3 +1099,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 
 .commit-identity { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .identity-fields { display: grid; gap: 14px; border: 0; margin: 0 0 16px; padding: 0; min-width: 0; }
+
+/* A stopped merge, rebase, cherry-pick or revert, above both tabs (App.tsx OperationBar). */
+.operation-bar {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 20px 8px; padding: 8px 12px;
+  border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--hover);
+  font-size: calc(12.5px + var(--ui-delta));
+}
+.operation-bar > svg { flex: none; color: var(--accent); }
+.operation-bar > span { flex: 1; min-width: 200px; }

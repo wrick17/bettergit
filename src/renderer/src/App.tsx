@@ -8,7 +8,7 @@ import { OpenInAppButton, useSelectedApp } from './OpenInAppButton'
 import type { FolderNode, TreeNode, RepoNode } from '../../main/scan'
 import type { RepoCounts } from '../../main/git/dirty'
 import { confirmOverBlur } from './confirm'
-import type { RepoStatus } from '../../main/git/status'
+import type { RepoOperation, RepoStatus } from '../../main/git/status'
 import type { Branch } from '../../main/git/ops'
 import { Icon, IconButton, toggleLabel } from './Icons'
 import { Sidebar } from './Sidebar'
@@ -24,12 +24,13 @@ import { useResizable } from './Splitter'
 import { GUTTER, SIDEBAR_STRIP_WIDTH, useFolded, useFoldHold } from './fold'
 import { ActionError, blockedReason, busyKey, connectRepoLocks, failureReason, repoIdentity, runRepoWrite, useRepoBusy, workingLabel, type RepoLockSnapshot } from './repo-busy'
 import { runBatch, runRefresh } from './batch-status'
-import { notify, notifyFailure, resolveFetchFailures } from './notifications'
+import { notify, notifyFailure, resolveFetchFailures, TOAST_MS } from './notifications'
 import { NotificationHub } from './NotificationHub'
 import { UpdateStatus } from './UpdateStatus'
 import { setLanguageOverrides } from './prefs'
 import { loadSession, saveSession } from './session'
 import { FindBar } from './FindBar'
+import { OPEN_FIND_EVENT } from './find'
 
 const api = window.bettergit
 // The repo pane's tab panels fill the pane height, as the grid inside them expects.
@@ -58,6 +59,12 @@ export function App() {
   const openFind = () => setFind((prev) => ({ open: true, focus: prev.focus + 1 }))
   const openFindRef = useRef(openFind)
   openFindRef.current = openFind
+  // A file header's Find button narrows find to its file (find.ts), then asks for the bar here.
+  useEffect(() => {
+    const open = () => openFindRef.current()
+    window.addEventListener(OPEN_FIND_EVENT, open)
+    return () => window.removeEventListener(OPEN_FIND_EVENT, open)
+  }, [])
   // The titlebar band's element. The repo toolbar is portalled into it.
   const [titlebar, setTitlebar] = useState<HTMLElement | null>(null)
   // True while the open repo is clean on the Changes tab. The sidebar then stays open instead of folding.
@@ -501,6 +508,11 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
   const [note, setNote] = useState<string | null>(null)
   const [dialog, setDialog] = useState<RepoDialog | null>(null)
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
+  useEffect(() => {
+    if (!note) return
+    const timer = window.setTimeout(() => setNote(null), TOAST_MS)
+    return () => window.clearTimeout(timer)
+  }, [note])
 
   // The revision the status on screen was read for. Changes reloads on it, after the status, so its rows and diffs land together.
   const [statusRevision, setStatusRevision] = useState(revision)
@@ -549,6 +561,24 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
     }
     return runRepoWrite(repo.path, label, action, { onError, reload: onChanged })
   }
+
+  // A stopped merge, rebase, cherry-pick or revert can be resolved outside BetterGit, in a linked worktree whose git dir
+  // the watcher may not see. While one is stopped, coming back to the window reads the status again.
+  const operation = status?.operation ?? null
+  useEffect(() => {
+    if (!operation) return
+    const onFocus = () => { load(revision).catch((failure: unknown) => onError(new ActionError(`Loading ${repo.name}`, failure, repo.path))) }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [operation, load, revision])
+
+  // Continue and Abort reload on failure too: a failed continue can stop again at the next conflict.
+  const settle = (label: string, action: () => Promise<unknown>) => {
+    const reason = blockedReason(busyKey(repo.path))
+    if (reason) return onError(new ActionError(`${workingLabel(label).replace('…', '')} in ${repo.name}`, reason, repo.path))
+    void runRepoWrite(repo.path, label, action, { onError, reload: onChanged, always: true })
+  }
+  const conflicts = status?.changes.filter((change) => change.conflicted).length ?? 0
 
   const headLabel = status ? (status.head ?? (status.headHash ? `detached at ${status.headHash.slice(0, 7)}` : 'no commits yet')) : '…'
 
@@ -601,9 +631,16 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         titlebar,
       )}
       {branchPickerOpen && <BranchPicker repo={repo.path} branches={branches} headHash={status?.headHash ?? null}
-        conflicts={status?.changes.filter((change) => change.conflicted).length ?? 0}
+        conflicts={conflicts}
         onRefresh={() => load(revision)} onChanged={onChanged} onClose={() => setBranchPickerOpen(false)} onOpenRepo={onOpenRepo} />}
       {note && <p className="repo-note" role="status" onClick={() => setNote(null)}>{note}</p>}
+      {operation && <OperationBar operation={operation} conflicts={conflicts} busy={busy}
+        onContinue={() => settle('continue-operation', () => api.continueOperation(repo.path, operation))}
+        onAbort={async () => {
+          if (await confirmOverBlur(`Abort the ${OPERATION_NAMES[operation]}?\n\nGit puts the branch and files back as they were before it started. Conflict resolutions made so far are lost.`)) {
+            settle('abort-operation', () => api.abortOperation(repo.path, operation))
+          }
+        }} />}
       <div className="tab-row">
         <nav
           className="tabs"
@@ -643,6 +680,34 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         </div>
       )}
     </EditorContext.Provider>
+  )
+}
+
+const OPERATION_NAMES: Record<RepoOperation, string> = { rebase: 'rebase', merge: 'merge', 'cherry-pick': 'cherry-pick', revert: 'revert' }
+
+// Shown above both tabs while Git is stopped part way, so it stays reachable when Changes has no files left.
+function OperationBar({ operation, conflicts, busy, onContinue, onAbort }: {
+  operation: RepoOperation
+  conflicts: number
+  busy: string | null
+  onContinue: () => void
+  onAbort: () => void
+}) {
+  const name = OPERATION_NAMES[operation]
+  const waiting = conflicts > 0 ? `Resolve and stage ${conflicts} conflicted file${conflicts === 1 ? '' : 's'} in Changes before continuing.` : undefined
+  const blocked = blockedReason(busy)
+  return (
+    <div className="operation-bar" role="region" aria-label={`${name} in progress`}>
+      <Icon name="warning" />
+      <span>
+        <strong>{name[0].toUpperCase() + name.slice(1)} in progress.</strong>{' '}
+        {waiting ?? 'Every conflict is resolved. Continue to finish it, or abort to go back.'}
+      </span>
+      <button type="button" onClick={onAbort} disabled={busy !== null} title={blocked}
+        aria-busy={busy === 'abort-operation' || undefined}>{busy === 'abort-operation' ? 'Aborting…' : `Abort ${name}`}</button>
+      <button type="button" className="primary" onClick={onContinue} disabled={busy !== null || conflicts > 0} title={blocked ?? waiting}
+        aria-busy={busy === 'continue-operation' || undefined}>{busy === 'continue-operation' ? 'Continuing…' : `Continue ${name}`}</button>
+    </div>
   )
 }
 

@@ -4,6 +4,7 @@ import type { DiffFile, MovedBlock } from '../main/git/diff'
 import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
+import type { RepoOperation } from '../main/git/status'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { UpdateState } from '../main/update'
 import type { AppKind, InstalledApp } from '../shared/editors'
@@ -56,6 +57,8 @@ const api = {
   switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,
   createBranch: (repo: string, name: string, base: BranchSelection) => invoke('repo:create-branch', repo, name, base) as Promise<void>,
   deleteBranch: (repo: string, branch: BranchSelection) => invoke('repo:delete-branch', repo, branch) as Promise<void>,
+  // A remote branch from the refreshed list, deleted on its remote only if it still points at the commit shown.
+  deleteRemoteBranch: (repo: string, branch: BranchSelection) => invoke('repo:delete-remote-branch', repo, branch) as Promise<void>,
   renameBranch: (repo: string, branch: BranchSelection, name: string) => invoke('repo:rename-branch', repo, branch, name) as Promise<void>,
   setUpstream: (repo: string, branch: BranchSelection, upstream: BranchSelection) => invoke('repo:set-upstream', repo, branch, upstream) as Promise<void>,
   unsetUpstream: (repo: string, branch: BranchSelection) => invoke('repo:unset-upstream', repo, branch) as Promise<void>,
@@ -69,6 +72,12 @@ const api = {
   tagFromCommit: (repo: string, name: string, hash: string) => invoke('repo:tag-from', repo, name, hash),
   cherryPick: (repo: string, hash: string) => invoke('repo:cherry-pick', repo, hash) as Promise<string>,
   revertCommit: (repo: string, hash: string) => invoke('repo:revert', repo, hash) as Promise<string>,
+  // Merge or rebase HEAD with a branch from the refreshed list. Each returns the backup ref of the HEAD it started from.
+  mergeBranch: (repo: string, branch: BranchSelection) => invoke('repo:merge-branch', repo, branch) as Promise<string>,
+  rebaseBranch: (repo: string, branch: BranchSelection) => invoke('repo:rebase-branch', repo, branch) as Promise<string>,
+  // Act on the stopped operation RepoStatus.operation showed; main refuses when the repo is no longer in it.
+  continueOperation: (repo: string, operation: RepoOperation) => invoke('repo:continue-operation', repo, operation) as Promise<void>,
+  abortOperation: (repo: string, operation: RepoOperation) => invoke('repo:abort-operation', repo, operation) as Promise<void>,
   amendMessage: (repo: string, message: string, expectedHash: string) => invoke('repo:amend-message', repo, message, expectedHash),
   mergeBase: (repo: string, a: string, b: string) => invoke('repo:merge-base', repo, a, b) as Promise<string>,
   compare: (repo: string, from: string, to: string, ignoreWhitespace = false) =>

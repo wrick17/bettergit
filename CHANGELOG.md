@@ -2,6 +2,22 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.14] - 2026-11-03
+
+### Improved
+
+- Create, merge, rebase and delete remote branches from History refs.
+- Select text in diffs, see complete file paths without gaps, and search Changes by filename or within a file.
+- Pull directly from the toolbar and use a compact checkout picker that opens on the current branch.
+- Dismiss toast messages after five seconds.
+
+### Fixed
+
+- Open BetterGit when saved folders are missing and reopen its single window.
+- Continue or abort a rebase even when there are no changes.
+- Refuse to continue or abort a merge or rebase with a pending Git autostash, so Git cannot overwrite ignored files when restoring it. Complete the operation in a terminal instead.
+- Refuse to continue a replay that has a pending merge commit, rather than checking it against the wrong parent.
+
 ## [0.1.13] - 2026-10-30
 
 ### Improved

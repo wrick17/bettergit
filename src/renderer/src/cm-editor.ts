@@ -211,6 +211,38 @@ export function mountEditor({ parent, layout, language, path, text, original, se
       extensions: [current, merging.of(unified(context))],
     }),
   })
+  // The browser keeps a selection from crossing between editable and non-editable text, so a drag that starts on removed
+  // lines would stop at their edge. From such a press the text is not editable, so the selection runs on into the current
+  // lines and stays whole for copying. Only the attribute changes, not the editor's state, so the lines under the pointer
+  // stay in place. The next press elsewhere, a key other than a shortcut (so Tab reaches the text again), or focus leaving
+  // the editor makes it editable again before the editor sees that input; text, undo history and unsaved edits are
+  // untouched throughout.
+  const content = view.contentDOM
+  const release = (event: Event) => {
+    if (event.type === 'mousedown' && content.contains(event.target as Node) && (event.target as Element).closest?.('.cm-deletedChunk')) return
+    if (event.type === 'focusout' && view.dom.contains((event as FocusEvent).relatedTarget as Node | null)) return
+    // ⌘C and other shortcuts act on the selection, so they keep it.
+    if (event instanceof KeyboardEvent && (event.metaKey || event.ctrlKey || ['Shift', 'Alt', 'Meta', 'Control'].includes(event.key))) return
+    content.contentEditable = 'true'
+    window.removeEventListener('mousedown', release, true)
+    window.removeEventListener('keydown', release, true)
+    view.dom.removeEventListener('focusout', release)
+  }
+  content.addEventListener('mousedown', (event) => {
+    const block = event.button === 0 ? (event.target as Element).closest?.('.cm-deletedChunk') : null
+    if (!block) return
+    // A press inside the last selection would drag that text instead of starting a new selection, and the editor's own
+    // selection would stay drawn beside it, so both collapse here. Shift extends the selection instead.
+    if (!event.shiftKey) {
+      document.getSelection()?.removeAllRanges()
+      if (!view.state.selection.main.empty) view.dispatch({ selection: EditorSelection.cursor(view.posAtDOM(block)) })
+    }
+    if (content.contentEditable === 'false') return
+    content.contentEditable = 'false'
+    window.addEventListener('mousedown', release, true)
+    window.addEventListener('keydown', release, true)
+    view.dom.addEventListener('focusout', release)
+  }, true)
   start(null, view)
   // The block of removed lines that holds an old line, and that line's place in it.
   const deletion = (oldLine: number) => {
@@ -305,10 +337,40 @@ const wholeChanges = ViewPlugin.fromClass(class {
           const changed = [...line.querySelectorAll('.cm-deletedText')].reduce((length, node) => length + (node.textContent?.length ?? 0), 0)
           line.classList.toggle('cm-fullChange', changed === line.textContent?.length)
         }
+        // Removed lines are not in the document, so an editor selection across them marks them here and copies them in
+        // the copy handler below. A press on them selects natively instead (mountEditor).
+        const { main } = this.view.state.selection
+        for (const block of this.view.contentDOM.querySelectorAll<HTMLElement>('.cm-deletedChunk')) {
+          const at = this.view.posAtDOM(block)
+          block.classList.toggle('cm-deletedSelected', main.from < at && at < main.to)
+        }
       },
     })
   }
-}, { decorations: (plugin) => plugin.decorations })
+}, {
+  decorations: (plugin) => plugin.decorations,
+  eventHandlers: {
+    // An editor selection that crosses removed lines copies them too, in place, as the read-only rows do.
+    copy(event) {
+      const { state } = this.view
+      const { main } = state.selection
+      const blocks = (getChunks(state)?.chunks ?? []).filter((chunk) => main.from < chunk.fromB && chunk.fromB < main.to && chunk.fromA < chunk.toA)
+      if (!blocks.length || !event.clipboardData) return false
+      const original = getOriginalDoc(state)
+      let text = ''
+      let from = main.from
+      for (const chunk of blocks) {
+        const removed = original.sliceString(chunk.fromA, chunk.endA, state.lineBreak)
+        text += state.sliceDoc(from, chunk.fromB) + removed + (removed.endsWith(state.lineBreak) ? '' : state.lineBreak)
+        from = chunk.fromB
+      }
+      text += state.sliceDoc(from, main.to)
+      event.clipboardData.setData('text/plain', text)
+      event.preventDefault()
+      return true
+    },
+  },
+})
 
 function wholeLines(state: EditorState): DecorationSet {
   const found = getChunks(state)

@@ -26,12 +26,17 @@ export class SourceWatcher {
     for (const source of sources) {
       // Events name real paths (/private/tmp for /tmp on macOS). They are read against the real source and reported
       // under the configured one, which is how the renderer names repos.
-      const real = realpathSync(source)
-      const subscription = await watcher.subscribe(source, (error, events) => {
-        if (error) return
-        for (const event of events) this.record(source, path.join(source, path.relative(real, event.path)))
-      }, { ignore: IGNORED })
-      this.subscriptions.push(subscription)
+      // A source that was deleted or moved must not stop the others, or startup, from watching.
+      try {
+        const real = realpathSync(source)
+        const subscription = await watcher.subscribe(source, (error, events) => {
+          if (error) return
+          for (const event of events) this.record(source, path.join(source, path.relative(real, event.path)))
+        }, { ignore: IGNORED })
+        this.subscriptions.push(subscription)
+      } catch (error) {
+        console.error(`Could not watch ${source}:`, error)
+      }
     }
   }
 

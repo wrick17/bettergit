@@ -1,10 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './Icons'
-import { clearLatest, isFetchFailure, markAllRead, markRead, useLatestNotification, useNotifications } from './notifications'
+import { clearLatest, isFetchFailure, markAllRead, markRead, TOAST_MS, useLatestNotification, useNotifications } from './notifications'
 import { describeFailure } from './repo-busy'
-
-const ANNOUNCE_MS = 6000
 
 // The failures the user has not marked as read. A bell with the unread count opens the list, where each failure can take
 // the user to its repo, retry a failed fetch there, and be marked read. Each shows a plain summary and next step, with Git's
@@ -30,7 +28,7 @@ export function NotificationHub({ onGo, onRetryFetch, children }: {
 
   useEffect(() => {
     if (!latest) return
-    const timer = window.setTimeout(clearLatest, ANNOUNCE_MS)
+    const timer = window.setTimeout(clearLatest, TOAST_MS)
     return () => window.clearTimeout(timer)
   }, [latest])
 

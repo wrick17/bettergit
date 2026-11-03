@@ -15,6 +15,8 @@ export interface Notification {
 }
 
 const KEY = 'bettergit.notifications'
+// How long a toast or status note stays before it goes on its own. Failures stay in the hub after their toast goes.
+export const TOAST_MS = 5000
 const MAX_ENTRIES = 50
 const MAX_TEXT = 2000
 

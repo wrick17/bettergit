@@ -8,6 +8,14 @@
 .diff-editor .cm-lineNumbers .cm-gutterElement { min-width: 50px; padding: 0 12px 0 0; font-variant-numeric: tabular-nums; }
 .diff-editor .cm-cursor { border-left-color: var(--text); }
 .diff-editor .cm-selectionBackground, .diff-editor .cm-focused .cm-selectionBackground { background: var(--accent-soft) !important; }
+/* The selection draws over the line tints: below the text, an opaque added or removed line would hide it. The colour is
+   translucent, so the text stays readable, and the layer never takes the pointer. */
+.diff-editor .cm-selectionLayer { z-index: 1 !important; pointer-events: none; }
+/* A drag from removed lines selects natively (cm-editor.ts mountEditor). While the editor is unfocused that selection shows
+   on current lines too, where CodeMirror would otherwise hide it. */
+.diff-editor .cm-editor:not(.cm-focused) .cm-content .cm-line ::selection, .diff-editor .cm-editor:not(.cm-focused) .cm-content .cm-line::selection { background-color: var(--accent-soft) !important; }
+/* Removed lines inside an editor selection are copied with it, so they show as selected. */
+.diff-editor .cm-deletedChunk.cm-deletedSelected .cm-deletedLine { background-image: linear-gradient(var(--accent-soft), var(--accent-soft)); }
 
 /* Added and changed lines on the current side, removed lines and the old side. */
 .diff-editor .cm-editor .cm-changedLine, .diff-editor .cm-merge-b .cm-changedLine { background: var(--add-bg); }
