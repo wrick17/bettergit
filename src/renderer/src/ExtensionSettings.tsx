@@ -34,7 +34,7 @@ function safeUrl(value: string, base?: string | null): string | null {
   } catch { return null }
 }
 
-function ExtensionImage({ source, alt, logo = false, inline = false, width, onError }: { source?: string | null; alt: string; logo?: boolean; inline?: boolean; width?: number; onError?: (error: unknown) => void }) {
+function ExtensionImage({ source, alt, logo = false, inline = false, width, height, onError }: { source?: string | null; alt: string; logo?: boolean; inline?: boolean; width?: number; height?: number; onError?: (error: unknown) => void }) {
   const [loaded, setLoaded] = useState<{ source: string; data: string | null } | null>(null)
   useEffect(() => {
     if (!source) return
@@ -44,7 +44,7 @@ function ExtensionImage({ source, alt, logo = false, inline = false, width, onEr
     return () => { live = false }
   }, [source])
   const data = loaded?.source === source ? loaded?.data : null
-  if (data) return <img className={logo ? 'extension-logo' : `extension-readme-image${inline ? ' inline' : ''}`} src={data} alt={alt} width={width} onError={() => setLoaded({ source: source!, data: null })} />
+  if (data) return <img className={logo ? 'extension-logo' : `extension-readme-image${inline ? ' inline' : ''}`} src={data} alt={alt} width={width} height={height} onError={() => setLoaded({ source: source!, data: null })} />
   if (logo) return <span className="extension-logo extension-logo-fallback" role="img" aria-label={`${alt} logo unavailable`}><Icon name="extensions" /></span>
   const url = source && safeUrl(source)
   return url ? <a href={url} onClick={(event) => { event.preventDefault(); void api.openExternal(url).catch((failure: unknown) => onError?.(new Error(`Opening ${url} failed: ${message(failure)}`))) }}>{alt || 'View image'}</a> : <span>{alt || 'Image unavailable'}</span>
@@ -100,9 +100,12 @@ function ExtensionReadme({ source, base, onError }: { source: string; base: stri
         const template = document.createElement('template')
         template.innerHTML = value
         const image = (element: Element, key: number, selected?: string) => {
-          const size = element.getAttribute('width') ?? ''
-          const width = /^\d{1,4}$/.test(size) && Number(size) > 0 && Number(size) <= 4096 ? Number(size) : undefined
-          return <ExtensionImage key={key} source={safeUrl(selected ?? element.getAttribute('src') ?? '', base)} alt={element.getAttribute('alt') || 'README image'} width={width} inline onError={onError} />
+          // READMEs size spacers as width="0px" height="30"; an unread size would show the image at its natural size.
+          const size = (name: string) => {
+            const value = /^(\d{1,4})(?:px)?$/.exec(element.getAttribute(name)?.trim() ?? '')
+            return value && Number(value[1]) <= 4096 ? Number(value[1]) : undefined
+          }
+          return <ExtensionImage key={key} source={safeUrl(selected ?? element.getAttribute('src') ?? '', base)} alt={element.getAttribute('alt') || 'README image'} width={size('width')} height={size('height')} inline onError={onError} />
         }
         const visit = (node: ChildNode, key: number, depth = 0): ReactNode => {
           if (depth > 128) throw new Error('README HTML nesting limit exceeded')

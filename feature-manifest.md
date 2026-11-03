@@ -21,7 +21,7 @@ Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.js
 - Single instance (0.1.14): a second launch exits and focuses or reopens the one window (`requestSingleInstanceLock`, `second-instance`). Supersedes "Single-instance lock planned/open".
 - Startup (0.1.14): a missing saved source folder is skipped and logged; the window opens before the runtime starts, so a missing folder can no longer stop the app from opening.
 
-### Panels (merged in #53, release pending as 0.1.15)
+### Panels (merged in #53, release pending as 0.1.16)
 
 - The sidebar is common to both tabs. History has three panels after it: commits, commit files, diff. Changes has two: files, diff. There is no commit-list control in Changes.
 - Toolbar panel buttons match the panels on the current tab, in panel order: Changes = Sidebar, Files, Diff; History = Sidebar, Commits, Files, Diff.
@@ -74,8 +74,9 @@ Authoritative as of 2026-11-03 on master `95c93813` (PR #53 merged), `package.js
 
 ### Pending
 
-- **Extension Details README images inline: source complete and verified.** README images, including previews inside `<details>`/`<summary>`, render inline through the main-process image bridge. The image policy permits Open VSX, Shields, and image-suffixed raw.githubusercontent.com and user-images.githubusercontent.com URLs and github.com owner/repo/raw URLs; it checks public DNS and every redirect, validates image bytes, and caps remote images at 2 MiB. Installed icons retain their 512 KiB cap. The actual Electron bridge and Settings fixture decoded Catppuccin’s hero and four previews; three dead user-images links fell back to links, as unavailable or offline images do. No renderer errors were observed.
-- **Release 0.1.15: PENDING publication.** The panel fix (#53), README image fix, Included theme grouping and this decision record are prepared for release. Not tagged or published.
+- **Extension Details README images inline: source complete and verified.** README images, including previews inside `<details>`/`<summary>`, render inline through the main-process image bridge. The image policy permits Open VSX, Shields, and image-suffixed raw.githubusercontent.com and user-images.githubusercontent.com URLs and github.com owner/repo/raw URLs; it checks public DNS and every redirect, validates image bytes, and caps remote images at 2 MiB. Installed icons retain their 512 KiB cap. The actual Electron bridge and Settings fixture decoded Catppuccin’s hero and four previews; three dead user-images links fell back to links, as unavailable or offline images do. No renderer errors were observed. README image width and height accept safe integers from 0 to 4096, optionally suffixed px. A full-styled Electron Settings fixture with the real image bridge verified Catppuccin’s hero, Latte and Frappé previews, modal scrolling and reachable Close control; transparent spacers measured 0 × 0 rather than 810 × 1145. Combined verification passed typecheck, production build, and 516 tests with 4,336 assertions.
+- **Release 0.1.15: not shipped.** The tag exists, but its workflow was cancelled before publication after oversized transparent README spacers were reported. The tag remains unchanged.
+- **Release 0.1.16: PENDING publication.** The panel fix, README image and spacer fixes, Included theme grouping and this decision record are prepared for release. Not tagged or published.
 
 ### Delivery rules (user requirements)
 
