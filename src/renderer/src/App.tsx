@@ -75,12 +75,10 @@ export function App() {
   const autoDetails = useFolded('details')
   const sidebarExpanded = sidebarOpen && (!autoSidebar || repoClean || !!panelPins.sidebar)
   const listExpanded = listOpen && (!autoList || repoClean || !!panelPins.list)
-  const detailExpanded = detailOpen && (tab === 'changes' || !autoDetails || !!panelPins.details)
+  const detailExpanded = detailOpen && (tab === 'changes' ? !autoList || repoClean || !!panelPins.details : !autoDetails || !!panelPins.details)
   const toggleDetail = () => {
-    const expanded = tab === 'changes' ? detailExpanded && diffOpen : detailExpanded
-    setDetailOpen(!expanded)
+    setDetailOpen(!detailExpanded)
     setPanelPins((pins) => ({ ...pins, details: true }))
-    if (tab === 'changes') setDiffOpen(!expanded)
   }
   const sidebarFold = useFoldHold<HTMLElement>(!sidebarExpanded, '[role="treeitem"][tabindex="0"]')
   const toggleSidebar = useRef(() => {})
@@ -409,14 +407,8 @@ export function App() {
             detailOpen={detailExpanded}
             onToggleDetail={toggleDetail}
             diffOpen={diffOpen}
-            onToggleDiff={() => tab === 'changes' ? toggleDetail() : setDiffOpen((open) => !open)}
-            onShowDiff={() => {
-              setDiffOpen(true)
-              if (tab === 'changes') {
-                setDetailOpen(true)
-                setPanelPins((pins) => ({ ...pins, details: true }))
-              }
-            }}
+            onToggleDiff={() => setDiffOpen((open) => !open)}
+            onShowDiff={() => setDiffOpen(true)}
             revision={revision}
             refreshes={refreshes}
             onChanged={() => setRevision((value) => value + 1)}
@@ -661,16 +653,14 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
         </nav>
         <div className="pane-toggles">
           <IconButton icon="panelLeft" label={paneLabel('Sidebar', sidebarOpen)} active={sidebarOpen} onClick={onToggleSidebar} />
-          {/* One button per pane, left to right in the panes' order. Changes has no commit files pane: its file list is the
-              list, and the code diff is its detail. */}
-          <IconButton icon={tab === 'changes' ? 'paneFiles' : 'paneCommits'} label={paneLabel(tab === 'changes' ? 'File list' : 'Commit list', listOpen)} active={listOpen} onClick={onToggleList} />
-          {tab === 'history' && <IconButton icon="paneFiles" label={paneLabel('Commit files', detailOpen)} active={detailOpen} onClick={onToggleDetail} />}
-          <IconButton icon="diff" label={paneLabel('Code diff', tab === 'changes' ? detailOpen && diffOpen : diffOpen)} active={tab === 'changes' ? detailOpen && diffOpen : diffOpen} onClick={onToggleDiff} />
+          {tab === 'history' && <IconButton icon="paneCommits" label={paneLabel('Commit list', listOpen)} active={listOpen} onClick={onToggleList} />}
+          <IconButton icon="paneFiles" label={paneLabel(tab === 'changes' ? 'File list' : 'Commit files', detailOpen)} active={detailOpen} onClick={onToggleDetail} />
+          <IconButton icon="diff" label={paneLabel('Code diff', diffOpen)} active={diffOpen} onClick={onToggleDiff} />
         </div>
       </div>
       {tab === 'changes' && (
         <div id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" style={PANEL_STYLE}>
-          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={listOpen} detailOpen={detailOpen} diffOpen={diffOpen} onShowDiff={onShowDiff} onChanged={onChanged} onError={viewErrors.changes} />}
+          {status && <ChangesView repo={repo.path} status={status} revision={statusRevision} listOpen={detailOpen} detailOpen={true} diffOpen={diffOpen} onShowDiff={onShowDiff} onChanged={onChanged} onError={viewErrors.changes} />}
         </div>
       )}
       {tab === 'history' && (
