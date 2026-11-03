@@ -1,12 +1,14 @@
 // Bundled by browser.test.ts for a real Chromium page: the pieces whose behaviour depends on layout or live DOM.
 import { EditorState, EditorSelection } from '@codemirror/state'
-import { StrictMode, createElement, useEffect, useMemo, useRef } from 'react'
+import { StrictMode, createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { EditableDiff, bufferedKey, lineColumnAt, mountedEditors } from '../src/renderer/src/DiffEditor'
 import { FindBar } from '../src/renderer/src/FindBar'
 import { clearHighlight, revealMatch, setFindQuery, setFindScope, useFindSource, watchFind } from '../src/renderer/src/find'
-import { typeKeys } from '../src/renderer/src/cm-editor'
+import { mountEditor, typeKeys } from '../src/renderer/src/cm-editor'
+import { BranchChoices } from '../src/renderer/src/BranchPicker'
+import type { Branch } from '../src/main/git/ops'
 import { setSyntaxThemes } from '../src/renderer/src/highlight'
 import { SettingsDialog } from '../src/renderer/src/Dialogs'
 import { applyAppearance } from '../src/renderer/src/appearance'
@@ -41,6 +43,14 @@ function ActiveDiff({ files: patchFiles }: { files: DiffFile[] }) {
     createElement('div', { ref: pane, className: 'diff-pane', style: { overflow: 'auto' }, onScroll: active.probe }, createElement(DiffView, { files, moves: [] })))
 }
 
+// Checkout's ref list, controlled the way BranchPicker drives it.
+function Choices({ branches, query: initial }: { branches: Branch[]; query: string }) {
+  const [query, setQuery] = useState(initial)
+  const [active, setActive] = useState<string | null>(null)
+  return createElement('div', { className: 'branch-picker', style: { width: '600px' } },
+    createElement(BranchChoices, { branches, query, active, onQuery: setQuery, onActive: setActive, onPick: () => undefined, id: 'checkout', disabled: false }))
+}
+
 Object.assign(window, {
-  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, setFindScope, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub },
+  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, setFindScope, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub, mountEditor, Choices },
 })

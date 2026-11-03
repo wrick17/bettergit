@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { inflateSync } from 'node:zlib'
 import path from 'node:path'
 import { git } from '../src/main/git/exec'
 import { readStatus } from '../src/main/git/status'
@@ -32,7 +33,7 @@ beforeAll(async () => {
   const build = await Bun.build({ entrypoints: [`${import.meta.dir}/browser-entry.ts`], target: 'browser' })
   if (!build.success) throw new Error(build.logs.join('\n'))
   const script = (await build.outputs.find((output) => output.path.endsWith('.js'))!.text()).replace(/<\/script/g, '<\\/script')
-  const css = readFileSync(`${root}/src/renderer/src/diff-editor.css`, 'utf8') + readFileSync(`${root}/src/renderer/src/styles.css`, 'utf8')
+  const css = ['diff-editor.css', 'styles.css', 'branch-picker.css'].map((file) => readFileSync(`${root}/src/renderer/src/${file}`, 'utf8')).join('')
   // BETTERGIT_TEST_CHROMIUM points at another Chromium build where Playwright's own is not installed.
   browser = await playwright.chromium.launch(process.env.BETTERGIT_TEST_CHROMIUM ? { executablePath: process.env.BETTERGIT_TEST_CHROMIUM } : {})
   page = await browser.newPage({ viewport: { width: 800, height: 600 } })
@@ -2045,6 +2046,98 @@ test.skipIf(!playwright)('an update downloads only on click, and the restart is 
     w.hubRoot.unmount()
     document.getElementById('hub-host')?.remove()
   })
+})
+
+// One page pixel as [r, g, b]. A 1x1 PNG has a single row with nothing above or left of it, so every filter type leaves
+// the bytes after its filter byte unchanged.
+const pixel = async (x: number, y: number) => {
+  const png: Buffer = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, scale: 'css' })
+  let at = 8, data = Buffer.alloc(0)
+  while (at < png.length) {
+    const length = png.readUInt32BE(at), type = png.toString('ascii', at + 4, at + 8)
+    if (type === 'IDAT') data = Buffer.concat([data, png.subarray(at + 8, at + 8 + length)])
+    at += length + 12
+  }
+  return [...inflateSync(data).subarray(1, 4)]
+}
+const near = (a: number[], b: number[]) => a.every((value, index) => Math.abs(value - b[index]) <= 2)
+
+// The update toast's dismiss button is a plain icon button: the toast's text-button padding must not push its icon aside.
+test.skipIf(!playwright)('the update toast centres its dismiss icon', async () => {
+  const offset = await page.evaluate(async () => {
+    const { createElement, flushSync, createRoot, UpdateStatus } = (window as any).under
+    const w = window as any
+    Object.assign(w.bettergit, { onEvent: () => () => undefined, updateState: async () => ({ kind: 'current', version: '0.1.16' }) })
+    document.body.insertAdjacentHTML('beforeend', '<div id="toast-host" class="notify-layer"></div>')
+    const root = createRoot(document.getElementById('toast-host')!)
+    flushSync(() => root.render(createElement(UpdateStatus)))
+    for (let tries = 0; tries < 50 && !document.querySelector('.update-toast .icon-button'); tries++) await new Promise((resolve) => setTimeout(resolve, 10))
+    const button = document.querySelector('.update-toast .icon-button')!.getBoundingClientRect()
+    const icon = document.querySelector('.update-toast .icon-button svg')!.getBoundingClientRect()
+    root.unmount()
+    document.getElementById('toast-host')!.remove()
+    return { x: icon.left + icon.width / 2 - (button.left + button.width / 2), y: icon.top + icon.height / 2 - (button.top + button.height / 2) }
+  })
+  expect(Math.abs(offset.x)).toBeLessThan(0.5)
+  expect(Math.abs(offset.y)).toBeLessThan(0.5)
+})
+
+// Checkout narrowed to nothing: the one-row list holds its message whole, with no scrollbar.
+test.skipIf(!playwright)('a checkout search with no match shows its message without scrolling', async () => {
+  const branches = ['main', 'task/one'].map((name, index) => ({ name, fullRef: `refs/heads/${name}`, hash: 'a'.repeat(40), upstream: null, upstreamRef: null, current: index === 0, remote: false, ahead: 0, behind: 0, gone: false }))
+  const list = await page.evaluate((branches: unknown) => {
+    const { createElement, flushSync, createRoot, Choices } = (window as any).under
+    document.body.insertAdjacentHTML('beforeend', '<div id="choices-host"></div>')
+    const root = createRoot(document.getElementById('choices-host')!)
+    flushSync(() => root.render(createElement(Choices, { branches, query: 'tasj' })))
+    const box = document.querySelector<HTMLElement>('.branch-choices')!
+    const empty = document.querySelector('.branch-empty')!.getBoundingClientRect(), frame = box.getBoundingClientRect()
+    const result = { scrolls: box.scrollHeight > box.clientHeight, inside: empty.top >= frame.top && empty.bottom <= frame.bottom, text: box.textContent }
+    root.unmount()
+    document.getElementById('choices-host')!.remove()
+    return result
+  }, branches)
+  expect(list).toEqual({ scrolls: false, inside: true, text: 'No matching refs' })
+})
+
+// Unwrapped code scrolled sideways passes under the sticky gutter. The gutter must hide it, and still look like the pane
+// behind the editor, in both layouts and both themes. Single pixels, not whole screenshots: the overlay scrollbar appears
+// once the editor scrolls.
+test.skipIf(!playwright)('the editor gutter hides code scrolled under it and matches the pane, and carries the focus bar', async () => {
+  const long = Array.from({ length: 12 }, (_, index) => `const value${index} = ${'"x".repeat(5) + '.repeat(30)}${index}`).join('\n')
+  const original = long.split('\n').slice(0, 6).join('\n')
+  const mount = (layout: string) => page.evaluate(({ layout, long, original }: { layout: string; long: string; original: string }) => {
+    const w = window as any
+    document.body.insertAdjacentHTML('beforeend', '<div id="gutter-host" class="diff-rail" style="position: fixed; top: 0; left: 0; width: 720px; height: 560px"><div class="diff-pane"><div class="diff nowrap"><div class="diff-editor"></div></div></div></div>')
+    w.gutterEditor = w.under.mountEditor({ parent: document.querySelector('#gutter-host .diff-editor'), layout, language: null, path: 'gutter.ts', text: long, original, separator: '\n', onText() {}, onSave() {}, onEscape: () => false, wrap: false, folds: [], opened: new Set(), onFold() {} })
+    for (const scroller of w.gutterEditor.scrollers) scroller.scrollLeft = 120
+    // The current side's gutter, beside its last line, which is added; and the pane below the editor at the same x.
+    const gutter = [...document.querySelectorAll('#gutter-host .cm-gutters')].at(-1)!.getBoundingClientRect()
+    const line = [...document.querySelectorAll('#gutter-host .cm-line')].at(-1)!.getBoundingClientRect()
+    const editor = document.querySelector('#gutter-host .diff-editor')!.getBoundingClientRect()
+    return { scrolled: w.gutterEditor.scrollers.map((scroller: HTMLElement) => scroller.scrollLeft), x: Math.round(gutter.left + 16), focusX: Math.round(gutter.left), y: Math.round(line.top + line.height / 2), paneY: Math.round(editor.bottom + 12) }
+  }, { layout, long, original })
+  const unmount = () => page.evaluate(() => { (window as any).gutterEditor.destroy(); document.getElementById('gutter-host')!.remove() })
+  try {
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((theme: string) => { document.documentElement.dataset.theme = theme }, theme)
+      for (const layout of ['unified', 'split']) {
+        const at = await mount(layout)
+        expect(at.scrolled.every((x: number) => x === 120)).toBe(true)
+        const [gutter, pane] = [await pixel(at.x, at.y), await pixel(at.x, at.paneY)]
+        expect({ theme, layout, gutter, pane, matches: near(gutter, pane) }).toMatchObject({ matches: true })
+        if (layout === 'unified') {
+          await page.evaluate(() => (window as any).gutterEditor.view.focus())
+          const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().slice(1).match(/../g)!.map((hex) => parseInt(hex, 16)))
+          const bar = await pixel(at.focusX, at.y)
+          expect({ theme, bar, accent, focusBar: near(bar, accent) }).toMatchObject({ focusBar: true })
+        }
+        await unmount()
+      }
+    }
+  } finally {
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; document.getElementById('gutter-host')?.remove() })
+  }
 })
 
 // Mouse gestures on the diff, as the user makes them. Both return the point used.

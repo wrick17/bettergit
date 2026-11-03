@@ -118,7 +118,7 @@ export async function commitDetails(repo: string, hash: string): Promise<CommitD
 }
 
 // Only a full commit hash reaches git here, so no renderer text can be read as an option or a revision range.
-function assertHash(hash: unknown): asserts hash is string {
+export function assertHash(hash: unknown): asserts hash is string {
   if (typeof hash !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) throw new Error('Invalid commit hash.')
 }
 

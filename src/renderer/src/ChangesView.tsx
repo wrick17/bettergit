@@ -39,7 +39,9 @@ interface Props {
   onError: (error: unknown) => void
 }
 
-type Working = { files: DiffFile[]; moves: MovedBlock[] }
+// `large`: a section past LARGE_DIFF_FILES files, sent as its file list only, with counts and no hunks. A large section
+// is never drawn whole; its picked file loads alone, whole, and carries its `path`.
+type Working = { files: DiffFile[]; moves: MovedBlock[]; large?: true; path?: string }
 // Loads of one status, revision, context and widening (`of`), keyed by loadKey.
 interface Loads { of: unknown[]; pending: Map<string, Promise<Working>>; done: Map<string, Working> }
 const loadKey = (staged: boolean, hideWhitespace: boolean) => `${staged} ${hideWhitespace}`
@@ -187,7 +189,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // view on screen runs, its toolbar shows loading in place of hunks and counts from other options.
   const cachedAll = loaded(true) && loaded(false)
   const allShown = all && allFor.current === allKey ? all : cachedAll ? { staged: loaded(true)!, unstaged: loaded(false)! } : sameSource(allFor.current, allKey) ? all : null
-  const diffShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? (sameSource(diffFor.current, diffKey) ? diff : null)
+  const sectionShown = diff && diffFor.current === diffKey ? diff : section === null ? null : loaded(section) ?? (sameSource(diffFor.current, diffKey) ? diff : null)
+  // A large section's file list, or a file loaded for another pick, is not the picked file's diff, so the pane shows loading.
+  const diffShown = sectionShown?.large || (sectionShown?.path !== undefined && sectionShown.path !== selection?.path) ? null : sectionShown
   const contextPending = section === null ? allFor.current !== allKey && !cachedAll : diffFor.current !== diffKey && !loaded(section)
   const conflicted = useMemo(() => shownStatus.changes.filter((change) => change.conflicted), [shownStatus])
   // An unstaged conflicted row opens the resolver. Its diff is not loaded, because git prints combined diffs for it.
@@ -246,8 +250,11 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const unstagedFiles = unstagedShown?.files ?? NO_FILES.files
   const selectedFiles = selectedShown?.files ?? NO_FILES.files
   const allView = !selection && shownStatus.changes.length > 0
-  const showStaged = allView && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && filtered.staged.length > 0))
-  const showUnstaged = allView && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && filtered.changes.length > 0))
+  // A large section is never drawn whole. Its list stays, and the pane asks for a pick.
+  const stagedLarge = allView && !!allShown?.staged?.large
+  const unstagedLarge = allView && !!allShown?.unstaged?.large
+  const showStaged = allView && !stagedLarge && ((stagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !stagedShown || stagedShown === LOAD_FAILED) && filtered.staged.length > 0))
+  const showUnstaged = allView && !unstagedLarge && ((unstagedShown?.files.length ?? 0) > 0 || ((ignoreWhitespace || !unstagedShown || unstagedShown === LOAD_FAILED) && filtered.changes.length > 0))
   // Changes exist, but the filter matches none of them: the pane and the list say so, rather than "clean".
   const filteredOut = !!needle && !clean && !filtered.staged.length && !filtered.changes.length && !filtered.conflicted.length
   const onScreenRef = useRef(new Map<string, DiffFile[]>())
@@ -336,9 +343,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
         allFor.current = key
         setAll(next)
         // The other whitespace option loads while the window is idle, so its toggle shows without waiting.
+        // A large section is still a whole git diff in main, so it is not loaded ahead.
         window.requestIdleCallback?.(() => {
           if (loadsRef.current !== loads) return
-          for (const isStaged of [true, false]) loadWorking(loads, isStaged, !ignoreWhitespace).catch(() => undefined)
+          for (const isStaged of [true, false]) if (!(isStaged ? nextStaged : nextUnstaged).large) loadWorking(loads, isStaged, !ignoreWhitespace).catch(() => undefined)
         }, { timeout: 500 })
       }
     }).catch((failure: unknown) => {
@@ -364,15 +372,28 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     let stale = false
     const key = diffKey
     const loads = loadsRef.current!
+    const path = selection?.path
+    const show = (next: Working) => {
+      if (currentRequest.current) currentRequest.current.diff = next
+      diffFor.current = key
+      setDiff(next)
+    }
     // Lands with the other section's load, which the all loader shares, so a refresh that moves the selected file to the
     // other section switches the view in the same frame the file leaves this one.
     Promise.all([loadWorking(loads, section, ignoreWhitespace), loadWorking(loads, !section, ignoreWhitespace).catch(() => undefined)])
       .then(([next]) => {
-        if (!stale) {
-          if (currentRequest.current) currentRequest.current.diff = next
-          diffFor.current = key
-          setDiff(next)
-        }
+        if (stale) return
+        if (!next.large || path === undefined) return show(next)
+        // A large section loads only the picked file, both paths of a rename, at the level it was widened to.
+        const file = next.files.find((candidate) => pathOf(candidate) === path)
+        const paths = file ? [...new Set([file.oldPath, file.newPath].filter((name): name is string => !!name))] : [path]
+        api.working(repo, section, extraRef.current[levelKey(section, path)] ?? context, paths, ignoreWhitespace).then((one: Working) => {
+          if (!stale) show({ files: one.files, moves: one.moves, path })
+        }).catch((failure: unknown) => {
+          if (stale) return
+          errorRef.current(failure)
+          show(LOAD_FAILED)
+        })
       })
       .catch(() => {
         // The all view's loader shares this load and reports its failure, so it is reported once.
@@ -382,7 +403,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
         setDiff(LOAD_FAILED)
       })
     return () => { stale = true }
-  }, [repo, status, section, conflictSelected, revision, context, ignoreWhitespace])
+  }, [repo, status, section, selection?.path, conflictSelected, revision, context, ignoreWhitespace])
 
   // Every conflicted file loads with each refresh, like the working diffs, so picking one only scrolls to it. The picked
   // file goes first, then the list's order. Each load reads the file and its stage IDs together, and a reload that finds
@@ -597,7 +618,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       const replacement = fresh.files[0]
       const working = inSelection ? latest?.diff : latest?.all?.[section]
       if (!latest || !replacement || !working) return
-      const widened = replaceFile(working, path, replacement)
+      // A large section's picked file keeps its path, so it never shows as another pick's diff.
+      const widened = { ...replaceFile(working, path, replacement), path: working.path }
       setWidened((prev) => ({ context, levels: { ...(prev.context === context ? prev.levels : NO_EXTRA), [key]: next } }))
       if (inSelection) {
         latest.diff = widened
@@ -639,11 +661,12 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     let load = loads.pending.get(key)
     if (!load) {
       load = api.working(repo, isStaged, context, undefined, hideWhitespace)
-        .then((next: Working) => widen(repo, next, isStaged, extraRef.current, hideWhitespace))
-        .then((next) => {
-          const shared = shareFiles(lastWorking.current.get(key), next)
-          lastWorking.current.set(key, shared)
-          return shared
+        .then(async (fresh: Working) => {
+          const shared = shareFiles(lastWorking.current.get(key), await widen(repo, fresh, isStaged, extraRef.current, hideWhitespace))
+          // Widening and sharing rebuild the result from its files, so a large section's mark is put back.
+          const next: Working = fresh.large && !(shared as Working).large ? { ...shared, large: fresh.large } : shared
+          lastWorking.current.set(key, next)
+          return next
         })
       load.then((next) => { loads.done.set(key, next) }, () => { loads.pending.delete(key) })
       loads.pending.set(key, load)
@@ -663,6 +686,19 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     }
     return next
   }
+
+  // Row handlers keep one identity, so a pick, load or scroll re-renders only the rows whose own props change. Thousands
+  // of rows re-rendering on each of those was the hang when a large working tree was browsed.
+  const rowActions = useRef({ choose, toggle, discard })
+  rowActions.current = { choose, toggle, discard }
+  const rowHandlers = useMemo(() => ({
+    pickUnstaged: (change: FileChange) => rowActions.current.choose(change, false),
+    pickStaged: (change: FileChange) => rowActions.current.choose(change, true),
+    stageConflict: (change: FileChange) => rowActions.current.toggle(change, true),
+    toggleUnstaged: (change: FileChange) => rowActions.current.toggle(change, change.unstaged),
+    unstage: (change: FileChange) => rowActions.current.toggle(change, false),
+    discard: (change: FileChange) => rowActions.current.discard(change),
+  }), [])
 
   return (
     <div key={repo} className="changes" style={{ gridTemplateColumns: `${list.collapsed ? `${STRIP_WIDTH}px` : code.collapsed ? 'minmax(0, 1fr)' : `${listWidth}px`} ${list.collapsed ? 0 : GUTTER}px ${code.collapsed ? `${STRIP_WIDTH}px` : 'minmax(0, 1fr)'}` }}>
@@ -727,8 +763,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 stats={listed.stats}
                 collapsed={collapsed}
                 onToggleFolder={toggleFolder}
-                onSelect={(change) => choose(change, false)}
-                onToggle={(change) => toggle(change, true)}
+                onSelect={rowHandlers.pickUnstaged}
+                onToggle={rowHandlers.stageConflict}
                 busy={busy}
                 activeFiles={activeFiles}
               />
@@ -743,9 +779,9 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               stats={listed.stats}
               collapsed={collapsed}
               onToggleFolder={toggleFolder}
-              onSelect={(change) => choose(change, false)}
-              onToggle={(change) => toggle(change, change.unstaged)}
-              onDiscard={discard}
+              onSelect={rowHandlers.pickUnstaged}
+              onToggle={rowHandlers.toggleUnstaged}
+              onDiscard={rowHandlers.discard}
               onToggleAll={listChanges.unstaged.length ? () => togglePaths(listChanges.unstaged.map((change) => change.path), true) : undefined}
               filtered={!!needle}
               busy={busy}
@@ -760,8 +796,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               stats={listed.stats}
               collapsed={collapsed}
               onToggleFolder={toggleFolder}
-              onSelect={(change) => choose(change, true)}
-              onToggle={(change) => toggle(change, false)}
+              onSelect={rowHandlers.pickStaged}
+              onToggle={rowHandlers.unstage}
               onToggleAll={() => togglePaths(listChanges.staged.map((change) => change.path), false)}
               filtered={!!needle}
               busy={busy}
@@ -820,6 +856,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           {!selection && shownStatus.changes.length > 0 && !filteredOut && (
             <>
               <h2 className="diff-section">Changes {unstagedShown && unstagedShown !== LOAD_FAILED && <span className="count">{unstagedShown.files.length}</span>}</h2>
+              {unstagedLarge && <p className="hint">{largeHint(unstagedShown?.files.length ?? 0)}</p>}
               {showUnstaged && (
                 <DiffView
                   files={unstagedFiles}
@@ -836,6 +873,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 />
               )}
               <h2 className="diff-section">Staged {stagedShown && stagedShown !== LOAD_FAILED && <span className="count">{stagedShown.files.length}</span>}</h2>
+              {stagedLarge && <p className="hint">{largeHint(stagedShown?.files.length ?? 0)}</p>}
               {/* While it loads, with the whitespace option on, or after a failed load, a section with changes still mounts its DiffView, so the toolbar stays usable. */}
               {showStaged && (
                 <DiffView
@@ -936,6 +974,7 @@ const LOAD_FAILED_HINT = 'Could not load these changes.'
 // The diff a section's toolbar shows while the load for the view on screen runs. Shared, so DiffView keeps its memo.
 const NO_FILES: Working = { files: [], moves: [] }
 const LOADING_HINT = 'Loading…'
+const largeHint = (count: number) => `${count.toLocaleString()} changed files. Pick a file in the list to see its diff.`
 
 // A picked file glides to its header and its header flashes once, so the eye lands on it. Restores, and picks that swap
 // the pane's section, jump without motion.
@@ -1014,7 +1053,8 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   for (const [section, working] of [['staged', all.staged], ['unstaged', all.unstaged]] as const) {
     for (const file of working.files) {
       const lines = file.hunks.flatMap((hunk) => hunk.lines)
-      map.set(`${section}:${pathOf(file)}`, {
+      // A large section's files have no hunks and bring their counts.
+      map.set(`${section}:${pathOf(file)}`, file.counts ? { add: file.counts.adds, del: file.counts.dels } : {
         add: lines.filter((line) => line.type === 'add').length,
         del: lines.filter((line) => line.type === 'del').length,
       })
@@ -1161,7 +1201,7 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
 }
 
 // The name, counts, and status (which doubles as the stage button) shared by both views. Tree rows drop the folder part of the path.
-function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
+const FileRow = memo(function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
   repo: string
   change: FileChange
   staged: boolean
@@ -1218,7 +1258,7 @@ function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onD
       </span>
     </>
   )
-}
+})
 
 // The status flag on the right of each row, the same letters the extension uses.
 function badge(kind: FileChange['kind']): string {

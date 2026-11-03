@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { GitError, git, gitRaw } from './exec'
+import { assertHash } from './history'
 
 // "All" in the UI. Git reads it as more context than any file has, so the diff shows the whole file.
 const MAX_CONTEXT = 100000
@@ -33,6 +34,8 @@ export interface DiffFile {
   status: 'modified' | 'added' | 'deleted' | 'renamed'
   binary: boolean
   hunks: DiffHunk[]
+  // Set only on a file sent without its hunks, in the file list of a large diff (see listOnly).
+  counts?: { adds: number; dels: number }
 }
 
 export interface MovedBlock {
@@ -47,6 +50,32 @@ export interface LineRef {
 }
 
 export const MIN_MOVED_LINES = 3
+
+// Git's C-style quoting, which it uses for a path holding a quote, a backslash or a control byte even with
+// core.quotepath=off. Escapes stand for bytes, so octal UTF-8 sequences decode to their characters. Unquoted text is as is.
+const ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }
+export function unquotePath(text: string): string {
+  if (text.length < 2 || !text.startsWith('"') || !text.endsWith('"')) return text
+  const parts: Buffer[] = []
+  for (const [match, escape] of text.slice(1, -1).matchAll(/\\([0-7]{3}|[\s\S])|[^\\]+/g)) {
+    parts.push(escape === undefined ? Buffer.from(match) : Buffer.from([escape.length === 3 ? parseInt(escape, 8) : ESCAPES[escape] ?? escape.charCodeAt(0)]))
+  }
+  return Buffer.concat(parts).toString('utf8')
+}
+
+// The two paths of a `diff --git` line. Either side may be quoted; an unquoted path never holds a quote, so the first
+// ` "b/` starts a quoted second side.
+function headerPaths(rest: string): [string, string] | null {
+  const quoted = /^"(?:[^"\\]|\\.)*"/.exec(rest)?.[0]
+  const split = quoted ? quoted.length : rest.endsWith('"') ? rest.indexOf(' "b/') : -1
+  if (split < 0) {
+    const match = /^a\/(.*) b\/(.*)$/.exec(rest)
+    return match ? [match[1], match[2]] : null
+  }
+  const from = unquotePath(rest.slice(0, split))
+  const to = unquotePath(rest.slice(split + 1))
+  return from.startsWith('a/') && to.startsWith('b/') ? [from.slice(2), to.slice(2)] : null
+}
 
 // Given the bytes `text` was decoded from, each hunk also gets its id. A newline byte is never part of an invalid UTF-8
 // sequence, so the text and the bytes split into the same lines.
@@ -70,11 +99,8 @@ export function parseDiff(text: string, bytes?: Buffer): DiffFile[] {
       file = { oldPath: null, newPath: null, status: 'modified', binary: false, hunks: [] }
       files.push(file)
       hunk = null
-      const match = /^diff --git a\/(.*) b\/(.*)$/.exec(raw)
-      if (match) {
-        file.oldPath = match[1]
-        file.newPath = match[2]
-      }
+      const paths = headerPaths(raw.slice('diff --git '.length))
+      if (paths) [file.oldPath, file.newPath] = paths
       continue
     }
     // git prints a conflicted path as a combined diff, with two-column markers. Its lines belong to no regular file, so
@@ -90,9 +116,9 @@ export function parseDiff(text: string, bytes?: Buffer): DiffFile[] {
     else if (raw.startsWith('deleted file mode')) file.status = 'deleted'
     else if (raw.startsWith('rename from ')) {
       file.status = 'renamed'
-      file.oldPath = raw.slice('rename from '.length)
+      file.oldPath = unquotePath(raw.slice('rename from '.length))
     } else if (raw.startsWith('rename to ')) {
-      file.newPath = raw.slice('rename to '.length)
+      file.newPath = unquotePath(raw.slice('rename to '.length))
     } else if (raw.startsWith('Binary files ') || raw.startsWith('GIT binary patch')) {
       file.binary = true
     } else if (raw.startsWith('@@')) {
@@ -186,39 +212,77 @@ export function detectMoves(files: DiffFile[]): MovedBlock[] {
   return moves
 }
 
+// Past this many files a diff is sent as its file list only, with each file's counts, and a view loads one file's hunks
+// at a time. Mounting and colouring thousands of files at once hangs the window.
+export const LARGE_DIFF_FILES = 300
+
+export interface Patch {
+  files: DiffFile[]
+  moves: MovedBlock[]
+  // Set when `files` came without hunks. Moves are not looked for.
+  large?: true
+}
+
+// The patch the views get: whole, or for a large diff its file list only. Parsed whole either way, so status, renames,
+// binary files and dropped whitespace-only files read exactly as in a whole patch.
+export function listOnly(files: DiffFile[]): Patch {
+  if (files.length <= LARGE_DIFF_FILES) return { files, moves: detectMoves(files) }
+  return {
+    files: files.map((file) => {
+      const counts = { adds: 0, dels: 0 }
+      for (const hunk of file.hunks) for (const line of hunk.lines) {
+        if (line.type === 'add') counts.adds++
+        else if (line.type === 'del') counts.dels++
+      }
+      return { ...file, hunks: [], counts }
+    }),
+    moves: [],
+    large: true,
+  }
+}
+
+// One file's paths, as a pathspec: both sides of a rename, so git still pairs them as one.
+function pathspec(paths?: string[]): string[] {
+  return paths?.length ? ['--', ...paths] : []
+}
+
 function contextArg(context: number): string {
   return `-U${Math.min(MAX_CONTEXT, Math.max(0, Math.trunc(context)))}`
 }
 
 // `ignoreWhitespace` is git's --ignore-all-space. A file with only whitespace edits drops out of the patch, and
 // whitespace-only lines inside a hunk become context. It also hides a space removed inside a line ("a b" to "ab").
-export async function commitDiff(repo: string, hash: string, context = 3, ignoreWhitespace = false): Promise<DiffFile[]> {
-  const output = await git(repo, ['diff-tree', '-p', '--root', '-m', '--first-parent', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', hash])
+// `paths` limits the diff to those files, as names, never patterns.
+export async function commitDiff(repo: string, hash: string, context = 3, ignoreWhitespace = false, paths?: string[]): Promise<DiffFile[]> {
+  assertHash(hash)
+  const output = await git(repo, ['--literal-pathspecs', 'diff-tree', '-p', '--root', '-m', '--first-parent', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', hash, ...pathspec(paths)])
   return parseDiff(output)
 }
 
-// Callers pass resolved commit hashes, so refs never reach git as raw input.
-export async function compare(repo: string, from: string, to: string, ignoreWhitespace = false): Promise<{ files: DiffFile[]; moves: MovedBlock[] }> {
-  const files = parseDiff(await git(repo, ['diff', '--find-renames', '-U3', ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', from, to]))
-  return { files, moves: detectMoves(files) }
+// Callers pass resolved commit hashes, so refs never reach git as raw input. With `paths`, only those files, always whole.
+export async function compare(repo: string, from: string, to: string, ignoreWhitespace = false, paths?: string[]): Promise<Patch> {
+  const files = parseDiff(await git(repo, ['--literal-pathspecs', 'diff', '--find-renames', '-U3', ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', from, to, ...pathspec(paths)]))
+  return paths ? { files, moves: detectMoves(files) } : listOnly(files)
 }
 
 // Unstaged changes include untracked files. git diff never shows them, so each one becomes a file of added lines.
-// `path` limits the diff to one file, so the view can widen its context without refetching everything.
+// `path` limits the diff to one file, so the view can widen its context or show one file of a large diff without
+// refetching everything. A renamed file passes both its paths, so git still pairs them.
 // Untracked files are whole-file additions, so `ignoreWhitespace` never hides them.
-export async function workingDiff(repo: string, staged: boolean, context = 3, path?: string, ignoreWhitespace = false): Promise<DiffFile[]> {
+export async function workingDiff(repo: string, staged: boolean, context = 3, path?: string | string[], ignoreWhitespace = false): Promise<DiffFile[]> {
   // A file's own path is a name, never a pattern, so widening [ab].txt cannot load a.txt in its place.
   const args = ['--literal-pathspecs', 'diff', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', '--no-ext-diff']
   if (staged) args.push('--cached')
-  if (path) args.push('--', path)
+  const paths = path === undefined ? undefined : [path].flat().filter(Boolean)
+  args.push(...pathspec(paths))
   const output = await gitRaw(repo, args)
   if (output.code !== 0) throw new GitError(output.stderr || `git diff failed with code ${output.code}`, args, output.code, output.stderr)
   const files = parseDiff(output.stdout.toString('utf8'), output.stdout)
-  return staged ? files : [...files, ...(await untrackedFiles(repo, path))]
+  return staged ? files : [...files, ...(await untrackedFiles(repo, paths))]
 }
 
-async function untrackedFiles(repo: string, only?: string): Promise<DiffFile[]> {
-  const names = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...(only ? ['--', only] : [])])).split('\0').filter(Boolean)
+async function untrackedFiles(repo: string, only?: string[]): Promise<DiffFile[]> {
+  const names = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...pathspec(only)])).split('\0').filter(Boolean)
   const files: DiffFile[] = []
   for (const name of names) {
     const content = await fs.readFile(path.join(repo, name)).catch(() => null)

@@ -1,10 +1,14 @@
 /* The in-place editor of a working-tree diff (CodeMirror). It matches the read-only diff rows: same font, row height and tints. */
 .diff-editor .cm-editor { background: transparent; color: var(--text); font: var(--code-size)/var(--code-line) var(--font-code); }
-.diff-editor .cm-editor.cm-focused { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+.diff-editor .cm-editor.cm-focused { outline: none; }
+/* The focus bar sits on the gutter, which is opaque and would hide it on the editor. */
+.diff-editor .cm-editor.cm-focused .cm-gutters { box-shadow: inset 2px 0 0 var(--accent); }
 .diff-editor .cm-scroller { font: inherit; line-height: var(--code-line); }
 .diff-editor .cm-content { padding: 0; caret-color: var(--text); }
 .diff-editor .cm-line { padding: 0 20px 0 8px; }
-.diff-editor .cm-gutters { background: transparent; border: 0; color: var(--text-3); }
+/* Opaque, since unwrapped code scrolls sideways under the sticky gutter. The layers repeat what is behind the editor
+   (.diff-rail and .diff-pane on the window), so the gutter looks the same as before. */
+.diff-editor .cm-gutters { background: linear-gradient(var(--content), var(--content)), linear-gradient(var(--content), var(--content)), var(--window); border: 0; color: var(--text-3); }
 .diff-editor .cm-lineNumbers .cm-gutterElement { min-width: 50px; padding: 0 12px 0 0; font-variant-numeric: tabular-nums; }
 .diff-editor .cm-cursor { border-left-color: var(--text); }
 .diff-editor .cm-selectionBackground, .diff-editor .cm-focused .cm-selectionBackground { background: var(--accent-soft) !important; }

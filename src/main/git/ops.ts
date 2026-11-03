@@ -467,12 +467,74 @@ const FETCH_ARGS: Record<FetchMode, string[]> = {
 const fetches = new Map<string, Promise<unknown>>()
 async function fetchSerially(repo: string, args: string[], options?: GitOptions): Promise<void> {
   const refs = canonicalRepoPath((await git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim())
-  const run = (fetches.get(refs) ?? Promise.resolve()).catch(() => undefined).then(() => git(repo, args, options))
+  const run = (fetches.get(refs) ?? Promise.resolve()).catch(() => undefined).then(() => fetchWithRetries(repo, args, options))
   fetches.set(refs, run)
   try {
     await run
   } finally {
     if (fetches.get(refs) === run) fetches.delete(refs)
+  }
+}
+
+// Waits before the second and third attempts. Only failures Git itself reported are retried: a timeout already waited
+// two idle minutes, and auth, missing repos and bad arguments fail the same way every time.
+const FETCH_RETRY_MS = [1000, 3000]
+const PERMANENT_FETCH = /authentication failed|could not read (username|password)|permission denied|repository not found|does not appear to be a git repository|host key verification failed|terminal prompts disabled|invalid refspec|unknown option|couldn't find remote ref/i
+
+async function fetchWithRetries(repo: string, args: string[], options?: GitOptions): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    // Read before the attempt, so a repair deletes only refs still at the value nothing else has changed since.
+    const before = await readRefs(repo)
+    try {
+      await git(repo, args, options)
+      return
+    } catch (error) {
+      if (!(error instanceof GitError) || error.code === null || attempt >= FETCH_RETRY_MS.length || PERMANENT_FETCH.test(error.stderr)) throw error
+      await repairCaseCollision(repo, error.stderr, before)
+      await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_MS[attempt]))
+    }
+  }
+}
+
+// Ref name to object ID. Symbolic refs map to '', so a repair never matches them.
+async function readRefs(repo: string): Promise<Map<string, string>> {
+  const refs = new Map<string, string>()
+  const out = await git(repo, ['for-each-ref', '--format=%(objectname)%00%(symref)%00%(refname)']).catch(() => '')
+  for (const line of out.split('\n')) {
+    const [oid, symref, name] = line.split('\0')
+    if (name) refs.set(name, symref ? '' : oid)
+  }
+  return refs
+}
+
+// On a case-insensitive disk, remote branches such as merge/x and Merge/y share one folder, so Git also lists a
+// phantom Merge/x. A prune that removes merge/x and Merge/x in one transaction takes the same lock file twice and
+// fails with "cannot lock ref ... File exists" on every fetch. This deletes only those colliding refs, one transaction
+// each and only at the value read before the fetch; the retry then fetches again and Git prunes or restores the rest.
+// Git's display drops the refs/remotes/ prefix, so it acts only when every remote uses the default refspec and no
+// branch or tag shares the displayed name. Lock files are never removed.
+async function repairCaseCollision(repo: string, stderr: string, before: Map<string, string>): Promise<void> {
+  const locked = /could not delete references: cannot lock ref '(refs\/remotes\/[^']+)'/.exec(stderr)?.[1]?.toLowerCase()
+  if (!locked) return
+  const specs = (await git(repo, ['config', '--get-regexp', '^remote\\..*\\.fetch$']).catch(() => '')).trim().split('\n')
+  if (specs.some((line) => { const spec = /^remote\.(.+)\.fetch (\S+)$/.exec(line); return spec?.[2] !== `+refs/heads/*:refs/remotes/${spec?.[1]}/*` })) return
+  const groups = new Map<string, string[]>()
+  for (const [, name] of stderr.matchAll(/^\s*- \[deleted\]\s+\(none\)\s+-> (\S+)$/gm)) {
+    const ref = `refs/remotes/${name}`
+    if (!before.get(ref) || before.has(`refs/heads/${name}`) || before.has(`refs/tags/${name}`)) continue
+    groups.set(ref.toLowerCase(), [...groups.get(ref.toLowerCase()) ?? [], ref])
+  }
+  if ((groups.get(locked)?.length ?? 0) < 2) return
+  let pending = [...groups.values()].filter((refs) => refs.length > 1).flat()
+  // Colliding names share one file, so one name's check cannot see another Git writing through the other name.
+  const now = await readRefs(repo)
+  if (pending.some((ref) => now.get(ref) !== before.get(ref))) return
+  // Deleting one name can uncover the other's packed value, so passes repeat while any delete lands.
+  while (pending.length) {
+    const left: string[] = []
+    for (const ref of pending) if (!(await gitOk(repo, ['update-ref', '--no-deref', '-d', ref, before.get(ref)!]))) left.push(ref)
+    if (left.length === pending.length) return
+    pending = left
   }
 }
 

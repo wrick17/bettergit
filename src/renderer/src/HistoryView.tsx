@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { layoutGraph, startGraph, type GraphRow, type GraphState } from '../../main/git/graph'
 import type { Commit, CommitDetails } from '../../main/git/history'
 import { Avatar } from './Avatar'
-import type { DiffFile, MovedBlock } from '../../main/git/diff'
+import type { DiffFile, MovedBlock, Patch } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
 import { CommitStat, inListOrder, useFilesView } from './CommitStat'
 import { DiffView, countLines } from './DiffView'
@@ -28,7 +28,7 @@ const HEAD_REACH = 10_000
 const SEEK_REACH = 50_000
 const SEEK_PAGE = 2_000
 const COMMIT_CACHE = 24
-type CommitDetail = { files: DiffFile[]; moves: MovedBlock[]; details: CommitDetails }
+type CommitDetail = Patch & { details: CommitDetails }
 type CommitRefs = { branches: string[]; remotes: string[]; tags: string[] }
 // Colors match better-source-control's graph. Like Sublime Merge, lanes sit closer together further right (graph-x.ts),
 // and each row's graph is as wide as the lanes in that row, with its text starting after them. A laid-out row never
@@ -87,7 +87,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   // Why Show current branch could not show HEAD.
   const [jump, setJump] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(() => loadSession().places[repo]?.commit ?? null)
-  const [detail, setDetail] = useState<{ hash: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[]; details: CommitDetails } | null>(null)
+  const [detail, setDetail] = useState<(CommitDetail & { hash: string; ignoreWhitespace: boolean }) | null>(null)
   // The branches and tags at the selected commit, read again on each refresh, since refs move while a hash stays.
   const [refs, setRefs] = useState<{ hash: string; refs: CommitRefs } | null>(null)
   // The load key of a failed reload of the commit on screen. Its diff shows the failure until a load succeeds.
@@ -95,7 +95,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   // The compare the user asked for: the commit, and the ref it compares with. Its diff is fetched with the whitespace option on screen.
   const [target, setTarget] = useState<{ hash: string; label: string; ref: string; quiet?: boolean } | null>(null)
   // The last fetched compare, with the option it was fetched with. It is shown only while that option and target are current.
-  const [loaded, setLoaded] = useState<{ hash: string; label: string; ref: string; ignoreWhitespace: boolean; files: DiffFile[]; moves: MovedBlock[] } | null>(null)
+  const [loaded, setLoaded] = useState<(Patch & { hash: string; label: string; ref: string; ignoreWhitespace: boolean }) | null>(null)
+  // A large diff comes as its file list only. The file picked from it, by path, shows alone, whole, once its own load lands.
+  const [onlyPath, setOnlyPath] = useState<string | null>(null)
+  const [only, setOnly] = useState<{ file: DiffFile; files: DiffFile[]; moves: MovedBlock[]; failed?: true } | null>(null)
   // The compare that was open for the commit at launch. It is read once, and returns when that commit's detail shows.
   const [savedCompare] = useState(() => {
     const saved = selected ? savedView<{ label: string; ref: string } | null>(`${repo}|compare`, selected, null) : null
@@ -229,8 +232,9 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       // so its hunks are never shown under the other one.
       if (stale) return
       setDetail({ hash: selected, ignoreWhitespace, ...next })
-      // The other whitespace option loads while the window is idle, so its toggle shows without waiting.
-      window.requestIdleCallback?.(() => { if (!stale) loadCommit(selected, !ignoreWhitespace).catch(() => undefined) }, { timeout: 500 })
+      // The other whitespace option loads while the window is idle, so its toggle shows without waiting. A large diff
+      // is only a file list, but still a whole git diff in main, so it is not loaded ahead.
+      if (!next.large) window.requestIdleCallback?.(() => { if (!stale) loadCommit(selected, !ignoreWhitespace).catch(() => undefined) }, { timeout: 500 })
     }).catch((failure: unknown) => {
       if (stale) return
       // A saved commit that no longer exists (rebased away, for example) must not leave the detail on "Loading…".
@@ -280,6 +284,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     if (selected !== savedCompare?.hash) restoredCompare.current = true
     setTarget(null)
     setLoaded(null)
+    setOnlyPath(null)
     setPrompt(null)
     setNotice(null)
     // A right-click selects its commit and opens the menu for it, so the menu survives only for the selected commit.
@@ -422,6 +427,24 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   // Sorted once per patch and layout, never per scroll.
   const [filesView, setFilesView] = useFilesView()
   const shown = useMemo(() => patch && inListOrder(patch, filesView), [patch, filesView])
+  // A large patch's picked file, from the patch on screen. Another option or compare picks the same path from its own list.
+  const large = patch?.large ? patch : null
+  const onlyFile = large && onlyPath !== null ? large.files.find((file) => pathOf(file) === onlyPath) ?? null : null
+  useEffect(() => {
+    if (!onlyFile || !selected) return
+    let stale = false
+    const paths = [...new Set([onlyFile.oldPath, onlyFile.newPath].filter((path): path is string => !!path))]
+    const load = compare ? api.compare(repo, selected, compare.ref, ignoreWhitespace, paths) : api.commitFiles(repo, selected, context, ignoreWhitespace, paths)
+    load.then((next: Patch) => { if (!stale) setOnly({ file: onlyFile, ...next }) }).catch((failure: unknown) => {
+      if (stale) return
+      setOnly({ file: onlyFile, files: [], moves: [], failed: true })
+      errorRef.current(failure)
+    })
+    return () => { stale = true }
+  }, [repo, selected, onlyFile, compare, context, ignoreWhitespace])
+  // What the code diff shows: the whole patch, or for a large one only its picked file once that file's load lands.
+  const onlyShown = only && only.file === onlyFile ? only : null
+  const diffShown = large ? onlyShown : shown
   const onDiffScroll = useScrollMemory(diffRef, `${repo}|history-diff`, selected ?? '', patch !== null)
   // The diff's last scroll position for the commit on screen, and the view it was in: the commit's own diff or a compare.
   // A whitespace reload shows no hunks, so the pane clamps to the top. The position waits for the reply with the same view,
@@ -496,7 +519,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   const empty = exhausted && !commits.length && !query.trim() && !authors.length
   const totals = compare ? totalLines(compare.files) : null
   // With no diff to show, the pane is loading, unless the commit's own diff failed to reload and no compare is on its way.
-  const emptyHint = patch ? undefined : failed === detailKey && wanted === 'own' ? 'Could not load this diff.' : 'Loading…'
+  const emptyHint = !patch ? (failed === detailKey && wanted === 'own' ? 'Could not load this diff.' : 'Loading…')
+    : !large ? undefined
+    : !onlyFile ? `${large.files.length.toLocaleString()} changed files. Pick a file to see its diff.`
+    : onlyShown?.failed ? 'Could not load this diff.' : onlyShown ? undefined : 'Loading…'
   // The commit actions need the selected commit's body, so they wait for its detail.
   const commitInput: CommitInput | null = picked && current ? {
     repo,
@@ -525,6 +551,10 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
   }
   const showFile = (path: string) => {
+    if (large) {
+      setOnlyPath(path)
+      return diffOpen ? undefined : onShowDiff()
+    }
     if (diffOpen) return scrollToFile(path)
     pendingFile.current = path
     onShowDiff()
@@ -703,7 +733,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   {body && <pre className="commit-body">{body}</pre>}
                   </header>
                   {compareBar}
-                  <DiffView files={shown?.files ?? []} moves={shown?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
+                  <DiffView files={diffShown?.files ?? []} moves={diffShown?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
                   </>}
                 </div>
               </DiffRail>
@@ -844,7 +874,7 @@ function formatListDate(seconds: number) {
 
 // Adds and removes across a diff, with its file count, for the compare bar.
 function totalLines(files: DiffFile[]) {
-  const counts = files.map(countLines)
+  const counts = files.map((file) => file.counts ?? countLines(file))
   return {
     files: files.length,
     adds: counts.reduce((sum, count) => sum + count.adds, 0),
@@ -855,6 +885,7 @@ function totalLines(files: DiffFile[]) {
 type Graph = { commits: Commit[]; rows: GraphRow<Commit>[]; state: GraphState }
 const EMPTY_GRAPH: Graph = { commits: [], rows: [], state: { lanes: [], nextColor: 0 } }
 // The checked-out commit, as git log decorates it: "HEAD -> branch", or "HEAD" when detached.
+const pathOf = (file: DiffFile) => file.newPath ?? file.oldPath ?? ''
 const isHeadCommit = (commit: Commit) => commit.refs.some((ref) => ref === 'HEAD' || ref.startsWith('HEAD -> '))
 
 // The commit listbox. Rows are a fixed height, so only the window near the pane's viewport mounts, with padding standing in

@@ -872,6 +872,76 @@ if (process.env.CHECK_MODE === 'membership') {
   assert.deepEqual(errors, [])
   unmount()
 }
+
+if (process.env.CHECK_MODE === 'large') {
+  // The staged section is large: main sends its file list only, with counts. The unstaged one is small and whole.
+  window.requestIdleCallback = (callback) => { callback(); return 0 }
+  const listed = (oldPath, newPath, status, adds) => ({ oldPath, newPath, status, binary: false, hunks: [], counts: { adds, dels: 1 } })
+  const largeList = { large: true, moves: [], files: [listed('old [ab].ts', 'new [ab].ts', 'renamed', 2), listed('b.ts', 'b.ts', 'modified', 7)] }
+  const one = (path, label) => {
+    const patch = 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-old\n+' + label + '\n'
+    return { files: parseDiff(patch, Buffer.from(patch)), moves: [] }
+  }
+  const respond = async () => {
+    for (const request of requests.filter((r) => !r.done && r.args[3] === undefined && r.args[4] === false)) {
+      request.done = true
+      request.resolve(request.args[1] ? largeList : one('c.ts', 'working'))
+    }
+    await flush()
+  }
+  const fileLoads = () => requests.filter((r) => r.args[3] !== undefined)
+  const shownPaths = () => find(tree, (p) => Array.isArray(p.files) && p.stage)?.files.map((file) => file.newPath)
+  const shownHint = () => find(tree, (p) => Array.isArray(p.files) && p.stage)?.emptyHint
+  stored.clear(); requests.length = 0; errors = []; slots = []; mounted = true
+  setContextLines(3); setIgnoreWhitespace(false)
+  const staged = (path, extra) => ({ path, staged: true, unstaged: false, conflicted: false, kind: 'modified', ...extra })
+  props = {
+    repo: '/repo', revision: 1, listOpen: true, detailOpen: true, onChanged() {}, onError: (error) => errors.push(String(error)),
+    status: { changes: [staged('new [ab].ts', { originalPath: 'old [ab].ts', kind: 'renamed' }), staged('b.ts'), { ...staged('c.ts'), staged: false, unstaged: true }] },
+  }
+  render(); await respond()
+  // The all view draws the small section and only a hint for the large one, whose rows keep their counts.
+  const views = findAll(tree, (p) => Array.isArray(p.files) && p.stage)
+  assert.deepEqual(views.map((view) => [view.stage.staged, view.files.map((file) => file.newPath)]), [[false, ['c.ts']]], 'the large section was drawn whole')
+  assert.ok(find(tree, (p) => p.className === 'hint' && p.children === '2 changed files. Pick a file in the list to see its diff.'))
+  const stagedList = () => findAll(tree, (p) => p.title === 'Staged' && Array.isArray(p.changes))[0]
+  assert.deepEqual(stagedList().stats.get('staged:new [ab].ts'), { add: 2, del: 1 })
+  assert.deepEqual(stagedList().stats.get('staged:b.ts'), { add: 7, del: 1 })
+  assert.ok(!requests.some((r) => r.args[1] === true && r.args[4] === true), 'a large section was loaded ahead for the other whitespace option')
+  // Row handlers keep their identity through a pick and a load, so the memoised rows of a large list do not all re-render.
+  const handlers = () => findAll(tree, (p) => Array.isArray(p.changes)).flatMap((list) => [list.onSelect, list.onToggle, list.onDiscard])
+  const before = handlers()
+  // A pick loads only that file, both paths of a rename, and shows loading in place of the file list.
+  stagedList().onSelect(stagedList().changes[0]); render(); await flush()
+  assert.ok(handlers().every((handler, index) => handler === before[index]), 'a pick gave the rows new handlers')
+  assert.deepEqual(fileLoads().map((r) => r.args.slice(1)), [[true, 3, ['old [ab].ts', 'new [ab].ts'], false]])
+  assert.deepEqual(shownPaths(), [])
+  assert.equal(shownHint(), 'Loading…')
+  // A second pick before the first lands: the first reply is dropped.
+  stagedList().onSelect(stagedList().changes[1]); render(); await flush()
+  assert.deepEqual(fileLoads()[1].args[3], ['b.ts'])
+  fileLoads()[0].resolve(one('new [ab].ts', 'stale')); await flush()
+  assert.deepEqual(shownPaths(), [], 'a reply for an earlier pick was shown')
+  fileLoads()[1].resolve(one('b.ts', 'picked')); await flush()
+  assert.deepEqual(shownPaths(), ['b.ts'])
+  // A widened pick keeps its path, so the next pick shows loading rather than the widened file.
+  const view = find(tree, (p) => Array.isArray(p.files) && p.stage)
+  view.onExpand(view.files[0])
+  assert.deepEqual(requests.at(-1).args.slice(1), [true, 10, 'b.ts', false])
+  requests.at(-1).resolve(one('b.ts', 'wide')); await flush()
+  assert.equal(find(tree, (p) => Array.isArray(p.files) && p.stage).files[0].hunks[0].lines.at(-1).text, 'wide')
+  // A widen starts a new load set: the section's list loads again, with the widened file at its level, before the pick's own file.
+  stagedList().onSelect(stagedList().changes[0]); render(); await respond()
+  assert.deepEqual(fileLoads().at(-1).args.slice(1), [true, 10, 'b.ts', false])
+  fileLoads().at(-1).resolve(one('b.ts', 'wide')); await flush()
+  assert.deepEqual(shownPaths(), [], 'the widened file showed for another pick')
+  assert.deepEqual(fileLoads().at(-1).args.slice(1), [true, 3, ['old [ab].ts', 'new [ab].ts'], false])
+  // A failed file load reports once and shows the failure.
+  fileLoads().at(-1).reject(new Error('one file failed')); await flush()
+  assert.deepEqual(errors, ['Error: one file failed'])
+  assert.equal(shownHint(), 'Could not load these changes.')
+  unmount()
+}
 `
 
 function check(mode: string) {
@@ -900,6 +970,7 @@ test('a scrolled diff keeps its place through an option reload, and a file picke
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
 test('Changes contains only unstaged files and follows selections across staging', () => check('membership'))
+test('a large Changes section shows its list with counts and loads only the picked file, dropping replies for earlier picks', () => check('large'))
 test('confirmed conflict reset keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))
 
 test('commit box shows the effective author and opens identity editing', () => check('identity'))

@@ -7,7 +7,7 @@ import { git, gitRaw } from '../src/main/git/exec'
 import { logAction, openCommandLog } from '../src/main/command-log'
 import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
-import { commitDiff, compare, detectMoves, workingDiff } from '../src/main/git/diff'
+import { commitDiff, compare, detectMoves, LARGE_DIFF_FILES, listOnly, parseDiff, workingDiff, type DiffFile } from '../src/main/git/diff'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
@@ -226,6 +226,109 @@ describe('ignore whitespace', () => {
     expect(names(await commitDiff(dir, real, 3, true))).toEqual(['mixed.ts', 'source.ts', 'target.ts'])
     expect((await compare(dir, real, whitespace, true)).files).toEqual([])
     expect(names((await compare(dir, real, whitespace)).files)).toEqual(['indent.ts'])
+  })
+})
+
+// Past LARGE_DIFF_FILES files a diff goes to the views as its file list only, and a picked file loads alone by its literal
+// paths. Both sides of a rename are passed, so it stays a rename.
+describe('large diffs and one-file loads', () => {
+  let dir: string
+  let base: string
+  let head: string
+  const names = (files: DiffFile[]) => files.map((file) => `${file.status}:${file.oldPath}>${file.newPath}`)
+  const counted = (file: DiffFile) => ({ adds: file.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.type === 'add').length, dels: file.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.type === 'del').length })
+  const rename = ['[ab].txt', 'new [ab].txt']
+  const QUOTED = ['a"b.txt', 'back\\slash.txt', 'tab\tname.txt', 'line\nbreak.txt', 'ctl\x01.txt']
+  const QUOTED_RENAME = ['old"\\q.txt', 'new\tü"q.txt']
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'bettergit-large-'))
+    await git(dir, ['init', '-q'])
+    await git(dir, ['config', 'user.email', 'test@example.com'])
+    await git(dir, ['config', 'user.name', 'Test'])
+    const write = (name: string, text: string) => writeFileSync(path.join(dir, name), text)
+    const lines = (count: number, tag = '') => Array.from({ length: count }, (_, index) => `line ${index}${tag && index % 3 === 0 ? tag : ''}`).join('\n') + '\n'
+    mkdirSync(path.join(dir, 'many'))
+    for (let index = 0; index < LARGE_DIFF_FILES; index++) write(`many/f${index}.txt`, lines(6))
+    // `[ab].txt` is also a pattern that matches a.txt, which changes in the same commit.
+    write('[ab].txt', lines(40))
+    write('a.txt', 'a\n')
+    // Names git quotes even with core.quotepath=off: a quote, a backslash, control bytes, and a rename between two of them.
+    for (const name of QUOTED) write(name, lines(8))
+    write(QUOTED_RENAME[0], lines(30))
+    await git(dir, ['add', '-A'])
+    await git(dir, ['commit', '-qm', 'base'])
+    for (let index = 0; index < LARGE_DIFF_FILES; index++) write(`many/f${index}.txt`, lines(6, ' edited'))
+    await git(dir, ['mv', '[ab].txt', 'new [ab].txt'])
+    write('new [ab].txt', lines(40) + 'one more\n')
+    write('a.txt', 'a changed\n')
+    for (const name of QUOTED) write(name, lines(8, ' edited'))
+    await git(dir, ['mv', QUOTED_RENAME[0], QUOTED_RENAME[1]])
+    write(QUOTED_RENAME[1], lines(30) + 'renamed tail\n')
+    await git(dir, ['add', '-A'])
+    await git(dir, ['commit', '-qm', 'large'])
+    base = (await git(dir, ['rev-parse', 'HEAD~1'])).trim()
+    head = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+  })
+  afterAll(() => cleanup(dir))
+
+  test('a diff past the threshold keeps every file and its counts but no hunks; one at the threshold stays whole', async () => {
+    const whole = await commitDiff(dir, head)
+    expect(whole).toHaveLength(LARGE_DIFF_FILES + 3 + QUOTED.length)
+    const list = listOnly(whole)
+    expect(list.large).toBe(true)
+    expect(list.moves).toEqual([])
+    expect(names(list.files)).toEqual(names(whole))
+    expect(list.files.every((file) => file.hunks.length === 0)).toBe(true)
+    expect(list.files.map((file) => file.counts)).toEqual(whole.map(counted))
+    expect(list.files.find((file) => file.newPath === 'new [ab].txt')).toMatchObject({ status: 'renamed', oldPath: '[ab].txt', counts: { adds: 1, dels: 0 } })
+    const small = listOnly(whole.slice(0, LARGE_DIFF_FILES))
+    expect(small.large).toBeUndefined()
+    expect(small.files).toEqual(whole.slice(0, LARGE_DIFF_FILES))
+    expect(small.files.some((file) => file.counts)).toBe(false)
+    // Compare and the working tree go through the same list.
+    expect((await compare(dir, base, head)).large).toBe(true)
+    expect(names((await compare(dir, base, head)).files)).toEqual(names(whole))
+  })
+
+  test('one file of a commit, a compare or the staged tree loads alone, a rename by both paths, a pattern name literally', async () => {
+    const one = (files: DiffFile[]) => names(files)
+    expect(one(await commitDiff(dir, head, 3, false, rename))).toEqual(['renamed:[ab].txt>new [ab].txt'])
+    expect(one(await commitDiff(dir, head, 3, false, ['[ab].txt']))).toEqual(['deleted:[ab].txt>[ab].txt'])
+    expect(one(await commitDiff(dir, head, 3, false, ['a.txt']))).toEqual(['modified:a.txt>a.txt'])
+    const picked = await compare(dir, base, head, false, rename)
+    expect(picked.large).toBeUndefined()
+    expect(one(picked.files)).toEqual(['renamed:[ab].txt>new [ab].txt'])
+    expect(picked.files[0].hunks.flatMap((hunk) => hunk.lines).filter((line) => line.type === 'add').map((line) => line.text)).toEqual(['one more'])
+    await git(dir, ['reset', '-q', '--soft', base])
+    try {
+      expect(listOnly(await workingDiff(dir, true)).large).toBe(true)
+      expect(one(await workingDiff(dir, true, 3, rename))).toEqual(['renamed:[ab].txt>new [ab].txt'])
+      expect(one(await workingDiff(dir, true, 3, 'a.txt'))).toEqual(['modified:a.txt>a.txt'])
+    } finally {
+      await git(dir, ['reset', '-q', '--soft', head])
+    }
+    // Quoted names decode to the real names, so a file picked from a large list loads alone by them, a rename by both.
+    const listed = listOnly(await commitDiff(dir, head)).files
+    for (const name of QUOTED) {
+      expect(listed.find((file) => file.newPath === name)).toMatchObject({ status: 'modified', oldPath: name, counts: { adds: 3, dels: 3 } })
+      expect(one(await commitDiff(dir, head, 3, false, [name]))).toEqual([`modified:${name}>${name}`])
+      expect(one((await compare(dir, base, head, false, [name])).files)).toEqual([`modified:${name}>${name}`])
+    }
+    expect(listed.find((file) => file.newPath === QUOTED_RENAME[1])).toMatchObject({ status: 'renamed', oldPath: QUOTED_RENAME[0], counts: { adds: 1, dels: 0 } })
+    expect(one(await commitDiff(dir, head, 3, false, QUOTED_RENAME))).toEqual([`renamed:${QUOTED_RENAME[0]}>${QUOTED_RENAME[1]}`])
+    // With core.quotepath on, git also writes UTF-8 as octal bytes; they decode to the same names.
+    const octal = parseDiff(await git(dir, ['-c', 'core.quotepath=on', 'diff-tree', '-p', '--find-renames', '--no-color', head, '--', ...QUOTED_RENAME]))
+    expect(octal.map((file) => [file.status, file.oldPath, file.newPath])).toEqual([['renamed', ...QUOTED_RENAME]])
+    // An untracked file named like a pattern loads alone, not the file the pattern matches.
+    writeFileSync(path.join(dir, '[cd].txt'), 'pattern\n')
+    writeFileSync(path.join(dir, 'c.txt'), 'plain\n')
+    expect(one(await workingDiff(dir, false, 3, ['[cd].txt']))).toEqual(['added:null>[cd].txt'])
+  })
+
+  test('a commit diff only takes a full commit hash, so renderer text never reaches git as an option', async () => {
+    await expect(commitDiff(dir, '--output=x')).rejects.toThrow('Invalid commit hash.')
+    await expect(commitDiff(dir, 'HEAD')).rejects.toThrow('Invalid commit hash.')
   })
 })
 
@@ -1789,6 +1892,89 @@ describe('writes that could overwrite untracked or ignored files', () => {
     await Promise.all([fetchAll(linked), pull(local, 'ff-only')])
     expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['start', 'end', 'start', 'end'])
   })
+
+  // An upload-pack that logs each fetch attempt, then runs `body` (which may fail) before the real one.
+  const uploadPack = (dir: string, local: string, body: string) => {
+    const log = path.join(dir, 'attempts.log'), script = path.join(dir, 'upload-pack')
+    writeFileSync(script, `#!/bin/sh\necho attempt >> '${log}'\n${body}\nexec git-upload-pack "$@"\n`)
+    chmodSync(script, 0o755)
+    return git(local, ['config', 'remote.origin.uploadpack', script]).then(() => () => readFileSync(log, 'utf8').trim().split('\n').length)
+  }
+
+  test('fetch retries a transient failure twice, then reports its error, and never retries a failed login', async () => {
+    const { dir, local } = await fixture()
+    const attempts = await uploadPack(dir, local, `echo 'fatal: the remote end hung up unexpectedly' >&2; exit 128`)
+    await expect(fetchAll(local)).rejects.toThrow('the remote end hung up unexpectedly')
+    expect(attempts()).toBe(3)
+    const { dir: authDir, local: auth } = await fixture()
+    const logins = await uploadPack(authDir, auth, `echo 'fatal: Authentication failed for origin' >&2; exit 128`)
+    await expect(fetchAll(auth)).rejects.toThrow('Authentication failed')
+    expect(logins()).toBe(1)
+  }, 15_000)
+
+  // A case-sensitive host keeps merge/ and Merge/ apart (here in packed-refs). On a case-insensitive disk the clone
+  // stores both in one folder, and once both are deleted upstream, Git's own prune fails on its own lock every time.
+  const caseCollision = async () => {
+    const { dir, other } = await fixture()
+    const remote = path.join(dir, 'remote.git'), local = path.join(dir, 'case')
+    const base = await sha(other), moved = await publish(other, { 'a.txt': 'a\n' }, 'a'), main = await publish(other, { 'b.txt': 'b\n' }, 'b')
+    const pack = (refs: Record<string, string>) => {
+      const lines = Object.entries({ main, ...refs }).sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, oid]) => `${oid} refs/heads/${name}`)
+      writeFileSync(path.join(remote, 'packed-refs'), ['# pack-refs with: peeled fully-peeled sorted ', ...lines, ''].join('\n'))
+    }
+    await git(remote, ['pack-refs', '--all'])
+    pack({ 'Merge/BENE-6450': base, 'merge/BENE-6318-dev': base })
+    await git(dir, ['clone', '-q', remote, local])
+    pack({ 'Merge/BENE-6450': moved, 'merge/BENE-6318-dev': main })
+    await git(local, ['fetch', '-q'])
+    pack({})
+    const remotes = () => git(local, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes'])
+    return { dir, local, base, moved, remotes }
+  }
+  const caseInsensitive = (() => {
+    const probe = mkdtempSync(path.join(tmpdir(), 'bettergit-case-'))
+    dirs.push(probe)
+    writeFileSync(path.join(probe, 'x'), '')
+    return existsSync(path.join(probe, 'X'))
+  })()
+
+  test.skipIf(!caseInsensitive)('fetch clears remote branches that differ only in case, one ref at a time, and keeps local branches', async () => {
+    const { local, remotes } = await caseCollision()
+    await git(local, ['branch', 'merge/BENE-6318-dev', 'HEAD'])
+    const branch = await sha(local, 'refs/heads/merge/BENE-6318-dev')
+    await expect(git(local, ['fetch', '--prune'])).rejects.toThrow(/could not delete references: cannot lock ref .*File exists/)
+    await fetchAll(local)
+    expect(await remotes()).not.toMatch(/merge\//i)
+    expect(await sha(local, 'refs/heads/merge/BENE-6318-dev')).toBe(branch)
+    await git(local, ['fetch', '--prune'])
+  }, 15_000)
+
+  test.skipIf(!caseInsensitive)('fetch leaves case-colliding refs to Git when it cannot be sure which refs Git meant', async () => {
+    const cases: Record<string, (fixture: Awaited<ReturnType<typeof caseCollision>>) => Promise<unknown>> = {
+      // Git shows a pruned refs/heads/origin/x as origin/x, the same as refs/remotes/origin/x.
+      'custom refspec': ({ local }) => git(local, ['config', '--add', 'remote.origin.fetch', '+refs/heads/*:refs/heads/origin/*']),
+      'branch with the shown name': ({ local }) => git(local, ['branch', 'origin/merge/BENE-6318-dev', 'HEAD']),
+      // Another Git writes through the shared file during every fetch, so no attempt sees the value it read before.
+      'ref changed during fetch': async ({ dir, local, base, moved }) => {
+        const ref = 'refs/remotes/origin/Merge/BENE-6318-dev'
+        await uploadPack(dir, local, `unset GIT_DIR; now=$(git -C '${local}' rev-parse ${ref}); [ "$now" = ${base} ] && next=${moved} || next=${base}; git -C '${local}' update-ref ${ref} $next`)
+      },
+    }
+    // Settled, so a failing case cannot leave the others writing fixtures after cleanup.
+    const results = await Promise.allSettled(Object.entries(cases).map(async ([name, setup]) => {
+      const collision = await caseCollision()
+      await setup(collision)
+      const before = await collision.remotes()
+      const ran = git(collision.local, ['fetch', '--prune'])
+      if (name !== 'ref changed during fetch') { expect(`${name}: ${await ran.then(() => 'fetched', (error: Error) => error.message)}`).toContain('cannot lock ref'); expect(await collision.remotes()).toBe(before) }
+      else await ran.catch(() => undefined)
+      const fetched = await fetchAll(collision.local).then(() => 'fetched', (error: Error) => error.message)
+      expect(`${name}: ${fetched}`).toMatch(new RegExp(`^${name}: [^]*could not delete references: cannot lock ref`))
+      if (name !== 'ref changed during fetch') expect(`${name}: ${await collision.remotes()}`).toBe(`${name}: ${before}`)
+      else expect(await collision.remotes()).toMatch(/refs\/remotes\/origin\/Merge\/BENE-6318-dev/)
+    }))
+    for (const result of results) if (result.status === 'rejected') throw result.reason
+  }, 20_000)
 
   test('force with lease refuses an upstream that moved since the fetch, and force replaces it', async () => {
     const { local, other } = await fixture()

@@ -5,6 +5,9 @@
 - Keep exactly one BetterGit window. Never open a second instance or leave stale BetterGit processes running; kill only BetterGit processes.
 - When work happens in a separate worktree, update the window at verified checkpoints and say whether it is running master or the worktree branch.
 
+## Testing
+- Test changes only in disposable temporary projects with isolated app configuration. Never use the user's existing projects as test fixtures or run test Git operations against them. Delete temporary projects and test configuration after verification.
+
 ## Pull requests
 - Every change reaches master through a GitHub pull request against master. Never merge locally into master or push directly to master.
 - Push the work branch, open the PR with `gh pr create`, wait for PR checks, then merge with `gh pr merge --merge --delete-branch`, which keeps the repo's "Merge pull request #N" history.

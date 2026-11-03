@@ -264,7 +264,7 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
   })
   const handlers = new Map<string, (...args: any[]) => unknown>()
   const app = Object.assign(new EventEmitter(), {
-    setName: () => {}, getPath: () => root, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}),
+    setName: () => {}, commandLine: { getSwitchValue: () => '' }, getPath: () => root, requestSingleInstanceLock: () => true, whenReady: () => new Promise<void>(() => {}),
   })
   await loadEntry('../src/main/index.ts', {
     electron: {
