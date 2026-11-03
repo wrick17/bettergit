@@ -91,7 +91,7 @@ const react = require('react')
 const twoCommits = () => ['A', 'B']
 let pages = twoCommits
 const stored = new Map()
-const calls = { commit: [], compare: [], mergeBase: [] }
+const calls = { commit: [], commitFiles: [], compare: [], mergeBase: [] }
 const refReads = []
 const later = (list, args) => new Promise((resolve, reject) => list.push({ args, resolve, reject }))
 Object.assign(globalThis, {
@@ -104,6 +104,7 @@ Object.assign(globalThis, {
       remotes: () => Promise.resolve([]),
       searchHistory: () => Promise.resolve([]),
       commit: (...args) => later(calls.commit, args),
+      commitFiles: (...args) => later(calls.commitFiles, args),
       mergeBase: (...args) => later(calls.mergeBase, args),
       compare: (...args) => later(calls.compare, args),
       commitRefs: (_repo, hash) => { refReads.push(hash); return Promise.resolve({ branches: ['moved' + refReads.length], remotes: [], tags: [] }) },
@@ -852,6 +853,56 @@ console.log('whitespace toggle cases passed')
   }
 }
 console.log('whitespace scroll cases passed')
+
+// A large commit or compare comes as its file list only, with counts. The code diff waits for a pick, loads only that file
+// (both paths of a rename), drops a reply for a file, commit or compare no longer on screen, and starts no prefetch.
+{
+  window.requestIdleCallback = (callback) => { callback(); return 0 }
+  const file = (oldPath, newPath, status, adds) => ({ oldPath, newPath, path: newPath, status, binary: false, hunks: [], counts: { adds, dels: 1 } })
+  const big = (label) => ({ large: true, moves: [], files: [file('old [ab].ts', 'new [ab].ts', 'renamed', 2), file(label + '.ts', label + '.ts', 'modified', 5)] })
+  const diff = () => find(tree, (p) => Array.isArray(p.files) && p.persist)
+  const stat = () => find(tree, (p) => p.onSelect && p.view)
+  const pick = async (path) => { stat().onSelect(path); render(); await flush() }
+  await mount({ places: { '/repo': { commit: 'A' } } })
+  await answer(calls.commit, 'A', () => ({ ...big('a'), details: { body: 'subject A' } }))
+  assert.equal(calls.commit.length, 1, 'a large commit was loaded again for the other whitespace option')
+  assert.deepEqual(diff().files, [], 'a large commit drew its file list as a diff')
+  assert.equal(diff().emptyHint, '2 changed files. Pick a file to see its diff.')
+  assert.deepEqual(stat().files.map((f) => f.counts.adds), [2, 5], 'the file list lost its counts')
+  await pick('new [ab].ts')
+  assert.deepEqual(calls.commitFiles.map((c) => [c.args[1], c.args[3], c.args[4]]), [['A', false, ['old [ab].ts', 'new [ab].ts']]])
+  assert.equal(diff().emptyHint, 'Loading…')
+  // A second pick before the first lands: the first reply is dropped, the second shows alone.
+  await pick('a.ts')
+  calls.commitFiles[0].resolve({ files: [{ path: 'stale-rename', hunks: [] }], moves: [] }); await flush()
+  assert.deepEqual(diff().files, [], 'a reply for an earlier pick was shown')
+  calls.commitFiles[1].resolve({ files: [{ path: 'a.ts', hunks: [] }], moves: [] }); await flush()
+  assert.deepEqual(diff().files.map((f) => f.path), ['a.ts'])
+  // A pick still loading when the commit changes never shows, and the next commit starts with no pick.
+  await pick('new [ab].ts')
+  find(tree, (p) => p.rows && p.onSelect).onSelect('B'); render()
+  await detail('B')
+  calls.commitFiles[2].resolve({ files: [{ path: 'stale-commit', hunks: [] }], moves: [] }); await flush()
+  assert.deepEqual(diff().files.map((f) => f.path), ['B.ts'], 'a small commit did not show whole, or a stale pick showed')
+  find(tree, (p) => p.rows && p.onSelect).onSelect('A'); render(); await flush()
+  assert.equal(diff().emptyHint, '2 changed files. Pick a file to see its diff.', 'the pick outlived its commit')
+  // A large compare loads its picked file through the compare, for the same paths; a commit-file reply never shows there.
+  await pick('a.ts')
+  compareBase()
+  await answer(calls.mergeBase, 'H', () => 'BASE-A')
+  await answer(calls.compare, 'A', () => big('vs'))
+  assert.equal(shown().bar, 'compare')
+  assert.deepEqual(diff().files, [], 'the compare showed the commit file')
+  await pick('new [ab].ts')
+  assert.deepEqual(calls.compare.at(-1).args.slice(1), ['A', 'BASE-A', false, ['old [ab].ts', 'new [ab].ts']])
+  calls.commitFiles[3].resolve({ files: [{ path: 'commit-file', hunks: [] }], moves: [] }); await flush()
+  assert.deepEqual(diff().files, [], 'a commit file reply showed under the compare')
+  calls.compare.at(-1).resolve({ files: [{ path: 'vs-file', hunks: [] }], moves: [] }); await flush()
+  assert.deepEqual(diff().files.map((f) => f.path), ['vs-file'])
+  unmount()
+  delete window.requestIdleCallback
+}
+console.log('large diff cases passed')
 `
 
 test('History compares only the selected commit, restores a saved compare, and shows a diff only for the whitespace option it was fetched with', () => {
@@ -871,6 +922,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('code diff visibility cases passed')
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
+  expect(child.stdout.toString()).toContain('large diff cases passed')
 })
 
 // The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old

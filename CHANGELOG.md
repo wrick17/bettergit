@@ -2,6 +2,19 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.17] - 2026-11-03
+
+### Improved
+
+- Browse large changes, commits, and comparisons by loading the selected file's diff when more than 300 files change.
+
+### Fixed
+
+- Retry background fetches after transient failures and handle case conflicts when pruning remote refs.
+- Center the dismiss button in the update notification.
+- Remove the unnecessary scrollbar from the empty checkout list.
+- Keep diff code from overlapping line numbers while scrolling.
+
 ## [0.1.16] - 2026-11-03
 
 ### Fixed

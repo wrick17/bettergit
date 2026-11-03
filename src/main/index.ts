@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell } from 'electron'
 import path from 'node:path'
-import { statSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
 import { loadConfig, normalizeConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
 import { openFileInApp, openRepoInApp, readWorkingFile, writeWorkingFile } from './editor'
 import { customApp, installedApps, isAppBundle, mergeApps, resolveApp } from './apps'
@@ -11,7 +11,7 @@ import { commandLogPath, logAction, openCommandLog } from './command-log'
 import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
-import { commitDiff, compare, detectMoves, workingDiff } from './git/diff'
+import { commitDiff, compare, detectMoves, listOnly, workingDiff } from './git/diff'
 import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors } from './git/history'
 import { avatars } from './avatar'
 import { readStatus } from './git/status'
@@ -26,6 +26,15 @@ import { extensionDetails, extensionImage, extensionMetadata, installFromOpenVsx
 
 // Dev runs use the Electron binary, so the menu and userData need the product name set explicitly.
 app.setName('BetterGit')
+// A test run passes --user-data-dir so its config, logs and single-instance lock stay apart from the user's own BetterGit.
+// Set after setName, which names the default userData folder, and before anything reads userData or logs.
+const userDataDir = app.commandLine.getSwitchValue('user-data-dir')
+if (userDataDir) {
+  const dir = path.resolve(userDataDir)
+  mkdirSync(dir, { recursive: true })
+  app.setPath('userData', dir)
+  app.setAppLogsPath(path.join(dir, 'logs'))
+}
 
 // One BetterGit per user: a second launch focuses the existing window instead of opening another.
 if (!app.requestSingleInstanceLock()) app.exit(0)
@@ -149,6 +158,13 @@ function refList(refs: unknown): string[] {
   return Array.isArray(refs) ? refs.filter((ref): ref is string => typeof ref === 'string' && /^refs\/(heads|remotes)\//.test(ref)) : []
 }
 
+// The files a diff is limited to, from the renderer: one path or a list. Git reads each as a literal name after `--`, so
+// only non-empty strings pass. Undefined when none do, which asks for the whole diff.
+function fileList(paths: unknown): string[] | undefined {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter((item): item is string => typeof item === 'string' && item !== '')
+  return list.length ? list : undefined
+}
+
 // Validate both the selected path and its destination before opening or locking a repo.
 function assertKnownWriteRepo(repoPath: string): string {
   const resolved = assertKnownRepo(repoPath)
@@ -263,11 +279,20 @@ function registerIpc() {
   ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)
     const files = await commitDiff(repo, hash, context, ignoreWhitespace === true)
-    return { files, moves: detectMoves(files), details: await commitDetails(repo, hash) }
+    return { ...listOnly(files), details: await commitDetails(repo, hash) }
   })
-  ipcMain.handle('repo:working', async (_event, repoPath: string, staged: boolean, context: number, path?: string, ignoreWhitespace?: boolean) => {
-    const files = await workingDiff(assertKnownRepo(repoPath), staged, context, path, ignoreWhitespace === true)
+  // One file of a commit, whole: a large commit's list comes without hunks, and a file's load when it is picked.
+  ipcMain.handle('repo:commit-files', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace: unknown, paths: unknown) => {
+    const only = fileList(paths)
+    if (!only) throw new Error('Pick a file to load.')
+    const files = await commitDiff(assertKnownRepo(repoPath), hash, context, ignoreWhitespace === true, only)
     return { files, moves: detectMoves(files) }
+  })
+  // With a path, its file whole; without one, every file, or a large diff's file list only.
+  ipcMain.handle('repo:working', async (_event, repoPath: string, staged: boolean, context: number, path?: unknown, ignoreWhitespace?: boolean) => {
+    const only = fileList(path)
+    const files = await workingDiff(assertKnownRepo(repoPath), staged, context, only, ignoreWhitespace === true)
+    return only ? { files, moves: detectMoves(files) } : listOnly(files)
   })
   handleWrite('repo:stage', (_event, repoPath: string, paths: string[]) => ops.stagePaths(repoPath, paths))
   handleWrite('repo:unstage', async (_event, repoPath: string, paths: string[]) => {
@@ -323,9 +348,9 @@ function registerIpc() {
     ops.amendMessage(repoPath, message, expectedHash))
   ipcMain.handle('repo:merge-base', (_event, repoPath: string, a: string, b: string) =>
     ops.mergeBase(assertKnownRepo(repoPath), a, b))
-  ipcMain.handle('repo:compare', async (_event, repoPath: string, from: string, to: string, ignoreWhitespace?: boolean) => {
+  ipcMain.handle('repo:compare', async (_event, repoPath: string, from: string, to: string, ignoreWhitespace?: boolean, paths?: unknown) => {
     const repo = assertKnownRepo(repoPath)
-    return compare(repo, await ops.resolveCommit(repo, from), await ops.resolveCommit(repo, to), ignoreWhitespace === true)
+    return compare(repo, await ops.resolveCommit(repo, from), await ops.resolveCommit(repo, to), ignoreWhitespace === true, fileList(paths))
   })
   ipcMain.handle('system:open-url', (_event, url: string) => {
     // Only web links leave the app; file:, javascript:, credentials and custom schemes stay closed.

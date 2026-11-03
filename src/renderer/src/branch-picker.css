@@ -41,7 +41,8 @@
 /* Labels carry branch names, so a long one wraps inside a menu that stays narrower than the window. */
 .branch-menu { max-width: min(480px, calc(100vw - 16px)); }
 .popover.branch-menu button { height: auto; min-height: 30px; padding-block: 6px; overflow-wrap: anywhere; }
-.branch-empty { padding: 10px; color: var(--text-3); }
+/* One row tall (ROW), so the list sized for one row neither scrolls nor clips it. */
+.branch-empty { margin: 0; padding: 0 10px; line-height: 28px; color: var(--text-3); }
 .branch-base { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; text-align: left; overflow-wrap: anywhere; }
 .branch-base > span:first-child { flex: 1; min-width: 0; font-family: var(--font-code); }
 .branch-base small { color: var(--text-3); }

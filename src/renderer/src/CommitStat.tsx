@@ -55,7 +55,8 @@ export function CommitStat({ files, view, onView, onSelect, activeFiles }: {
   const entries = useMemo(() => files.map((file, index): Entry => ({ file, index, path: pathOf(file) })), [files])
   const tree = useMemo(() => (view === 'tree' ? buildTree(entries, (entry) => entry.path) : null), [entries, view])
   // Counted once per patch, since the mark re-renders the list as the diff scrolls.
-  const counts = useMemo(() => files.map(countLines), [files])
+  // A large diff's file list has no hunks, so its files bring their counts.
+  const counts = useMemo(() => files.map((file) => file.counts ?? countLines(file)), [files])
   const blockRef = useRef<HTMLDivElement>(null)
   const inView = useActiveFile(activeFiles)?.path ?? null
   useKeepInView(blockRef, inView === null ? null : `${view}:${inView}`)

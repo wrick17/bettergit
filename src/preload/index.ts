@@ -1,6 +1,6 @@
 import type { CommitIdentity, IdentityScope } from '../shared/identity'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { DiffFile, MovedBlock } from '../main/git/diff'
+import type { DiffFile, MovedBlock, Patch } from '../main/git/diff'
 import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
@@ -39,10 +39,14 @@ const api = {
   authors: (repo: string) => invoke('repo:authors', repo) as Promise<{ name: string; count: number }[]>,
   // An author's picture as a PNG data URL, or null when there is none or it could not be loaded.
   avatar: (email: string) => invoke('avatar:get', email) as Promise<string | null>,
+  // Past LARGE_DIFF_FILES files a diff comes as its file list only (`large`), each file with its counts and no hunks.
   commit: (repo: string, hash: string, context: number, ignoreWhitespace = false) => invoke('repo:commit', repo, hash, context, ignoreWhitespace),
+  // Only the named files of a commit, whole. A renamed file names both its paths.
+  commitFiles: (repo: string, hash: string, context: number, ignoreWhitespace: boolean, paths: string[]) =>
+    invoke('repo:commit-files', repo, hash, context, ignoreWhitespace, paths) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
   // The branches and tags at a commit now. Read on each refresh, since refs move while the hash stays.
   commitRefs: (repo: string, hash: string) => invoke('repo:commit-refs', repo, hash) as Promise<{ branches: string[]; remotes: string[]; tags: string[] }>,
-  working: (repo: string, staged: boolean, context: number, path?: string, ignoreWhitespace = false) =>
+  working: (repo: string, staged: boolean, context: number, path?: string | string[], ignoreWhitespace = false) =>
     invoke('repo:working', repo, staged, context, path, ignoreWhitespace),
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
@@ -80,8 +84,8 @@ const api = {
   abortOperation: (repo: string, operation: RepoOperation) => invoke('repo:abort-operation', repo, operation) as Promise<void>,
   amendMessage: (repo: string, message: string, expectedHash: string) => invoke('repo:amend-message', repo, message, expectedHash),
   mergeBase: (repo: string, a: string, b: string) => invoke('repo:merge-base', repo, a, b) as Promise<string>,
-  compare: (repo: string, from: string, to: string, ignoreWhitespace = false) =>
-    invoke('repo:compare', repo, from, to, ignoreWhitespace) as Promise<{ files: DiffFile[]; moves: MovedBlock[] }>,
+  compare: (repo: string, from: string, to: string, ignoreWhitespace = false, paths?: string[]) =>
+    invoke('repo:compare', repo, from, to, ignoreWhitespace, paths) as Promise<Patch>,
   openExternal: (url: string) => invoke('system:open-url', url),
   // Force modes need the branch and upstream the user confirmed; main refuses them if either has changed.
   push: (repo: string, mode?: PushMode, confirmed?: { branch: string; upstream: string }) => invoke('repo:push', repo, mode, confirmed),
