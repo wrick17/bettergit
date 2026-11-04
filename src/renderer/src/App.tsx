@@ -602,6 +602,9 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
               </span>
             )}
           </div>
+          <span className="build-pill" title={api.packaged === true ? 'Installed release build' : 'Development build, not packaged'}>
+            {api.packaged === true ? 'Release' : 'Dev'}
+          </span>
           <div className="toolbar-actions">
             <ActionsMenu items={repoItems({
               repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,
@@ -610,10 +613,6 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
             <span className="toolbar-divider" aria-hidden="true" />
             <OpenInAppButton kind="editor" app={editor} repoPath={repo.path} onError={failed(`Opening ${repo.name} in ${editor?.name ?? 'the editor'}`)} />
             <OpenInAppButton kind="terminal" app={terminal} repoPath={repo.path} onError={failed(`Opening ${repo.name} in ${terminal?.name ?? 'the terminal'}`)} />
-            <span className="toolbar-divider" aria-hidden="true" />
-            <span className="build-pill" title={api.packaged === true ? 'Installed release build' : 'Development build, not packaged'}>
-              {api.packaged === true ? 'Release' : 'Dev'}
-            </span>
             <RepoDialogs
               repo={repo.path}
               branch={status?.head ?? ''}

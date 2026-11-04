@@ -1827,12 +1827,22 @@ test.skipIf(!playwright)('repo rows fetch, pull and refresh their own repo, the 
     // In step with its upstream, the header shows no arrows. A count of commits to pull shows alone.
     await page.waitForFunction(() => document.querySelector('.branch-pill')?.textContent?.includes('main'), undefined, { timeout: 2000 })
     expect(await sync()).toEqual([])
-    // An unpackaged run says Dev, inside the actions capsule and the toolbar, with nothing cut off.
-    expect(await page.evaluate(() => {
-      const pill = document.querySelector('.toolbar-actions .build-pill') as HTMLElement
-      const box = pill.getBoundingClientRect(), capsule = pill.parentElement!.getBoundingClientRect(), bar = pill.closest('.toolbar')!.getBoundingClientRect()
-      return { text: pill.textContent, inside: box.left >= capsule.left && box.right <= capsule.right && capsule.right <= bar.right, whole: pill.scrollWidth <= pill.clientWidth }
-    })).toEqual({ text: 'Dev', inside: true, whole: true })
+    // An unpackaged run says Dev in a pill matching the actions capsule, just left of it, inside the toolbar, with nothing cut off.
+    // The capsule's buttons take their size from overflow-bar.css, which the app loads with them. It applies only while measuring.
+    expect(await page.evaluate((overflowCss: string) => {
+      const sheet = document.head.appendChild(Object.assign(document.createElement('style'), { textContent: overflowCss }))
+      const pill = document.querySelector('.toolbar .build-pill') as HTMLElement
+      const capsule = pill.nextElementSibling as HTMLElement
+      const box = pill.getBoundingClientRect(), group = capsule.getBoundingClientRect(), bar = pill.closest('.toolbar')!.getBoundingClientRect()
+      const gap = group.left - box.right
+      sheet.remove()
+      return {
+        text: pill.textContent, outside: !capsule.contains(pill) && capsule.classList.contains('toolbar-actions'),
+        left: gap > 0 && gap <= 12, inside: box.left >= bar.left && group.right <= bar.right, whole: pill.scrollWidth <= pill.clientWidth,
+        // A matched pair: the same height, centred on the same line.
+        height: box.height === group.height, aligned: Math.abs((box.top + box.bottom) - (group.top + group.bottom)) <= 1,
+      }
+    }, readFileSync(`${root}/src/renderer/src/overflow-bar.css`, 'utf8'))).toEqual({ text: 'Dev', outside: true, left: true, inside: true, whole: true, height: true, aligned: true })
     await page.evaluate(() => { const w = window as any; w.rows.status.behind = 3; w.rows.listeners['repos:changed']({ repos: ['/p/b'], tree: false }) })
     await page.waitForFunction(() => document.querySelector('.toolbar .sync'), undefined, { timeout: 2000 })
     expect(await sync()).toEqual(['3 commits to pull from origin/main'])

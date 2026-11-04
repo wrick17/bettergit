@@ -371,10 +371,10 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .sync b { font-weight: 600; color: var(--text-2); }
 /* The sync icons, the Actions menu button, and the app launchers at the right end of the toolbar. */
 .toolbar-actions {
-  display: flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 4px; border-radius: var(--radius-pill);
-  background: var(--glass-chip);
-  box-shadow: var(--shadow-raised);
+  display: flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 4px;
 }
+/* The build pill wears the actions capsule's surface, so the two read as a matched pair. */
+.toolbar-actions, .build-pill { border-radius: var(--radius-pill); background: var(--glass-chip); box-shadow: var(--shadow-raised); }
 .toolbar-actions .icon-button { width: 32px; height: 28px; border-radius: var(--radius-pill); }
 
 /* The selected tab shares the list's fill and open bottom edge. Folded lists keep a detached tab. */
@@ -868,10 +868,12 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 
 /* Repo action icons */
 .toolbar-divider { flex: none; width: 1px; height: 16px; margin: 0 3px; background: var(--line); }
-/* Which build is running, Dev or Release. Quiet, like the divider: it labels the window and does nothing. */
+/* Which build is running, Dev or Release. Quiet: it labels the window and does nothing. The auto margin keeps it just left
+   of the actions capsule, not centred by the toolbar's space-between. */
+/* 36px tall: the capsule's 28px buttons plus its 4px padding on each side. */
 .build-pill {
-  flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; margin-right: 2px; border-radius: var(--radius-pill);
-  background: var(--sunken); color: var(--text-3); font: 600 calc(11px + var(--ui-delta))/1 var(--font-ui); white-space: nowrap; cursor: default;
+  flex: none; display: inline-flex; align-items: center; height: 36px; padding: 0 14px; margin: 0 -4px 0 auto;
+  color: var(--text-2); font: 500 calc(13px + var(--ui-delta))/1 var(--font-ui); white-space: nowrap; cursor: default;
 }
 
 /* Commit action icons */
