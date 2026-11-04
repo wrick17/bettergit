@@ -544,8 +544,8 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .commit-chevron:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
 .commit-chevron .chevron-down { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 /* The file list clips what overflows it, so the menu spans the button's width and its labels wrap. */
-.commit-menu { bottom: calc(100% + 6px); left: 0; right: 0; min-width: 0; }
-.commit-menu button { height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; overflow-wrap: anywhere; }
+.popover.commit-menu { bottom: calc(100% + 6px); left: 0; right: 0; min-width: 0; }
+.popover.commit-menu button { height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; overflow-wrap: anywhere; }
 /* Keeps the pointer inside the hover target while it crosses the gap up to the menu. */
 .commit-split:has(> .commit-menu)::after { content: ''; position: absolute; bottom: 100%; left: 0; right: 0; height: 8px; }
 
