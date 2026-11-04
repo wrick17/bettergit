@@ -9,6 +9,7 @@ import {
   type ConflictReset, type ConflictResetResult, type ConflictResetState, type ConflictSave, type ConflictSaved, type ConflictTake, type Part,
   type StageBlock,
 } from '../../shared/conflict'
+import { headDiff } from './diff'
 import { gitRaw } from './exec'
 
 // Limits keep one resolution bounded. A file over a limit is refused with its reason, never processed in part.
@@ -425,8 +426,10 @@ export async function loadConflict(repo: string, relPath: string): Promise<Confl
     if (!parsed.ok) return { supported: false, message: parsed.failure.message, reset: await resetting }
     const blocks = conflictBlocks(parsed.parts)
     if (blocks.length > MAX_CONFLICT_BLOCKS) return { supported: false, message: TOO_MANY_CONFLICTS, reset: await resetting }
-    const [parts, combine, reset] = await Promise.all([withStageEndsOf(repo, snapshot, parsed.parts), combineStates(repo, snapshot, blocks), resetting])
-    return { supported: true, fingerprint: snapshot.fingerprint, parts, combine, reset }
+    // With no markers left, the review is the diff staging would record. Without HEAD there is none, and the note stays alone.
+    const resolved = blocks.length === 0 ? headDiff(repo, snapshot.relPath).catch(() => []) : undefined
+    const [parts, combine, reset, diff] = await Promise.all([withStageEndsOf(repo, snapshot, parsed.parts), combineStates(repo, snapshot, blocks), resetting, resolved])
+    return { supported: true, fingerprint: snapshot.fingerprint, parts, combine, reset, ...(diff && { resolved: diff }) }
   } catch (error) {
     if (error instanceof ConflictRefusal) return { supported: false, message: error.message, reset: { available: false, reason: error.message } }
     throw error

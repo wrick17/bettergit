@@ -165,6 +165,17 @@ describe('conflict resolution on real Git merges', () => {
     expect(stagesOf(repo).map((line) => line.split(' ')[2].split('\t')[0])).toEqual(['1', '2', '3'])
   })
 
+  test('once no markers remain, the load carries the two-way diff against HEAD that staging would record', async () => {
+    const repo = conflictRepo({ base: 'top\nold\nend\n', ours: 'top\nmine\nend\n', theirs: 'top\nyours\nend\n' })
+    expect((await loaded(repo)).resolved).toBeUndefined()
+    await resolve(repo, ['incoming'])
+    const [file, ...rest] = (await loaded(repo)).resolved ?? []
+    expect(rest).toEqual([])
+    expect(file.newPath).toBe('doc.txt')
+    expect(file.hunks.flatMap((hunk) => hunk.lines.map((line) => `${line.type}:${line.text}`))).toEqual(['context:top', 'del:mine', 'add:yours', 'context:end'])
+    expect(git(repo, ['diff', '--cached', '--name-status'])).toBe('U\tdoc.txt')
+  })
+
   test('disjoint words on one line combine into both edits', async () => {
     const repo = conflictRepo({ base: 'alpha beta gamma\n', ours: 'ALPHA beta gamma\n', theirs: 'alpha beta GAMMA\n' })
     const model = await loaded(repo)
@@ -634,6 +645,8 @@ describe('reset resolution on real Git merges', () => {
     await resolve(repo, ['current'])
     const saved = await loaded(repo)
     expect(conflictBlocks(saved.parts)).toHaveLength(0)
+    // The text matches HEAD, so the review shows only the mode change made above.
+    expect(saved.resolved?.flatMap((file) => file.hunks)).toEqual([])
     const result = await resetConflict(repo, 'doc.txt', { fingerprint: (await resetOf(repo)).fingerprint })
     expect(text(repo)).toBe(RECREATED)
     expect(result).toEqual(await loaded(repo) as typeof result)

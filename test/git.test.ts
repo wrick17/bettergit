@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git, gitRaw } from '../src/main/git/exec'
 import { logAction, openCommandLog } from '../src/main/command-log'
@@ -343,6 +343,56 @@ describe('operations', () => {
     await stagePaths(dir, ['new.ts'])
     await commit(dir, 'feat: add new file\n\nBody text')
     expect((await readHistory(dir, 0, 1))[0].subject).toBe('feat: add new file')
+  })
+
+  test('commit --no-verify skips the hooks, and --amend replaces HEAD, keeping its message when none is given', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-amend-'))
+    try {
+      await git(dir, ['init', '-q'])
+      await git(dir, ['config', 'user.email', 'test@example.com'])
+      await git(dir, ['config', 'user.name', 'Test'])
+      // A global hooks path would hide the repository's own hook.
+      await git(dir, ['config', 'core.hooksPath', '.git/hooks'])
+      await git(dir, ['config', 'commit.gpgsign', 'false'])
+      writeFileSync(path.join(dir, 'a.txt'), 'one\n')
+      await git(dir, ['add', 'a.txt'])
+      await commit(dir, 'first')
+      writeFileSync(path.join(dir, '.git/hooks/pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+      writeFileSync(path.join(dir, 'a.txt'), 'two\n')
+      await git(dir, ['add', 'a.txt'])
+      await expect(commit(dir, 'second')).rejects.toThrow()
+      await commit(dir, 'second', false, true)
+      const count = async () => (await git(dir, ['rev-list', '--count', 'HEAD'])).trim()
+      expect(await count()).toBe('2')
+      writeFileSync(path.join(dir, 'b.txt'), 'new\n')
+      await git(dir, ['add', 'b.txt'])
+      const second = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      await expect(commit(dir, '', true, false, second)).rejects.toThrow()
+      await commit(dir, '', true, true, second)
+      expect(await count()).toBe('2')
+      expect((await git(dir, ['log', '-1', '--format=%B'])).trim()).toBe('second')
+      expect((await git(dir, ['show', '--name-only', '--format=', 'HEAD'])).trim().split('\n')).toEqual(['a.txt', 'b.txt'])
+      rmSync(path.join(dir, '.git/hooks/pre-commit'))
+      const amended = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      await commit(dir, 'reworded', true, false, amended)
+      expect(await count()).toBe('2')
+      expect((await git(dir, ['log', '-1', '--format=%B'])).trim()).toBe('reworded')
+      // A commit made elsewhere after the pane read HEAD is never the one amended, and an amend that names no HEAD is refused.
+      const shown = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      writeFileSync(path.join(dir, 'c.txt'), 'external\n')
+      await git(dir, ['add', 'c.txt'])
+      await git(dir, ['commit', '-qm', 'external'])
+      const external = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      writeFileSync(path.join(dir, 'a.txt'), 'staged for amend\n')
+      await git(dir, ['add', 'a.txt'])
+      await expect(commit(dir, 'stale', true, false, shown)).rejects.toThrow(`HEAD is now ${external.slice(0, 7)}, not ${shown.slice(0, 7)}`)
+      await expect(commit(dir, 'stale', true)).rejects.toThrow('HEAD is now')
+      expect((await git(dir, ['rev-parse', 'HEAD'])).trim()).toBe(external)
+      expect((await git(dir, ['log', '-1', '--format=%B'])).trim()).toBe('external')
+      expect((await git(dir, ['diff', '--cached', '--name-only'])).trim()).toBe('a.txt')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('unstaging a staged rename restores its original path literally and leaves other staged files', async () => {

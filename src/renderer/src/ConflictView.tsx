@@ -108,8 +108,10 @@ export function ConflictView({ path, model, choices, onChoose, onSave, onReset, 
             busy={busy === 'stage'}
             blocked={busy !== null && busy !== 'stage' ? blockedReason(busy) : undefined}
           />
-        ))}
+        ), !!model.resolved?.length)}
         <p className="conflict-note" role="status">No conflict markers remain in this file. Stage it to mark it resolved.</p>
+        {/* Read only: the file is still unmerged, so hunks are not staged one by one. */}
+        {!!model.resolved?.length && <DiffView files={model.resolved} moves={NO_MOVES} toolbar={false} />}
       </section>
     )
   }

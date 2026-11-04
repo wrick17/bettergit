@@ -94,6 +94,7 @@ const sideState = (text, overrides) => {
 }
 console.log(JSON.stringify({
   markerFree: render({ model: modelFor('clean\n') }),
+  markerFreeDiff: render({ model: { ...modelFor('a\nRESOLVED\n'), resolved: parseDiff('diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n a\n-OURS\n+RESOLVED\n') } }),
   otherBusy: render({ choices: ['current', null], busy: 'stage' }),
   resetStates: {
     plain: resetState(),
@@ -527,6 +528,17 @@ describe('ConflictView', () => {
     expect(plain.indexOf('aria-label="Reset resolution"')).toBeLessThan(plain.indexOf('Save resolution'))
     expect(markerFree).toContain('No conflict markers remain')
     expect(resets).toBe(1)
+  })
+
+  test('a file with no markers left shows its diff against HEAD, read only, under the Stage bar', () => {
+    const { markerFree, markerFreeDiff } = views()
+    expect(markerFreeDiff).toContain('No conflict markers remain')
+    expect(markerFreeDiff).toContain('OURS')
+    expect(markerFreeDiff).toContain('RESOLVED')
+    expect(markerFreeDiff).toMatch(/<header class="conflict-bar">.*aria-label="Stage src\/app.ts".*<\/header>/)
+    expect(markerFreeDiff).not.toContain('Discard')
+    // Without a diff, as when the file matches HEAD, the note stands alone.
+    expect(markerFree).not.toContain('diff-file')
   })
 
   test('a file with no markers left offers Stage beside reset, which stages it and stops while a write runs', () => {

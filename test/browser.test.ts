@@ -1827,6 +1827,22 @@ test.skipIf(!playwright)('repo rows fetch, pull and refresh their own repo, the 
     // In step with its upstream, the header shows no arrows. A count of commits to pull shows alone.
     await page.waitForFunction(() => document.querySelector('.branch-pill')?.textContent?.includes('main'), undefined, { timeout: 2000 })
     expect(await sync()).toEqual([])
+    // An unpackaged run says Dev in a pill matching the actions capsule, just left of it, inside the toolbar, with nothing cut off.
+    // The capsule's buttons take their size from overflow-bar.css, which the app loads with them. It applies only while measuring.
+    expect(await page.evaluate((overflowCss: string) => {
+      const sheet = document.head.appendChild(Object.assign(document.createElement('style'), { textContent: overflowCss }))
+      const pill = document.querySelector('.toolbar .build-pill') as HTMLElement
+      const capsule = pill.nextElementSibling as HTMLElement
+      const box = pill.getBoundingClientRect(), group = capsule.getBoundingClientRect(), bar = pill.closest('.toolbar')!.getBoundingClientRect()
+      const gap = group.left - box.right
+      sheet.remove()
+      return {
+        text: pill.textContent, outside: !capsule.contains(pill) && capsule.classList.contains('toolbar-actions'),
+        left: gap > 0 && gap <= 12, inside: box.left >= bar.left && group.right <= bar.right, whole: pill.scrollWidth <= pill.clientWidth,
+        // A matched pair: the same height, centred on the same line.
+        height: box.height === group.height, aligned: Math.abs((box.top + box.bottom) - (group.top + group.bottom)) <= 1,
+      }
+    }, readFileSync(`${root}/src/renderer/src/overflow-bar.css`, 'utf8'))).toEqual({ text: 'Dev', outside: true, left: true, inside: true, whole: true, height: true, aligned: true })
     await page.evaluate(() => { const w = window as any; w.rows.status.behind = 3; w.rows.listeners['repos:changed']({ repos: ['/p/b'], tree: false }) })
     await page.waitForFunction(() => document.querySelector('.toolbar .sync'), undefined, { timeout: 2000 })
     expect(await sync()).toEqual(['3 commits to pull from origin/main'])
@@ -2330,5 +2346,72 @@ test.skipIf(!playwright)('a file header Find button narrows find to that file un
       w.under.clearHighlight()
       w.scopeRoot.unmount()
     })
+  }
+})
+
+test.skipIf(!playwright)('commit options fit the narrow file list and remain keyboard selectable', async () => {
+  await page.setViewportSize({ width: 1000, height: 800 })
+  const overflowCss = readFileSync(`${root}/src/renderer/src/overflow-bar.css`, 'utf8')
+  const priorWidth = await page.evaluate(() => localStorage.getItem('bettergit.changesListWidth'))
+  await page.evaluate((css: string) => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, ChangesView } = w.under
+    localStorage.setItem('bettergit.changesListWidth', '220')
+    w.menuStyle = document.head.appendChild(Object.assign(document.createElement('style'), { textContent: css }))
+    w.menuCalls = []
+    w.menuConfirm = w.confirm
+    w.confirm = () => true
+    Object.assign(w.bettergit, {
+      commitIdentity: async () => ({ name: 'Test', email: 'test@example.test', error: null }),
+      working: async () => ({ files: [], moves: [] }),
+      commitChanges: async (...args: unknown[]) => { w.menuCalls.push(args) },
+    })
+    document.getElementById('root')!.style.cssText = 'display:flex;height:760px;width:1000px'
+    w.menuRoot = createRoot(document.getElementById('root'))
+    flushSync(() => w.menuRoot.render(createElement(ChangesView, {
+      repo: '/menu-test', status: { headHash: 'a'.repeat(40), changes: [{ path: 'a.txt', kind: 'modified', staged: true, unstaged: false, conflicted: false }] },
+      revision: 0, listOpen: true, detailOpen: true, onChanged: () => {}, onError: (error: unknown) => { throw error },
+    })))
+  }, overflowCss)
+  try {
+    const message = page.getByRole('textbox', { name: 'Commit message' })
+    const trigger = page.getByRole('button', { name: 'Commit options' })
+    const menu = page.getByRole('menu', { name: 'Commit options' })
+    const items = menu.getByRole('menuitem')
+    await message.fill('message')
+    await trigger.focus()
+    await page.keyboard.press('ArrowDown')
+    expect(await items.count()).toBe(3)
+    expect(await page.evaluate(() => {
+      const list = document.querySelector('.file-list')!.getBoundingClientRect()
+      const menu = document.querySelector('.commit-menu')!.getBoundingClientRect()
+      const rows = [...document.querySelectorAll<HTMLButtonElement>('.commit-menu button')]
+      const rects = rows.map(row => row.getBoundingClientRect())
+      return {
+        width: Math.round(list.width),
+        inside: menu.left >= list.left && menu.right <= list.right && menu.top >= list.top && menu.bottom <= list.bottom,
+        labels: rows.every((row, i) => {
+          const text = [...row.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())!
+          const range = document.createRange(); range.selectNodeContents(text)
+          return [...range.getClientRects()].every(rect => rect.left >= rects[i].left && rect.right <= rects[i].right && rect.top >= rects[i].top && rect.bottom <= rects[i].bottom)
+        }),
+        separated: rects.every((rect, i) => i === 0 || rect.top >= rects[i - 1].bottom),
+      }
+    })).toEqual({ width: 220, inside: true, labels: true, separated: true })
+    for (let i = 0; i < 3; i++) {
+      if (i) { await message.fill('message'); await trigger.focus(); await page.keyboard.press('ArrowDown') }
+      for (let j = 0; j < i; j++) await page.keyboard.press('ArrowDown')
+      expect(await items.nth(i).evaluate((el: HTMLElement) => document.activeElement === el)).toBe(true)
+      await page.keyboard.press('Enter')
+      await page.waitForFunction((count: number) => (window as any).menuCalls.length === count, i + 1)
+    }
+    expect(await page.evaluate(() => (window as any).menuCalls.map((args: unknown[]) => args.slice(2, 4)))).toEqual([[true, false], [false, true], [true, true]])
+  } finally {
+    await page.evaluate((width: string | null) => {
+      const w = window as any
+      w.menuRoot.unmount(); w.menuStyle.remove()
+      w.confirm = w.menuConfirm
+      if (width === null) localStorage.removeItem('bettergit.changesListWidth'); else localStorage.setItem('bettergit.changesListWidth', width)
+    }, priorWidth)
   }
 })

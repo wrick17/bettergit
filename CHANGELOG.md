@@ -2,6 +2,17 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.18] - 2026-11-04
+
+### New
+
+- Amend the previous commit or commit without running hooks from the commit options menu.
+- See whether BetterGit is running a development or release build in the toolbar.
+
+### Fixed
+
+- Show the resulting diff when a conflict has no markers left, before staging it as resolved.
+
 ## [0.1.17] - 2026-11-03
 
 ### Improved

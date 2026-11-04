@@ -302,8 +302,10 @@ function registerIpc() {
   })
   ipcMain.handle('repo:identity', (_event, repoPath: string) => readCommitIdentity(assertKnownRepo(repoPath)))
   handleWrite('repo:identity-set', (_event, repoPath: string, name: unknown, email: unknown, scope: unknown) => setCommitIdentity(repoPath, name, email, scope))
-  handleWrite('repo:commit-changes', (_event, repoPath: string, message: string, amend: boolean) =>
-    ops.commit(repoPath, message, amend))
+  handleWrite('repo:commit-changes', (_event, repoPath: string, message: unknown, amend: unknown, noVerify: unknown, expectedHead: unknown) => {
+    if (typeof message !== 'string') throw new Error('The commit message must be text.')
+    return ops.commit(repoPath, message, amend === true, noVerify === true, expectedHead)
+  })
   ipcMain.handle('repo:branches', async (_event, repoPath: string) => ops.readBranches(assertKnownRepo(repoPath)))
   handleWrite('repo:switch', (_event, repoPath: string, selection: ops.BranchSelection) => ops.switchBranch(repoPath, selection))
   handleWrite('repo:create-branch', (_event, repoPath: string, name: string, base: ops.BranchSelection) =>
@@ -542,6 +544,8 @@ function createWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // The sandboxed preload cannot read app.isPackaged, so main hands it over as a launch flag.
+      additionalArguments: app.isPackaged ? ['--bettergit-packaged'] : [],
     },
   })
   mainWindow = window

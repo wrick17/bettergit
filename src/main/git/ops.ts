@@ -135,10 +135,15 @@ export async function deleteUntracked(repo: string, file: string): Promise<void>
   await fs.unlink(target)
 }
 
-export async function commit(repo: string, message: string, amend = false): Promise<void> {
-  const args = ['commit', '--cleanup=strip', '-F', '-']
+// An amend with an empty message keeps the last commit's message. `noVerify` skips the pre-commit and commit-msg hooks.
+// An amend names the HEAD it was asked on, so a commit made elsewhere since is never the one rewritten.
+export async function commit(repo: string, message: string, amend = false, noVerify = false, expectedHead?: unknown): Promise<void> {
+  if (amend) await assertHead(repo, expectedHead, 'Review the refreshed changes, then amend again.')
+  const keep = amend && message.trim() === ''
+  const args = ['commit', ...(keep ? ['--no-edit'] : ['--cleanup=strip', '-F', '-'])]
   if (amend) args.push('--amend')
-  await git(repo, args, { input: message })
+  if (noVerify) args.push('--no-verify')
+  await git(repo, args, keep ? {} : { input: message })
 }
 
 export async function readBranches(repo: string): Promise<Branch[]> {
@@ -1022,9 +1027,14 @@ export async function tagFromCommit(repo: string, name: string, hash: string): P
 // --only with no paths commits HEAD's tree, so staged changes stay staged for the next commit.
 // expectedHash is the commit the dialog showed; amending a different HEAD would rewrite the wrong commit.
 export async function amendMessage(repo: string, message: string, expectedHash: string): Promise<void> {
-  const head = (await git(repo, ['rev-parse', 'HEAD'])).trim()
-  if (head !== expectedHash) throw new Error(`HEAD is now ${head.slice(0, 7)}, not ${expectedHash.slice(0, 7)}. Reopen Amend to edit the current commit.`)
+  await assertHead(repo, expectedHash, 'Reopen Amend to edit the current commit.')
   await git(repo, ['commit', '--amend', '--only', '-m', message])
+}
+
+// Callers hold the repo's write lock, so HEAD cannot move through BetterGit between this check and their write.
+async function assertHead(repo: string, expected: unknown, retry: string): Promise<void> {
+  const head = (await git(repo, ['rev-parse', 'HEAD'])).trim()
+  if (typeof expected !== 'string' || head !== expected) throw new Error(`HEAD is now ${head.slice(0, 7)}, not ${String(expected).slice(0, 7)}. ${retry}`)
 }
 
 export async function mergeBase(repo: string, a: string, b: string): Promise<string> {

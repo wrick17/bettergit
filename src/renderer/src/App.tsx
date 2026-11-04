@@ -602,6 +602,9 @@ function RepoPane({ titlebar, repo, editorApp, terminalApp, tab, onTab, sidebarO
               </span>
             )}
           </div>
+          <span className="build-pill" title={api.packaged === true ? 'Installed release build' : 'Development build, not packaged'}>
+            {api.packaged === true ? 'Release' : 'Dev'}
+          </span>
           <div className="toolbar-actions">
             <ActionsMenu items={repoItems({
               repo: repo.path, status, busy, run, onTab, onNote: setNote, onError, onDialog: setDialog,

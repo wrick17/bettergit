@@ -15,6 +15,8 @@ import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetRes
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 
 const api = {
+  // Packaged means an installed release; anything else, even a production build run unpackaged, is a dev build.
+  packaged: process.argv.includes('--bettergit-packaged'),
   getConfig: () => invoke('config:get'),
   updateConfig: (patch: unknown) => invoke('config:update', patch),
   getTree: () => invoke('sources:tree'),
@@ -56,7 +58,9 @@ const api = {
   applyHunk: (repo: string, action: HunkAction, request: HunkRequest) => invoke('repo:hunk', repo, action, request) as Promise<void>,
   commitIdentity: (repo: string) => invoke('repo:identity', repo) as Promise<CommitIdentity>,
   setCommitIdentity: (repo: string, name: string, email: string, scope: IdentityScope) => invoke('repo:identity-set', repo, name, email, scope) as Promise<CommitIdentity>,
-  commitChanges: (repo: string, message: string, amend: boolean) => invoke('repo:commit-changes', repo, message, amend),
+  // An amend passes the HEAD on screen; main refuses it once HEAD has moved.
+  commitChanges: (repo: string, message: string, amend: boolean, noVerify = false, expectedHead: string | null = null) =>
+    invoke('repo:commit-changes', repo, message, amend, noVerify, expectedHead),
   branches: (repo: string) => invoke('repo:branches', repo) as Promise<Branch[]>,
   switchBranch: (repo: string, selection: BranchSelection) => invoke('repo:switch', repo, selection) as Promise<void>,
   createBranch: (repo: string, name: string, base: BranchSelection) => invoke('repo:create-branch', repo, name, base) as Promise<void>,
