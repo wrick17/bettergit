@@ -281,6 +281,14 @@ export async function workingDiff(repo: string, staged: boolean, context = 3, pa
   return staged ? files : [...files, ...(await untrackedFiles(repo, paths))]
 }
 
+// One unmerged file against HEAD: the change staging it would record. Plain `git diff` prints a combined diff for it.
+export async function headDiff(repo: string, relPath: string): Promise<DiffFile[]> {
+  const args = ['--literal-pathspecs', 'diff', '-U3', '--no-color', '--no-ext-diff', 'HEAD', '--', relPath]
+  const output = await gitRaw(repo, args)
+  if (output.code !== 0) throw new GitError(output.stderr || `git diff failed with code ${output.code}`, args, output.code, output.stderr)
+  return parseDiff(output.stdout.toString('utf8'), output.stdout)
+}
+
 async function untrackedFiles(repo: string, only?: string[]): Promise<DiffFile[]> {
   const names = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...pathspec(only)])).split('\0').filter(Boolean)
   const files: DiffFile[] = []

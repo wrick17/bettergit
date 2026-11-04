@@ -371,11 +371,67 @@ if (process.env.CHECK_MODE === 'commit-draft') {
     assert.equal(box().value, 'first')
     if (typed !== null) { box().onChange({ target: { value: typed } }); render() }
     commits[0].resolve(); await flush()
-    assert.deepEqual(commits[0].args, ['/repo', 'first', false])
+    assert.deepEqual(commits[0].args, ['/repo', 'first', false, false, null])
     assert.equal(draft(), typed ?? undefined, 'old commit cleared a newer draft')
     commits.length = 0
     unmount()
   }
+} else if (process.env.CHECK_MODE === 'commit-options') {
+  const commits = [], confirms = [], frames = []
+  window.bettergit.commitChanges = async (...args) => { commits.push(args) }
+  Object.assign(document, {
+    addEventListener() {}, removeEventListener() {},
+    body: { append() {} },
+    createElement: () => ({ className: '', remove() {} }),
+  })
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback)
+  const answered = async () => { await flush(); for (let i = 0; i < 2; i++) { for (const callback of frames.splice(0)) callback(); await flush() } }
+  window.confirm = (message) => { confirms.push(message); return true }
+  const chevron = () => find(tree, (p) => p['aria-label'] === 'Commit options' && p['aria-haspopup'] === 'menu')
+  const menu = () => find(tree, (p) => p.label === 'Commit options' && Array.isArray(p.items))
+  // The chevron toggles, so it is pressed only while the menu is closed.
+  const options = () => menu() ?? (chevron().onClick(), render(), menu())
+  const option = (label) => options().items.find((item) => item.label === label)
+  const box = () => find(tree, (p) => p['aria-label'] === 'Commit message')
+  // Staged files and a message: every option runs, and only amends ask first.
+  await start(false)
+  props = { ...props, status: { ...props.status, headHash: 'a'.repeat(40) } }; render(); await load('head')
+  box().onChange({ target: { value: 'msg' } }); render()
+  assert.deepEqual(options().items.map((item) => [item.label, !!item.disabled]), [
+    ['Amend Previous Commit (--amend)', false],
+    ['Commit without Commit Hooks (--no-verify)', false],
+    ['Amend Commit without Commit Hooks (--amend --no-verify)', false],
+  ])
+  option('Commit without Commit Hooks (--no-verify)').onClick(); await flush()
+  assert.deepEqual(commits.at(-1), ['/repo', 'msg', false, true, null])
+  assert.equal(confirms.length, 0)
+  box().onChange({ target: { value: 'msg' } }); render()
+  option('Amend Commit without Commit Hooks (--amend --no-verify)').onClick(); await answered()
+  assert.deepEqual(commits.at(-1), ['/repo', 'msg', true, true, 'a'.repeat(40)])
+  assert.equal(confirms.length, 1)
+  unmount()
+  // Nothing staged: Commit is off, but an amend can still change the message, or keep it when the box is empty.
+  await start(false)
+  const unstagedOnly = { path: 'a.ts', staged: false, unstaged: true, conflicted: false, kind: 'modified' }
+  props = { ...props, status: { changes: [unstagedOnly], headHash: 'a'.repeat(40) } }; render(); await load('unstaged')
+  assert.equal(find(tree, (p) => p.className === 'commit-action').disabled, true)
+  assert.equal(chevron().disabled, true, 'nothing staged and no message leaves nothing to amend')
+  box().onChange({ target: { value: 'reworded' } }); render()
+  assert.equal(chevron().disabled, false)
+  assert.equal(option('Commit without Commit Hooks (--no-verify)').disabled, true)
+  option('Amend Previous Commit (--amend)').onClick(); await answered()
+  assert.deepEqual(commits.at(-1), ['/repo', 'reworded', true, false, 'a'.repeat(40)])
+  // A declined confirmation commits nothing.
+  window.confirm = () => false
+  box().onChange({ target: { value: 'again' } }); render()
+  const before = commits.length
+  option('Amend Previous Commit (--amend)').onClick(); await answered()
+  assert.equal(commits.length, before)
+  // Before the first commit there is nothing to amend.
+  props = { ...props, status: { changes: [change('a.ts')], headHash: null } }; render(); await load('unborn')
+  assert.equal(option('Amend Previous Commit (--amend)').disabled, true)
+  assert.equal(option('Commit without Commit Hooks (--no-verify)').disabled, false)
+  unmount()
 } else if (process.env.CHECK_MODE === 'restore') {
   const frames = new Map()
   let nextFrame = 1
@@ -962,6 +1018,7 @@ test('a base reload invalidates old file widens before React renders the replace
 test('status changes invalidate pending base loads and start current staged, working and selected loads', () => check('status-loads'))
 test('a widen requested under the current revision remains valid after its base reload fails', () => check('retained'))
 test('a commit that finishes after the tab remounts clears its own draft but keeps a newer one', () => check('commit-draft'))
+test('the commit options run commit with --amend and --no-verify, amend asks first and needs a commit and something to change', () => check('commit-options'))
 test('the diff pane restores or reveals only for the view on screen, after its own diff loads', () => check('restore'))
 test('a failed load with new whitespace options shows the failure in place of the old hunks and keeps the toolbar', () => check('whitespace-failure'))
 test('a failed first load shows the failure with the toolbar, and a later load replaces it', () => check('initial-failure'))

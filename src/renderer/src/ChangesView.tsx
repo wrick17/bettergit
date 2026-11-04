@@ -22,6 +22,8 @@ import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from '.
 import { loadSession, savedView, savePlace, saveView, useScrollMemory } from './session'
 import { orderFiles, pickFiles, shareFiles, swapFile } from './widen'
 import { ConflictView, type ConflictViewProps } from './ConflictView'
+import { confirmOverBlur } from './confirm'
+import { ActionMenu, useHoverMenu, type BarItem } from './OverflowBar'
 import type { Choice, ConflictDocument, ConflictFingerprint, ConflictSave } from '../../shared/conflict'
 
 const api = window.bettergit
@@ -643,16 +645,34 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // The commit button says why it cannot run. Its own run shows a spinner and is not blocked by a reason.
   const commitBlocked = busy === null || busy === 'commit' ? undefined : blockedReason(busy)
 
-  const commit = () => {
-    if (busy || !canCommit) return
+  // Amending needs a commit to replace and something to change: staged files, a new message, or both. An empty box keeps
+  // the last commit's message.
+  const canAmend = shownStatus.headHash !== null && (staged.length > 0 || message.trim().length > 0)
+
+  const commit = async (amend = false, noVerify = false) => {
+    if (busy || !(amend ? canAmend : canCommit)) return
+    // The commit the user sees, read before the confirmation, so main amends only that one.
+    const head = amend ? shownStatus.headHash : null
+    if (amend && !(await confirmOverBlur(AMEND_CONFIRM))) return
     const edit = draftEdits.get(repo)
     void write('commit', async () => {
-      await api.commitChanges(repo, message, false)
+      await api.commitChanges(repo, message, amend, noVerify, head)
       // A draft typed while the commit ran was not committed, so it stays, even if it was typed in a remounted pane.
       if (draftEdits.get(repo) === edit) editMessage('')
       setSelection(null)
     })
   }
+
+  const commitOption = (key: string, label: string, enabled: boolean, amend: boolean, noVerify: boolean): BarItem => ({
+    key, icon: 'commit', label, group: 'commit', disabled: !enabled, blocked: busy !== null ? blockedReason(busy) : undefined,
+    onClick: () => void commit(amend, noVerify),
+  })
+  const commitOptions = [
+    commitOption('amend', 'Amend Previous Commit (--amend)', canAmend, true, false),
+    commitOption('no-verify', 'Commit without Commit Hooks (--no-verify)', canCommit, false, true),
+    commitOption('amend-no-verify', 'Amend Commit without Commit Hooks (--amend --no-verify)', canAmend, true, true),
+  ]
+  const commitMenu = useHoverMenu(busy !== null || !(canCommit || canAmend))
 
   // One load per section and option in a set: the section view and the all view share it, and a failed load is retried.
   // Files a reload finds unchanged keep their loaded objects.
@@ -821,18 +841,33 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               placeholder="Commit message"
               aria-label="Commit message"
             />
-            <button
-              className="commit-action"
-              disabled={!canCommit}
-              aria-disabled={busy !== null || undefined}
-              aria-busy={busy === 'commit' || undefined}
-              title={commitBlocked}
-              onClick={commit}
-            >
-              {busy === 'commit' && <Icon name="loader" className="action-spin" />}
-              {busy === 'commit' ? REPO_WORKING_LABELS.commit : staged.length ? `Commit ${staged.length} file${staged.length === 1 ? '' : 's'}` : 'Commit'}
-              {canCommit && busy === null && <kbd aria-hidden="true">⌘↩</kbd>}
-            </button>
+            <div ref={commitMenu.rootRef} className="commit-split" {...commitMenu.hover}>
+              <button
+                className="commit-action"
+                disabled={!canCommit}
+                aria-disabled={busy !== null || undefined}
+                aria-busy={busy === 'commit' || undefined}
+                title={commitBlocked}
+                onClick={() => void commit()}
+              >
+                {busy === 'commit' && <Icon name="loader" className="action-spin" />}
+                {busy === 'commit' ? REPO_WORKING_LABELS.commit : staged.length ? `Commit ${staged.length} file${staged.length === 1 ? '' : 's'}` : 'Commit'}
+                {canCommit && busy === null && <kbd aria-hidden="true">⌘↩</kbd>}
+              </button>
+              <button {...commitMenu.trigger} className={`commit-chevron${commitMenu.open ? ' on' : ''}`} aria-label="Commit options" title={commitBlocked}>
+                <Icon name="chevronDown" className="chevron-down" />
+              </button>
+              {commitMenu.open && (
+                <ActionMenu
+                  className="commit-menu"
+                  label="Commit options"
+                  items={commitOptions}
+                  autoFocus={commitMenu.open === 'focus'}
+                  onPick={(option) => { commitMenu.close(commitMenu.open === 'focus'); option.onClick() }}
+                  onDismiss={() => commitMenu.setOpen(null)}
+                />
+              )}
+            </div>
           </div>
         </div>
       <div className={`splitter${list.collapsed || code.collapsed ? ' off' : ''}`} {...listHandle} {...list.splitterHandlers} />
@@ -969,6 +1004,8 @@ function savedSelection(repo: string, status: RepoStatus): Selection | null {
 }
 
 // Shown in place of a result loaded for another view or options when the load for the current one fails. It stays until a load succeeds.
+const AMEND_CONFIRM = 'Amend the last commit?\n\nIt is replaced by a commit with a new hash that adds the staged changes, and the message in the box if there is one. If it was pushed, pushing it again needs a force push.'
+
 const LOAD_FAILED: Working = { files: [], moves: [] }
 const LOAD_FAILED_HINT = 'Could not load these changes.'
 // The diff a section's toolbar shows while the load for the view on screen runs. Shared, so DiffView keeps its memo.

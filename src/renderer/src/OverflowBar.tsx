@@ -64,7 +64,7 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
 // A menu that hovering its trigger opens after a short delay without taking focus, so typing elsewhere carries on, and
 // that closes once the pointer has left for the same delay. The trigger opens it by click, Enter, Space or ArrowDown with
 // focus on the first option. Escape or a press outside dismisses it either way.
-function useHoverMenu(disabled?: boolean) {
+export function useHoverMenu(disabled?: boolean) {
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const timer = useRef<number | undefined>(undefined)

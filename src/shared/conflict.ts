@@ -1,6 +1,8 @@
 // Conflict blocks as plain text. Pure functions only. The renderer previews with them, and the main process
 // will save with the same functions, so the preview is the text that gets written.
 
+import type { DiffFile } from '../main/git/diff'
+
 export const DEFAULT_MARKER_SIZE = 7
 
 // Current is the HEAD side (ours). Incoming is the merging side (theirs). Both joins them in order with no merge.
@@ -61,10 +63,11 @@ export type ConflictResetState =
   | { available: true; fingerprint: ConflictFingerprint }
   | { available: false; reason: string }
 
-// Either the reason a file cannot be resolved here, or its parts with one Combine per block, by block index.
+// Either the reason a file cannot be resolved here, or its parts with one Combine per block, by block index. A file with
+// no blocks left also carries `resolved`, its diff against HEAD, so it can be reviewed before it is staged.
 export type ConflictDocument = (
   | { supported: false; message: string }
-  | { supported: true; fingerprint: ConflictFingerprint; parts: Part[]; combine: Combine[] }
+  | { supported: true; fingerprint: ConflictFingerprint; parts: Part[]; combine: Combine[]; resolved?: DiffFile[] }
 ) & { reset: ConflictResetState }
 
 // A reset request carries only the fingerprint the user confirmed. The main process builds the text itself.
