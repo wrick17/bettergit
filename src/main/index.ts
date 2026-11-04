@@ -544,6 +544,8 @@ function createWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // The sandboxed preload cannot read app.isPackaged, so main hands it over as a launch flag.
+      additionalArguments: app.isPackaged ? ['--bettergit-packaged'] : [],
     },
   })
   mainWindow = window

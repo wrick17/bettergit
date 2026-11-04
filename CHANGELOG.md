@@ -7,6 +7,7 @@ Each release publishes its section below as the GitHub Release notes. Add the se
 ### New
 
 - Amend the previous commit or commit without running hooks from the commit options menu.
+- See whether BetterGit is running a development or release build in the toolbar.
 
 ### Fixed
 

@@ -15,6 +15,8 @@ import type { ConflictDocument, ConflictPreview, ConflictReset, ConflictResetRes
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 
 const api = {
+  // Packaged means an installed release; anything else, even a production build run unpackaged, is a dev build.
+  packaged: process.argv.includes('--bettergit-packaged'),
   getConfig: () => invoke('config:get'),
   updateConfig: (patch: unknown) => invoke('config:update', patch),
   getTree: () => invoke('sources:tree'),

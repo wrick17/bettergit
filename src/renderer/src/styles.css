@@ -868,6 +868,11 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 
 /* Repo action icons */
 .toolbar-divider { flex: none; width: 1px; height: 16px; margin: 0 3px; background: var(--line); }
+/* Which build is running, Dev or Release. Quiet, like the divider: it labels the window and does nothing. */
+.build-pill {
+  flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; margin-right: 2px; border-radius: var(--radius-pill);
+  background: var(--sunken); color: var(--text-3); font: 600 calc(11px + var(--ui-delta))/1 var(--font-ui); white-space: nowrap; cursor: default;
+}
 
 /* Commit action icons */
 .commit-title { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
