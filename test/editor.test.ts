@@ -219,7 +219,8 @@ async function loadEntry(file: string, imports: Record<string, unknown>, after =
   expect(compiled.success).toBe(true)
   const module = { exports: {} }
   runInNewContext(await compiled.outputs[0].text() + after, {
-    ...globals, module, exports: module.exports,
+    // The sandboxed preload reads process.argv. A bare stand-in, never the test's own process or environment.
+    process: { argv: [] }, ...globals, module, exports: module.exports,
     // The command log is a no-op until opened, so main and exec load it for real.
       require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub }
         : id.endsWith('/command-log') ? commandLog : {}),
@@ -281,12 +282,17 @@ test('main and preload reject escaped repos but open allowed aliases during Git 
     './menu': { buildMenu: () => [] },
   }, '\nconfig = testConfig; registerIpc()', { testConfig: normalizeConfig({ sources, settings: { customApps: [custom] } }) })
   let api!: BetterGitApi
-  await loadEntry('../src/preload/index.ts', {
+  const bridge = (argv: string[]) => loadEntry('../src/preload/index.ts', {
     electron: {
       contextBridge: { exposeInMainWorld: (_name: string, value: BetterGitApi) => { api = value } },
       ipcRenderer: { invoke: async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args) },
     },
-  })
+  }, '', { process: { argv } })
+  // Only main's launch flag marks an installed release; any other launch is a dev build.
+  await bridge(['--bettergit-packaged'])
+  expect(api.packaged).toBe(true)
+  await bridge([])
+  expect(api.packaged).toBe(false)
   try {
     const refused = `Not a repository in the sidebar: ${escape}`
     await expect(api.openInEditor(escape)).rejects.toThrow(refused)

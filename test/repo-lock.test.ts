@@ -44,7 +44,8 @@ async function load(file: string, imports: Record<string, unknown>, after = '', 
     expect(compiled.success).toBe(true)
     const module = { exports: {} }
     runInNewContext(await compiled.outputs[0].text() + after, {
-      Error, ...globals, module, exports: module.exports,
+      // The sandboxed preload reads process.argv. A bare stand-in, never the test's own process or environment.
+      Error, process: { argv: [] }, ...globals, module, exports: module.exports,
       // The command log is a no-op until opened, so main and exec load it for real.
       require: (id: string) => imports[id] ?? (id === './avatar' ? { avatars: () => async () => null } : id === './updater' ? { createUpdater: () => updaterStub }
         : id.endsWith('/command-log') ? commandLog : {}),
