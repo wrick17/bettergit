@@ -56,6 +56,36 @@ describe('layoutGraph', () => {
     expect(rows[0].output).toEqual([{ hash: 'head', color: 0 }])
   })
 
+  test('HEAD holds the first lane without a line until a commit above leads into it', () => {
+    // A newer tip that is not a descendant of HEAD: nothing comes down into HEAD from above.
+    const commits = [
+      { hash: 'tip', parents: ['base'] },
+      { hash: 'head', parents: ['base'] },
+      { hash: 'base', parents: [] },
+    ]
+    const rows = layoutGraph(commits, startGraph(commits, 'head'))
+    expectMarkersOnLines(rows)
+    expect(rows.map((row) => row.lane)).toEqual([1, 0, 0])
+    // The slot keeps HEAD's place but stays reserved, so no line is drawn above HEAD's marker.
+    expect(rows[0].input).toEqual([{ hash: 'head', color: 0, reserved: true }])
+    expect(rows[1].input[0]).toEqual({ hash: 'head', color: 0, reserved: true })
+    expect(rows[2].input).toEqual([{ hash: 'base', color: 0 }])
+  })
+
+  test('a merge leading into HEAD through its second parent turns the reserved slot into a line', () => {
+    const commits = [
+      { hash: 'merge', parents: ['side', 'head'] },
+      { hash: 'side', parents: ['base'] },
+      { hash: 'head', parents: ['base'] },
+      { hash: 'base', parents: [] },
+    ]
+    const rows = layoutGraph(commits, startGraph(commits, 'head'))
+    expectMarkersOnLines(rows)
+    expect(rows[0].input).toEqual([{ hash: 'head', color: 0, reserved: true }])
+    expect(rows[0].output[0]).toEqual({ hash: 'head', color: 0 })
+    expect(rows[2].input[0]).toEqual({ hash: 'head', color: 0 })
+  })
+
   test('ending one root keeps the lane and color of an unrelated history', () => {
     const rows = layoutGraph([
       { hash: 'a', parents: ['root-a'] },
@@ -82,6 +112,23 @@ test('laying out an appended page from the saved state matches one layout of the
   ]
   const state = { lanes: [], nextColor: 0 }
   expect([...layoutGraph(commits.slice(0, 3), state), ...layoutGraph(commits.slice(3), state)]).toEqual(layoutGraph(commits))
+})
+
+test('HEAD\'s reserved slot carries across an appended page and a background refresh', () => {
+  const commits = [
+    { hash: 'tip', parents: ['base'] },
+    { hash: 'other', parents: ['base'] },
+    { hash: 'head', parents: ['base'] },
+    { hash: 'base', parents: [] },
+  ]
+  const state = startGraph(commits, 'head')
+  const paged = [...layoutGraph(commits.slice(0, 1), state), ...layoutGraph(commits.slice(1), state)]
+  expect(paged).toEqual(layoutGraph(commits, startGraph(commits, 'head')))
+  expect(paged[1].input[0]).toEqual({ hash: 'head', color: 0, reserved: true })
+  // A refresh reserves HEAD's slot where HEAD sat before, still without a line into it.
+  const refreshed = startGraph(commits, 'head', { rows: paged, state })
+  expect(refreshed.lanes).toEqual([{ hash: 'head', color: 0, reserved: true }])
+  expect(layoutGraph(commits, refreshed).map((row) => row.lane)).toEqual(paged.map((row) => row.lane))
 })
 
 test('a background refresh keeps the lanes, colors and widths of commits already on screen', () => {

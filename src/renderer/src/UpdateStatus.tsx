@@ -2,11 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { UpdateState } from '../../main/update'
 import { hasUnsavedChoices } from './ChangesView'
 import { hasUnsavedDrafts } from './DiffEditor'
+import { hasUnsavedStagedDrafts } from './FileSheets'
 import { Icon, IconButton, type IconName } from './Icons'
 
 const api = window.bettergit
 const UNSAVED = 'Save or discard your unsaved edits and conflict choices, then restart.'
-const unsaved = () => hasUnsavedDrafts() || hasUnsavedChoices()
+const unsaved = () => hasUnsavedDrafts() || hasUnsavedChoices() || hasUnsavedStagedDrafts()
 // Set from an accepted Restart until the app quits or the quit is cancelled. Only then does closing check for edits.
 let restarting = false
 

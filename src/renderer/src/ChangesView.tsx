@@ -1,6 +1,7 @@
 import type { CommitIdentity } from '../../shared/identity'
 import { IdentityDialog } from './IdentityDialog'
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type UIEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { flushSync } from 'react-dom'
 import type { FileChange, RepoStatus } from '../../main/git/status'
 import type { DiffFile, DiffHunk, MovedBlock } from '../../main/git/diff'
@@ -18,7 +19,9 @@ import { buildTree, treeOrder, type Folder } from './commit-tree'
 import { CONTEXT_OPTIONS, useContextLines, useIgnoreWhitespace } from './prefs'
 import { useResizable } from './Splitter'
 import { GUTTER, STRIP_WIDTH, useFoldHold } from './fold'
-import { blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy } from './repo-busy'
+import { ActionError, blockedReason, REPO_WORKING_LABELS, runRepoWrite, useRepoBusy, workingLabel } from './repo-busy'
+import { EditorContext } from './editor-launch'
+import { FileSheets, hasStagedDraft, stagedDraftPaths, type FileSheet } from './FileSheets'
 import { loadSession, savedView, savePlace, saveView, useScrollMemory } from './session'
 import { orderFiles, pickFiles, shareFiles, swapFile } from './widen'
 import { ConflictView, type ConflictViewProps } from './ConflictView'
@@ -91,6 +94,8 @@ interface SectionProps {
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
+  // Opens the file's context menu at a point. `staged` names the list section the row is in.
+  onMenu: (change: FileChange, staged: boolean, at: { x: number; y: number }) => void
   // Stages or unstages every file in this section, or only the files the filter shows. Omitted for the conflicts section.
   onToggleAll?: () => void
   // Set while a filter hides some of the section's files, so the header button names what it changes.
@@ -157,6 +162,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   // Each file's open or closed choice by path, shared by every working diff (all, staged, unstaged and selected), so a
   // file keeps its choice when a stage, discard, delete or refresh moves it to another diff. Only this view saves it.
   const [choices, setChoices] = useState<Record<string, boolean>>(() => savedView(`${repo}|changes-files`, 'working', {}))
+  // A changed file's context menu, by path and section, at the point it opened, and the element focus returns to.
+  const [fileMenu, setFileMenu] = useState<{ path: string; staged: boolean; x: number; y: number; from: Element | null } | null>(null)
+  const [fileSheet, setFileSheet] = useState<FileSheet | null>(null)
+  const editor = useContext(EditorContext)
   useEffect(() => { saveView(`${repo}|changes-files`, 'working', choices) }, [repo, choices])
   const fileChoices = useMemo<FileChoices>(() => ({ choices, setChoices }), [choices])
   const ignoreWhitespace = useIgnoreWhitespace()
@@ -322,16 +331,27 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     savePlace(repo, { collapsed: [...collapsed], widened: extra })
   }, [repo, collapsed, extra])
 
-  // A selection survives a status change only while its file is still in the section it names. Otherwise it moves to the other section or clears.
-  // It follows the status on screen, before paint, so the moved selection's diff is already loaded when it shows.
+  // The section's files in list order as the last render showed them, so a file that leaves can hand its place on.
+  const lastOrder = useRef(order)
+  // A selection whose file leaves its section stays in that section, so staging the picked file does not jump the view to
+  // Staged. The file that takes its place in the list is picked. A section left empty stays on screen while the file is
+  // still in the other one; a file gone from both clears the selection. Before paint, so the pick's diff shows at once.
   useLayoutEffect(() => {
     setSelection((current) => {
       if (!current) return current
       const inSection = (isStaged: boolean) => shownStatus.changes.some((change) => change.path === current.path && (isStaged ? change.staged : change.unstaged || change.conflicted))
       if (inSection(current.staged)) return current
-      return inSection(!current.staged) ? { path: current.path, staged: !current.staged } : null
+      const key = current.staged ? 'staged' : 'changes'
+      const before = lastOrder.current[key]
+      const now = new Set(order[key])
+      // The next file below it that is still listed, else the nearest one above.
+      const index = before.indexOf(current.path)
+      const next = index < 0 ? order[key][0] : [...before.slice(index + 1), ...before.slice(0, index).reverse()].find((path) => now.has(path))
+      if (next !== undefined) return { path: next, staged: current.staged }
+      return inSection(!current.staged) ? current : null
     })
   }, [shownStatus])
+  useLayoutEffect(() => { lastOrder.current = order })
 
   useEffect(() => {
     let stale = false
@@ -573,6 +593,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
   const choose = (change: FileChange, isStaged: boolean) => {
     revealRef.current = { path: change.path, from: scrollKey }
     setSelection({ path: change.path, staged: isStaged })
+    // A picked file opens in the diff, even one collapsed by hand or by default (a lock file, a large diff).
+    setChoices((prev) => (prev[change.path] ? prev : { ...prev, [change.path]: true }))
     if (!detailOpen) onShowDiff?.()
   }
 
@@ -707,10 +729,86 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     return next
   }
 
+  function openFileMenu(path: string, isStaged: boolean, at: { x: number; y: number }) {
+    setFileMenu({ path, staged: isStaged, ...at, from: document.activeElement })
+  }
+  const closeFileMenu = (refocus: boolean) => {
+    const from = fileMenu?.from
+    setFileMenu(null)
+    if (refocus && from instanceof HTMLElement && from.isConnected) from.focus()
+  }
+
+  // As Sublime Merge's file menu: stage or unstage, discard, save patch, history, blame, then open, reveal and copy.
+  // Writes take the repo's slot and say why they wait; reads and launches stay usable while a write runs.
+  const fileMenuItems = (path: string, isStaged: boolean): BarItem[] => {
+    // A partly staged file may have an entry per side, so the entry of the menu's section is the one read.
+    const change = shownStatus.changes.find((item) => item.path === path && (isStaged ? item.staged : item.unstaged || item.conflicted))
+    if (!change) return []
+    const conflict = change.conflicted && !isStaged
+    const untracked = change.kind === 'untracked'
+    const state = (key: string, label: string) => ({
+      label: busy === key ? workingLabel(key) : label, busy: busy === key, blocked: busy !== null && busy !== key ? blockedReason(busy) : undefined,
+    })
+    const failed = (action: string) => (failure: unknown) => errorRef.current(new ActionError(action, failure, repo))
+    const paths = [change.originalPath, path].filter((name): name is string => !!name)
+    const stage = async () => { if (await confirmDropEdits(repo, [path])) void togglePath(path, true) }
+    const discardFile = async () => {
+      if (await confirmOverBlur(`Discard the unstaged changes to ${path}?\n\nThe file goes back to its staged version, or to the last commit when nothing is staged. This cannot be undone.`)) void discardPath(path)
+    }
+    const deleteFile = async () => {
+      if (await confirmOverBlur(`Delete the untracked file ${path}?\n\nIt is not in Git, so it cannot be restored.`)) void deletePath(path)
+    }
+    const savePatch = () => api.savePatch(repo, isStaged, paths).catch(failed(`Saving a patch of ${path}`))
+    const items: BarItem[] = []
+    if (isStaged) {
+      items.push({ key: 'unstage', icon: 'minus', ...state(fileKey('unstage', path), 'Unstage File'), group: 'stage', onClick: () => void togglePath(path, false) })
+    } else if (!conflict) {
+      items.push({ key: 'stage', icon: 'plus', ...state(fileKey('stage', path), 'Stage File'), group: 'stage', onClick: () => void stage() })
+      items.push(untracked
+        ? { key: 'delete', icon: 'trash', ...state(fileKey('delete', path), 'Delete File…'), danger: true, group: 'stage', onClick: () => void deleteFile() }
+        : { key: 'discard', icon: 'trash', ...state(fileKey('discard', path), 'Discard File…'), danger: true, group: 'stage', onClick: () => void discardFile() })
+    }
+    // A conflict's diff is a combined one, which git apply does not take, and its staged copy is not a single entry.
+    if (!conflict) items.push({ key: 'patch', icon: 'save', label: 'Save Patch…', group: 'stage', onClick: () => void savePatch() })
+    // A file with unsaved staged edits always offers them, so they can be saved, copied or discarded.
+    if ((isStaged && change.kind !== 'deleted') || hasStagedDraft(repo, path)) {
+      items.push({ key: 'edit-staged', icon: 'edit', ...state(`staged-write:${path}`, 'Edit Staged Contents…'), group: 'stage', onClick: () => setFileSheet({ kind: 'staged', path }) })
+    }
+    items.push(
+      // A staged rename has no commits under its new name yet, so its history is read under the old one.
+      { key: 'history', icon: 'graph', label: 'File History', group: 'inspect', disabled: untracked, onClick: () => setFileSheet({ kind: 'history', path: change.originalPath ?? path }) },
+      { key: 'blame', icon: 'users', label: 'Blame', group: 'inspect', disabled: untracked || change.kind === 'deleted' || change.kind === 'added', onClick: () => setFileSheet({ kind: 'blame', path }) },
+    )
+    if (editor) items.push({ key: 'open', icon: 'externalLink', label: `Open in ${editor.app.name}`, group: 'open', onClick: () => void editor.openFile(path).catch(editor.onError) })
+    items.push(
+      { key: 'reveal', icon: 'reveal', label: 'Reveal in Finder', group: 'open', onClick: () => void api.reveal(repo, path).catch(failed(`Revealing ${path} in Finder`)) },
+      { key: 'copy', icon: 'copy', label: 'Copy File Path', group: 'open', onClick: () => void navigator.clipboard.writeText(`${repo}/${path}`).catch(failed('Copying the file path')) },
+    )
+    return items
+  }
+
+  const fileMenuList = fileMenu ? fileMenuItems(fileMenu.path, fileMenu.staged) : []
+
+  // The menu closes on a press outside it or Escape, like the commit menu. Escape returns focus to where it opened.
+  const fileMenuOpen = fileMenu !== null
+  useEffect(() => {
+    if (!fileMenuOpen) return
+    const close = (event: globalThis.MouseEvent) => { if (!(event.target as Element).closest('.file-menu')) setFileMenu(null) }
+    const onKey = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') closeFileMenuRef.current(true) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [fileMenuOpen])
+  const closeFileMenuRef = useRef(closeFileMenu)
+  closeFileMenuRef.current = closeFileMenu
+
   // Row handlers keep one identity, so a pick, load or scroll re-renders only the rows whose own props change. Thousands
   // of rows re-rendering on each of those was the hang when a large working tree was browsed.
-  const rowActions = useRef({ choose, toggle, discard })
-  rowActions.current = { choose, toggle, discard }
+  const rowActions = useRef({ choose, toggle, discard, openFileMenu })
+  rowActions.current = { choose, toggle, discard, openFileMenu }
   const rowHandlers = useMemo(() => ({
     pickUnstaged: (change: FileChange) => rowActions.current.choose(change, false),
     pickStaged: (change: FileChange) => rowActions.current.choose(change, true),
@@ -718,6 +816,10 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
     toggleUnstaged: (change: FileChange) => rowActions.current.toggle(change, change.unstaged),
     unstage: (change: FileChange) => rowActions.current.toggle(change, false),
     discard: (change: FileChange) => rowActions.current.discard(change),
+    menu: (change: FileChange, isStaged: boolean, at: { x: number; y: number }) => rowActions.current.openFileMenu(change.path, isStaged, at),
+    // The diffs on the pane, by the section each shows.
+    unstagedMenu: (file: DiffFile, at: { x: number; y: number }) => rowActions.current.openFileMenu(pathOf(file), false, at),
+    stagedMenu: (file: DiffFile, at: { x: number; y: number }) => rowActions.current.openFileMenu(pathOf(file), true, at),
   }), [])
 
   return (
@@ -767,6 +869,13 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           )}
           <div className="file-scroll" ref={listRef} onScroll={onListScroll}>
             {clean && <p className="file-list-empty">No changed files</p>}
+            {/* Unsaved staged edits to a file no longer in the changes, after a commit say. Opening them shows the text to copy or discard. */}
+            {stagedDraftPaths(repo).filter((path) => !shownStatus.changes.some((change) => change.path === path)).map((path) => (
+              <p key={path} className="file-list-empty">
+                Unsaved staged edits to {path}.{' '}
+                <button type="button" className="link-button" onClick={() => setFileSheet({ kind: 'staged', path })}>Open</button>
+              </p>
+            ))}
             {filteredOut && (
               <p className="file-list-empty">
                 No changed files match “{filter.trim()}”.{' '}
@@ -787,6 +896,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                 onToggle={rowHandlers.stageConflict}
                 busy={busy}
                 activeFiles={activeFiles}
+                onMenu={rowHandlers.menu}
               />
             )}
             {/* Only working-tree changes belong here; partially staged paths appear in both sections. */}
@@ -806,6 +916,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               filtered={!!needle}
               busy={busy}
               activeFiles={activeFiles}
+              onMenu={rowHandlers.menu}
             />
             <List
               repo={repo}
@@ -822,6 +933,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               filtered={!!needle}
               busy={busy}
               activeFiles={activeFiles}
+              onMenu={rowHandlers.menu}
             />
           </div>
           <div className="commit-box">
@@ -902,6 +1014,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   contextFor={(file) => extra[levelKey(false, pathOf(file))] ?? context}
                   fileChoices={fileChoices}
                   section="unstaged"
+                  onFileMenu={rowHandlers.unstagedMenu}
                   refreshOf={`${repo} unstaged`}
                   onShown={shownHandlers.unstaged}
                   emptyHint={unstagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : unstagedShown ? undefined : LOADING_HINT}
@@ -919,6 +1032,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   contextFor={(file) => extra[levelKey(true, pathOf(file))] ?? context}
                   fileChoices={fileChoices}
                   section="staged"
+                  onFileMenu={rowHandlers.stagedMenu}
                   refreshOf={`${repo} staged`}
                   onShown={shownHandlers.staged}
                   emptyHint={stagedShown === LOAD_FAILED ? LOAD_FAILED_HINT : stagedShown ? undefined : LOADING_HINT}
@@ -937,6 +1051,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               contextFor={(file) => extra[levelKey(selection.staged, pathOf(file))] ?? context}
               fileChoices={fileChoices}
               section={(listed.selection?.staged ?? selection.staged) ? 'staged' : 'unstaged'}
+              onFileMenu={(listed.selection?.staged ?? selection.staged) ? rowHandlers.stagedMenu : rowHandlers.unstagedMenu}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
               onShown={shownHandlers.selection}
               emptyHint={diffShown === LOAD_FAILED ? LOAD_FAILED_HINT : diffShown ? undefined : LOADING_HINT}
@@ -944,6 +1059,19 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
           )}
         </div>
       </DiffRail>
+      {/* A file that a refresh took out of its section has no menu left to show. */}
+      {fileMenu && fileMenuList.length > 0 && createPortal(
+        <ActionMenu
+          className="context-menu file-menu"
+          label={`${splitPath(fileMenu.path).name} actions`}
+          at={fileMenu}
+          items={fileMenuList}
+          onPick={(item) => { closeFileMenu(false); item.onClick() }}
+          onDismiss={() => setFileMenu(null)}
+        />,
+        document.body,
+      )}
+      <FileSheets repo={repo} sheet={fileSheet} onClose={() => setFileSheet(null)} onChanged={onChanged} onError={(failure) => errorRef.current(failure)} />
     </div>
   )
 }
@@ -1100,7 +1228,7 @@ function countStats(all: { staged: Working; unstaged: Working } | null): Map<str
   return map
 }
 
-function Group({ repo, title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
+function Group({ repo, title, changes, staged, selection, stats, onSelect, onToggle, onDiscard, onMenu, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
   useKeepInView(sectionRef, inView)
@@ -1112,8 +1240,8 @@ function Group({ repo, title, changes, staged, selection, stats, onSelect, onTog
         {changes.map((change) => {
           const active = selection?.path === change.path && selection.staged === staged
           return (
-            <li key={`${staged}-${change.path}`} className={`${active ? 'active' : ''}${inView === change.path ? ' in-view' : ''}`}>
-              <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+            <li key={`${staged}-${change.path}`} className={`${active ? 'active' : ''}${inView === change.path ? ' in-view' : ''}`} onContextMenu={(event) => openRowMenu(event, change, staged, onMenu)}>
+              <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} onMenu={onMenu} section={staged} busy={busy} />
             </li>
           )
         })}
@@ -1123,7 +1251,7 @@ function Group({ repo, title, changes, staged, selection, stats, onSelect, onTog
 }
 
 // Same structure as the repo sidebar: folder rows with a chevron, nested groups with guide lines.
-function Tree({ repo, title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
+function Tree({ repo, title, changes, staged, selection, stats, collapsed, onToggleFolder, onSelect, onToggle, onDiscard, onMenu, onToggleAll, filtered, busy, activeFiles }: SectionProps) {
   const folder = useMemo(() => changeTree(changes), [changes])
   const sectionRef = useRef<HTMLElement>(null)
   const inView = useInView(activeFiles, staged)
@@ -1133,8 +1261,8 @@ function Tree({ repo, title, changes, staged, selection, stats, collapsed, onTog
     const active = selection?.path === change.path && selection.staged === staged
     return (
       <div key={change.path} role="treeitem" aria-selected={active}>
-        <div className={`tree-row${active ? ' selected' : ''}${inView === change.path ? ' in-view' : ''}`}>
-          <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} busy={busy} />
+        <div className={`tree-row${active ? ' selected' : ''}${inView === change.path ? ' in-view' : ''}`} onContextMenu={(event) => openRowMenu(event, change, staged, onMenu)}>
+          <FileRow repo={repo} change={change} staged={staged || !change.unstaged} stats={stats} showDir={false} onSelect={onSelect} onToggle={onToggle} onDiscard={onDiscard} onMenu={onMenu} section={staged} busy={busy} />
         </div>
       </div>
     )
@@ -1237,8 +1365,14 @@ function TreeLevel({ folder, section, collapsed, onToggleFolder, renderFile }: {
   )
 }
 
+// A right-click anywhere on a file's row opens its menu.
+function openRowMenu(event: MouseEvent, change: FileChange, staged: boolean, onMenu: SectionProps['onMenu']) {
+  event.preventDefault()
+  onMenu(change, staged, { x: event.clientX, y: event.clientY })
+}
+
 // The name, counts, and status (which doubles as the stage button) shared by both views. Tree rows drop the folder part of the path.
-const FileRow = memo(function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onDiscard, busy }: {
+const FileRow = memo(function FileRow({ repo, change, staged, stats, showDir, onSelect, onToggle, onDiscard, onMenu, section, busy }: {
   repo: string
   change: FileChange
   staged: boolean
@@ -1247,9 +1381,19 @@ const FileRow = memo(function FileRow({ repo, change, staged, stats, showDir, on
   onSelect: (change: FileChange) => void
   onToggle: (change: FileChange) => void
   onDiscard?: (change: FileChange) => void
+  onMenu: SectionProps['onMenu']
+  // The list section the row is in, which the menu acts on.
+  section: boolean
   busy: string | null
 }) {
   const { name, dir } = splitPath(change.path)
+  // The keyboard's route to the row's menu, opened under the file's name.
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return
+    event.preventDefault()
+    const box = event.currentTarget.getBoundingClientRect()
+    onMenu(change, section, { x: box.left + 24, y: box.bottom })
+  }
   const unsaved = useUnsaved({ repo }, change.path)
   const discardAction = !staged && change.kind !== 'untracked' && !change.conflicted ? onDiscard : undefined
   const discardKey = fileKey('discard', change.path)
@@ -1258,7 +1402,7 @@ const FileRow = memo(function FileRow({ repo, change, staged, stats, showDir, on
   return (
     <>
       <span className={`file-with-action${discardAction ? ' has-row-action' : ''}`}>
-        <button className="file" onClick={() => onSelect(change)}>
+        <button className="file" onClick={() => onSelect(change)} onKeyDown={onKeyDown}>
           <FileIcon name={name} />
           {showDir ? <FullPath dir={dir} name={name} path={change.path} /> : <span className="path" title={change.path}><span className="path-name">{name}</span></span>}
         </button>

@@ -5,6 +5,8 @@ import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
 import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
 import type { RepoOperation } from '../main/git/status'
+import type { Commit } from '../main/git/history'
+import type { StagedText } from '../main/git/index-file'
 import type { RepoLockSnapshot } from '../main/repo-lock'
 import type { UpdateState } from '../main/update'
 import type { AppKind, InstalledApp } from '../shared/editors'
@@ -101,7 +103,14 @@ const api = {
   backup: (repo: string, label: string) => invoke('repo:backup', repo, label),
   restore: (repo: string, ref: string) => invoke('repo:restore', repo, ref),
   clone: (url: string, parent: string) => invoke('clone', url, parent),
-  reveal: (repo: string) => invoke('repo:reveal', repo),
+  // With a path, reveals that file of the repo.
+  reveal: (repo: string, path?: string) => invoke('repo:reveal', repo, path) as Promise<void>,
+  // Asks where to save, then writes the files' staged or unstaged changes there. Null when the dialog is cancelled.
+  savePatch: (repo: string, staged: boolean, paths: string[]) => invoke('repo:save-patch', repo, staged, paths) as Promise<string | null>,
+  fileHistory: (repo: string, path: string) => invoke('repo:file-history', repo, path) as Promise<Commit[]>,
+  blame: (repo: string, path: string) => invoke('repo:blame', repo, path) as Promise<{ hash: string; author: string; line: string }[]>,
+  stagedRead: (repo: string, path: string) => invoke('repo:staged-read', repo, path) as Promise<StagedText>,
+  stagedWrite: (repo: string, path: string, expectedBlob: string, text: string) => invoke('repo:staged-write', repo, path, expectedBlob, text) as Promise<void>,
   openInEditor: (repo: string, path?: string) => invoke('repo:open-in-editor', repo, path) as Promise<void>,
   openInTerminal: (repoPath: string) => invoke('repo:open-in-terminal', repoPath) as Promise<void>,
   // Editors and terminals for Settings. Icons are PNG data URLs, null when macOS has none.

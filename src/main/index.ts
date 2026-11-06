@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell } from 'electron'
 import path from 'node:path'
 import { mkdirSync, statSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { loadConfig, normalizeConfig, saveConfig, saveConfigSync, type AppConfig, type WindowState } from './config'
-import { openFileInApp, openRepoInApp, readWorkingFile, writeWorkingFile } from './editor'
+import { openFileInApp, openRepoInApp, readWorkingFile, resolveFileTarget, writeWorkingFile } from './editor'
 import { customApp, installedApps, isAppBundle, mergeApps, resolveApp } from './apps'
 import { flattenRepos, isRepo, repoNode, scanFolder, type TreeNode } from './scan'
 import { SourceWatcher } from './watch'
@@ -11,8 +12,9 @@ import { commandLogPath, logAction, openCommandLog } from './command-log'
 import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
-import { commitDiff, compare, detectMoves, listOnly, workingDiff } from './git/diff'
-import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors } from './git/history'
+import { commitDiff, compare, detectMoves, filePatch, listOnly, workingDiff } from './git/diff'
+import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors, fileHistory } from './git/history'
+import { readStagedFile, writeStagedFile } from './git/index-file'
 import { avatars } from './avatar'
 import { readStatus } from './git/status'
 import { DirtyCounter } from './git/dirty'
@@ -163,6 +165,12 @@ function refList(refs: unknown): string[] {
 function fileList(paths: unknown): string[] | undefined {
   const list = (Array.isArray(paths) ? paths : [paths]).filter((item): item is string => typeof item === 'string' && item !== '')
   return list.length ? list : undefined
+}
+
+// One repo-relative file path from the renderer. Git reads it after `--`, so it never becomes an option.
+function filePathArg(value: unknown): string {
+  if (typeof value !== 'string' || value === '' || value.includes('\0') || path.isAbsolute(value)) throw new Error('Invalid file path.')
+  return value
 }
 
 // Validate both the selected path and its destination before opening or locking a repo.
@@ -401,6 +409,12 @@ function registerIpc() {
   // The diff's inline editor. The write holds the repo lock, so it never lands in the middle of a Git write.
   // The read takes no lock, but it checks the repo's real path against the sources, as the write does through handleWrite.
   ipcMain.handle('repo:file-read', (_event, repoPath: string, filePath: string) => readWorkingFile(assertKnownWriteRepo(repoPath), filePath))
+  // A changed file's menu. History and blame only read, so they take no lock. A staged edit writes the index only.
+  ipcMain.handle('repo:file-history', (_event, repoPath: string, filePath: unknown) => fileHistory(assertKnownRepo(repoPath), filePathArg(filePath)))
+  ipcMain.handle('repo:blame', (_event, repoPath: string, filePath: unknown) => ops.blame(assertKnownRepo(repoPath), filePathArg(filePath)))
+  ipcMain.handle('repo:staged-read', (_event, repoPath: string, filePath: unknown) => readStagedFile(assertKnownWriteRepo(repoPath), filePathArg(filePath)))
+  handleWrite('repo:staged-write', (_event, repoPath: string, filePath: unknown, expectedBlob: unknown, text: unknown) =>
+    writeStagedFile(repoPath, filePathArg(filePath), expectedBlob, text))
   handleWrite('repo:file-write', (_event, repoPath: string, filePath: string, expected: string, text: string) =>
     writeWorkingFile(repoPath, filePath, expected, text))
   // Launching an app does not write Git state, so it stays available while the repo is busy.
@@ -474,7 +488,24 @@ function registerIpc() {
   ipcMain.handle('extensions:remove', (_event, id: unknown) => changingExtensions(removeExtension(extensionsDir(), id)))
   ipcMain.handle('themes:color', (_event, ref: unknown) => loadTheme('color', ref))
   ipcMain.handle('themes:icons', (_event, ref: unknown) => loadTheme('icons', ref))
-  ipcMain.handle('repo:reveal', (_event, repoPath: string) => shell.showItemInFolder(assertKnownRepo(repoPath)))
+  // A file inside the repo is checked like the editor's, so a path never reveals anything outside it.
+  ipcMain.handle('repo:reveal', async (_event, repoPath: string, filePath?: unknown) => shell.showItemInFolder(filePath === undefined
+    ? assertKnownRepo(repoPath)
+    : await resolveFileTarget(assertKnownWriteRepo(repoPath), filePath as string)))
+  // Reads only, so it takes no repo lock. Resolves to the saved file's path, or null when the save dialog is cancelled.
+  ipcMain.handle('repo:save-patch', async (event, repoPath: string, staged: unknown, paths: unknown) => {
+    const repo = assertKnownWriteRepo(repoPath)
+    const only = fileList(paths)
+    if (!only) throw new Error('No file to save a patch for.')
+    const patch = await filePatch(repo, staged === true, only)
+    if (!patch.length) throw new Error(`${only[0]} has no ${staged === true ? 'staged' : 'unstaged'} changes to save.`)
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const options = { defaultPath: `${path.basename(only[only.length - 1])}.patch`, filters: [{ name: 'Patch', extensions: ['patch', 'diff'] }] }
+    const picked = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options)
+    if (picked.canceled || !picked.filePath) return null
+    await writeFile(picked.filePath, patch)
+    return picked.filePath
+  })
   ipcMain.handle('clone', (_event, url: string, parent: string) => withCloneActivity(async () => {
     const destination = path.join(parent, path.basename(url.replace(/\.git$/, '')))
     await ops.clone(url, destination)

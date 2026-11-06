@@ -2,6 +2,22 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.20] - 2026-11-06
+
+### New
+- A right-click menu on changed files: stage or unstage, discard, save a patch, view file history and blame, edit staged contents, open in your editor, reveal in Finder, and copy the path. (#62)
+- A Stash button in the main toolbar. Its dropdown holds Stash Changes, View Stash, Apply Stash, Pop Stash and Pop Latest Stash, which moved there from the Actions menu. (#63)
+
+### Improved
+- File headers in the diff have a tinted background, and clicking anywhere on a header collapses or expands the file. (#61)
+- Picking a file in the list opens it in the diff if it was collapsed. (#61)
+
+### Changed
+- Staging or unstaging the picked file keeps you in the same section and selects the next file, rather than jumping to the other section. (#61)
+
+### Fixed
+- The history graph no longer draws a line that starts from nothing above the checked-out commit when newer branch tips are listed above it. (#64)
+
 ## [0.1.19] - 2026-11-04
 
 ### New

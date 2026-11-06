@@ -281,6 +281,27 @@ export async function workingDiff(repo: string, staged: boolean, context = 3, pa
   return staged ? files : [...files, ...(await untrackedFiles(repo, paths))]
 }
 
+// The files' changes as a patch `git apply` takes, binary parts included. Unstaged untracked files diff against an empty file.
+// The raw bytes, whatever the user's diff config: no textconv or external diff, and Git's standard a/ and b/ prefixes.
+const PATCH_FORMAT = ['--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-relative', '--src-prefix=a/', '--dst-prefix=b/']
+export async function filePatch(repo: string, staged: boolean, paths: string[]): Promise<Buffer> {
+  const args = ['--literal-pathspecs', 'diff', ...PATCH_FORMAT, '--find-renames', ...(staged ? ['--cached'] : []), ...pathspec(paths)]
+  const output = await gitRaw(repo, args)
+  if (output.code !== 0) throw new GitError(output.stderr || `git diff failed with code ${output.code}`, args, output.code, output.stderr)
+  const parts = [output.stdout]
+  if (!staged) {
+    const untracked = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...pathspec(paths)])).split('\0').filter(Boolean)
+    for (const name of untracked) {
+      const extra = ['diff', '--no-index', ...PATCH_FORMAT, '--', '/dev/null', name]
+      // --no-index exits 1 when the files differ, which they always do here.
+      const result = await gitRaw(repo, extra)
+      if (result.code > 1) throw new GitError(result.stderr || `git diff failed with code ${result.code}`, extra, result.code, result.stderr)
+      parts.push(result.stdout)
+    }
+  }
+  return Buffer.concat(parts)
+}
+
 // One unmerged file against HEAD: the change staging it would record. Plain `git diff` prints a combined diff for it.
 export async function headDiff(repo: string, relPath: string): Promise<DiffFile[]> {
   const args = ['--literal-pathspecs', 'diff', '-U3', '--no-color', '--no-ext-diff', 'HEAD', '--', relPath]

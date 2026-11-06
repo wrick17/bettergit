@@ -591,14 +591,19 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 /* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
 .diff-file.revealed > header { animation: file-revealed 900ms ease-out; }
-@keyframes file-revealed { from { background: var(--accent-soft); } }
+@keyframes file-revealed { from { background-color: var(--accent-soft); } }
 @media (prefers-reduced-motion: reduce) { .diff-file.revealed > header { animation: none; } }
 .diff-file > header {
   position: sticky; top: var(--diff-toolbar-height); z-index: 2;
   display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px 0 20px;
-  background: var(--list); border-bottom: 1px solid var(--line-strong);
+  /* An accent tint over the list colour sets each file's header apart from its code, in every theme. */
+  --file-header-tint: color-mix(in srgb, var(--accent) 9%, transparent);
+  background: linear-gradient(var(--file-header-tint), var(--file-header-tint)), var(--list); border-bottom: 1px solid var(--line-strong);
   font: calc(14px + var(--ui-delta))/1 var(--font-ui);
+  cursor: default;
 }
+/* The whole header collapses or expands its file. */
+.diff-file > header:hover { --file-header-tint: color-mix(in srgb, var(--accent) 14%, transparent); }
 .diff-file > header .path-name { font-weight: 600; }
 /* Copying code across files keeps each path but leaves out header controls, counts, hunk buttons, notes and fold bars. */
 .diff-file > header > :not(.path), .diff-section, .diff-toolbar, .hunk-actions, .ed-hunk-actions, .hunk-expand, .ed-fold, .move-note, .md-fragment-note { user-select: none; }
@@ -849,6 +854,23 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 .stash-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--glass-chip); }
 .stash-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px + var(--ui-delta)); }
 .stash-list b { font: 500 calc(12.5px + var(--ui-delta)) var(--font-code); color: var(--text-2); margin-right: 6px; }
+/* A changed file's history, blame and staged contents. Wider than other sheets, for code and commit subjects. */
+.dialog.file-sheet { width: min(880px, 92vw); }
+.file-history { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.file-history li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 10px; padding: 7px 12px; border-radius: var(--radius-sm); background: var(--glass-chip); font-size: calc(13px + var(--ui-delta)); }
+.file-history b { font: 500 calc(12.5px + var(--ui-delta)) var(--font-code); color: var(--text-2); }
+.file-history-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-history-meta { color: var(--text-3); white-space: nowrap; }
+.blame { width: 100%; border-collapse: collapse; font-size: calc(12.5px + var(--ui-delta)); }
+.blame th { position: sticky; top: 0; padding: 4px 8px; background: Canvas; color: var(--text-3); font-weight: 500; text-align: left; }
+.blame td { padding: 1px 8px; vertical-align: top; white-space: nowrap; }
+.blame tr:hover td { background: var(--hover); }
+.blame-no { color: var(--text-3); text-align: right; font-family: var(--font-code); }
+.blame-hash { font-family: var(--font-code); color: var(--text-2); }
+.blame-author { max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.blame-code { width: 100%; white-space: pre; }
+.blame-code code { font-family: var(--font-code); }
+.staged-text { min-height: 50vh; font: calc(12.5px + var(--ui-delta))/1.5 var(--font-code); white-space: pre; overflow-wrap: normal; tab-size: 4; }
 
 /* Commit menu */
 .commit-head { position: relative; }
