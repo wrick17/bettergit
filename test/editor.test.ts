@@ -371,12 +371,14 @@ test('JP3 background fetch spins only Fetch through canonical and alias busy sta
     expect(fetchMarkup(selected)).toContain('aria-busy="true"')
     expect(fetchMarkup(selected)).toContain('action-spin')
     expect(items.filter((item) => item.busy).map((item) => item.key)).toEqual(['fetch'])
-    for (const key of ['pullMerge', 'pullRebase', 'pullFrom', 'push', 'reset', 'stash', 'applyStash', 'popStash', 'popLatest']) {
-      const item = items.find((item) => item.key === key)!
+    // Stash management lives in the Stash button's dropdown, and blocks the same way.
+    const stashMenu = items.find((item) => item.key === 'stash')!.menu!
+    for (const key of ['pullMerge', 'pullRebase', 'pullFrom', 'push', 'reset', 'stash', 'stashChanges', 'applyStash', 'popStash', 'popLatest']) {
+      const item = [...items, ...stashMenu].find((item) => item.key === key)!
       expect(item.busy).not.toBe(true)
       expect(item.blocked).toBe('Another action is running: Fetching…')
     }
-    expect(items.find((item) => item.key === 'stashList')!.blocked).toBeUndefined()
+    expect(stashMenu.find((item) => item.key === 'stashList')!.blocked).toBeUndefined()
   }
   busy.applyRepoLockSnapshot({ seq: ++seq, holders: {}, identities })
   expect(itemsFor(alias).find((item) => item.key === 'fetch')).toMatchObject({ label: 'Fetch', busy: false, blocked: undefined })
@@ -476,7 +478,7 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   const noop = () => {}
   const runs: string[] = []
   const itemsWith = (busy: string | null) => menu.repoItems({
-    repo: '/repo', status: { head: 'main', upstream: 'origin/main' } as never, busy,
+    repo: '/repo', status: { head: 'main', upstream: 'origin/main', changes: [{ path: 'a.txt' }] } as never, busy,
     run: async (key, action) => { runs.push(key); await action(); return true },
     onTab: noop, onNote: noop, onError: noop, onDialog: noop,
   })
@@ -488,7 +490,19 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   // The Actions trigger is an icon button like the sync actions, so it shows no text.
   expect(toolbar).not.toContain('>Actions<')
   expect(toolbar).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*class="icon-button"[^>]*aria-label="Actions"/)
-  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options', 'Actions'])
+  expect([...toolbar.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(['Fetch', 'Fetch options', 'Pull and Merge', 'Push', 'Push options', 'Stash Changes', 'Stash Changes options', 'Actions'])
+  // Every stash action sits in the Stash button's dropdown. Stash Changes needs changes; the rest manage existing stashes.
+  expect(items.find((item) => item.key === 'stash')!.menu!.map((item) => item.label)).toEqual(['Stash Changes', 'View Stash…', 'Apply Stash…', 'Pop Stash…', 'Pop Latest Stash'])
+  expect(items.find((item) => item.key === 'stash')!.disabled).toBe(false)
+  const clean = menu.repoItems({ repo: '/repo', status: { head: 'main', upstream: null, changes: [] } as never, busy: null, run: async () => true, onTab: noop, onNote: noop, onError: noop, onDialog: noop })
+  const cleanStash = clean.find((item) => item.key === 'stash')!
+  expect(cleanStash.disabled).toBe(true)
+  expect(cleanStash.menu!.filter((item) => !item.disabled).map((item) => item.key)).toEqual(['stashList', 'applyStash', 'popStash', 'popLatest'])
+  // On a clean tree the button is disabled but its dropdown still opens.
+  const cleanBar = renderToStaticMarkup(React.createElement(bar.ActionsMenu, { items: clean }))
+  const button = (label: string) => cleanBar.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))![0]
+  expect(button('Stash Changes')).toContain('disabled=""')
+  expect(button('Stash Changes options')).not.toContain('disabled')
   // Fetch and Push open dropdowns of git commands; the force pushes are marked dangerous.
   const options = (key: string) => items.find((item) => item.key === key)!.menu!
   expect(options('fetch').map((item) => item.label)).toEqual(['fetch', 'fetch --tags', 'fetch --prune', 'pull', 'pull --ff-only', 'pull --rebase', 'pull --rebase --autostash'])
@@ -564,6 +578,12 @@ test('click and keyboard activation keep Actions focused after a pending hover t
     flush()
     expect(render().children[1]?.props.autoFocus).toBe(true)
   }
+  // The open Actions menu lists no stash action: Stash and its management are in the toolbar dropdown.
+  const stashItem = { key: 'stash', icon: 'stash', label: 'Stash Changes', group: 'stash', onClick() {}, menu: [] }
+  const graphItem = { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick() {} }
+  cursor = 0
+  const open = bar.ActionsMenu({ items: [graphItem, stashItem] }).props.children[1].props
+  expect(open.children[1].props.items.map((item: { key: string }) => item.key)).toEqual(['graph'])
 })
 
 test('RepoPane keeps the newest status and divergence when an older refresh finishes last', async () => {

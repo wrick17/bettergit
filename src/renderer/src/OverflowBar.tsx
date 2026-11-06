@@ -29,7 +29,9 @@ const HOVER_DELAY = 150
 
 // The sync actions used most often stay one click away, in item order: Fetch, Pull, Push. Pull fetches and merges in one
 // step; its other modes stay in Fetch's dropdown and the Actions menu, which lists every action.
-const QUICK = new Set(['fetch', 'pullMerge', 'push'])
+// Stash sits beside them as a toolbar button only, with its list, apply and pop in the button's dropdown.
+const QUICK = new Set(['fetch', 'pullMerge', 'push', 'stash'])
+const TOOLBAR_ONLY = new Set(['stash'])
 
 // The title-bar actions: the most frequent sync actions as icon buttons, then an "Actions" icon button whose menu lists
 // every action with its label and shortcut. The trigger has a fixed width, so busy or blocked states never shift the bar.
@@ -50,7 +52,7 @@ export function ActionsMenu({ items }: { items: BarItem[] }) {
           <ActionMenu
             className="overflow-menu"
             label="Repository actions"
-            items={items}
+            items={items.filter((item) => !TOOLBAR_ONLY.has(item.key))}
             autoFocus={menu.open === 'focus'}
             onPick={(item) => { menu.close(menu.open === 'focus'); item.onClick() }}
             onDismiss={() => menu.setOpen(null)}
@@ -119,8 +121,9 @@ export function useHoverMenu(disabled?: boolean) {
 }
 
 // A quick action with a dropdown of its options, opened from the chevron (useHoverMenu) or by hovering the pair.
+// The dropdown stays open to its options while the button itself is disabled, as Stash is on a clean tree.
 function SplitButton({ item, menu }: { item: BarItem; menu: BarItem[] }) {
-  const options = useHoverMenu(item.disabled)
+  const options = useHoverMenu(menu.every((option) => option.disabled))
 
   return (
     <div ref={options.rootRef} className="split-action" {...options.hover}>

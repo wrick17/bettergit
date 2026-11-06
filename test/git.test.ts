@@ -1,18 +1,19 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git, gitRaw } from '../src/main/git/exec'
 import { logAction, openCommandLog } from '../src/main/command-log'
 import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
-import { commitDiff, compare, detectMoves, LARGE_DIFF_FILES, listOnly, parseDiff, workingDiff, type DiffFile } from '../src/main/git/diff'
+import { commitDiff, compare, detectMoves, filePatch, LARGE_DIFF_FILES, listOnly, parseDiff, workingDiff, type DiffFile } from '../src/main/git/diff'
+import { readStagedFile, writeStagedFile } from '../src/main/git/index-file'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
-import { deleteUntracked, discardPaths, fetchAll, push } from '../src/main/git/ops'
+import { deleteUntracked, discardPaths, fetchAll, push, stashPush } from '../src/main/git/ops'
 import { deleteBranch, renameBranch, setUpstream, unsetUpstream } from '../src/main/git/ops'
 import { abortOperation, continueOperation, deleteRemoteBranch, mergeBranch, rebaseBranch } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
@@ -2528,5 +2529,163 @@ describe('stopped operations and branch merge or rebase', () => {
     await deleteRemoteBranch(local, await select(local, 'refs/remotes/origin/feature'))
     expect((await gitRaw(remote, ['rev-parse', '--verify', '--quiet', 'refs/heads/feature'])).code).not.toBe(0)
     expect((await readBranches(local)).some((branch) => branch.fullRef === 'refs/remotes/origin/feature')).toBe(false)
+  })
+})
+
+describe('changed-file menu', () => {
+  const fixture = async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-file-menu-'))
+    await git(dir, ['init', '-q'])
+    await git(dir, ['config', 'user.name', 'Test'])
+    await git(dir, ['config', 'user.email', 'test@example.test'])
+    return dir
+  }
+
+  test('saved patches apply exactly: staged, unstaged, untracked, binary and renamed', async () => {
+    const dir = await fixture()
+    const copy = mkdtempSync(path.join(tmpdir(), 'bettergit-file-menu-apply-'))
+    try {
+      writeFileSync(path.join(dir, 'f.txt'), 'a\nb\n')
+      writeFileSync(path.join(dir, 'old [x].txt'), 'moved\n')
+      writeFileSync(path.join(dir, 'bin.dat'), Buffer.from([0, 1, 2]))
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'base'])
+      writeFileSync(path.join(dir, 'f.txt'), 'a\nB\n')
+      writeFileSync(path.join(dir, 'bin.dat'), Buffer.from([0, 9, 9, 9]))
+      await git(dir, ['mv', 'old [x].txt', 'new [x].txt'])
+      await git(dir, ['add', 'f.txt', 'bin.dat'])
+      writeFileSync(path.join(dir, 'f.txt'), 'a\nB\nc\n')
+      writeFileSync(path.join(dir, 'u.txt'), 'untracked\n')
+      await git(copy, ['clone', '-q', dir, '.'])
+      // Diff settings that change what git diff prints must not reach a saved patch.
+      writeFileSync(path.join(dir, '.git/info/attributes'), '*.txt diff=upper\n')
+      await git(dir, ['config', 'diff.upper.textconv', 'tr a-z A-Z'])
+      await git(dir, ['config', 'diff.noprefix', 'true'])
+      await git(dir, ['config', 'diff.mnemonicPrefix', 'true'])
+      const apply = async (patch: Buffer, index: boolean) => {
+        const result = await gitRaw(copy, ['apply', ...(index ? ['--index'] : []), '-'], patch)
+        expect(result.stderr).toBe('')
+        expect(result.code).toBe(0)
+      }
+      // Staged patches apply to the index; each file matches the source repo's staged copy.
+      await apply(await filePatch(dir, true, ['f.txt', 'bin.dat']), true)
+      await apply(await filePatch(dir, true, ['old [x].txt', 'new [x].txt']), true)
+      for (const file of ['f.txt', 'bin.dat', 'new [x].txt']) {
+        expect((await gitRaw(copy, ['cat-file', 'blob', `:${file}`])).stdout).toEqual((await gitRaw(dir, ['cat-file', 'blob', `:${file}`])).stdout)
+      }
+      expect(existsSync(path.join(copy, 'old [x].txt'))).toBe(false)
+      // Unstaged and untracked patches then bring the working copy to the source's.
+      await apply(await filePatch(dir, false, ['f.txt']), false)
+      await apply(await filePatch(dir, false, ['u.txt']), false)
+      for (const file of ['f.txt', 'u.txt']) expect(readFileSync(path.join(copy, file), 'utf8')).toBe(readFileSync(path.join(dir, file), 'utf8'))
+    } finally {
+      cleanup(dir)
+      cleanup(copy)
+    }
+  })
+
+  test('editing staged contents changes only the index, keeps the file mode, and refuses a changed index', async () => {
+    const dir = await fixture()
+    try {
+      writeFileSync(path.join(dir, 'run.sh'), 'echo one\n')
+      chmodSync(path.join(dir, 'run.sh'), 0o755)
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'base'])
+      writeFileSync(path.join(dir, 'run.sh'), 'echo two\n')
+      await git(dir, ['add', 'run.sh'])
+      writeFileSync(path.join(dir, 'run.sh'), 'echo three\n')
+      const loaded = await readStagedFile(dir, 'run.sh')
+      expect(loaded.text).toBe('echo two\n')
+      await writeStagedFile(dir, 'run.sh', loaded.blob, 'echo edited\n')
+      expect(await git(dir, ['show', ':run.sh'])).toBe('echo edited\n')
+      expect((await git(dir, ['ls-files', '--stage', '--', 'run.sh'])).split(' ')[0]).toBe('100755')
+      expect(readFileSync(path.join(dir, 'run.sh'), 'utf8')).toBe('echo three\n')
+      // The editor still holds the first read, so its save is refused and the index keeps the newer text.
+      await expect(writeStagedFile(dir, 'run.sh', loaded.blob, 'echo stale\n')).rejects.toThrow('changed since it was opened')
+      expect(await git(dir, ['show', ':run.sh'])).toBe('echo edited\n')
+      await expect(readStagedFile(dir, 'missing.txt')).rejects.toThrow('is not in the index')
+      // A refused save leaves neither Git's lock nor a scratch index behind.
+      const gitDir = path.join(dir, '.git')
+      expect(readdirSync(gitDir).filter((name) => name.startsWith('index') && name !== 'index')).toEqual([])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test('a staged edit holds Git\'s index lock, keeps other staged files, and writes a linked worktree\'s own index', async () => {
+    const dir = await fixture()
+    const linked = path.join(mkdtempSync(path.join(tmpdir(), 'bettergit-file-menu-wt-')), 'wt')
+    try {
+      writeFileSync(path.join(dir, 'a.txt'), 'a\n')
+      writeFileSync(path.join(dir, 'b.txt'), 'b\n')
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'base'])
+      writeFileSync(path.join(dir, 'a.txt'), 'a staged\n')
+      writeFileSync(path.join(dir, 'b.txt'), 'b staged\n')
+      await git(dir, ['add', '.'])
+      const loaded = await readStagedFile(dir, 'a.txt')
+      // Another Git process holds the index: nothing is written, and its lock is left alone.
+      const lock = path.join(dir, '.git/index.lock')
+      writeFileSync(lock, '')
+      await expect(writeStagedFile(dir, 'a.txt', loaded.blob, 'a edited\n')).rejects.toThrow('Another Git process is changing the index')
+      expect(existsSync(lock)).toBe(true)
+      expect(await git(dir, ['show', ':a.txt'])).toBe('a staged\n')
+      unlinkSync(lock)
+      await writeStagedFile(dir, 'a.txt', loaded.blob, 'a edited\n')
+      expect(await git(dir, ['show', ':a.txt'])).toBe('a edited\n')
+      expect(await git(dir, ['show', ':b.txt'])).toBe('b staged\n')
+      expect(existsSync(lock)).toBe(false)
+      // A linked worktree has its own index; the main checkout's stays as it was.
+      await git(dir, ['worktree', 'add', '-q', linked])
+      writeFileSync(path.join(linked, 'b.txt'), 'b in worktree\n')
+      await git(linked, ['add', 'b.txt'])
+      await writeStagedFile(linked, 'b.txt', (await readStagedFile(linked, 'b.txt')).blob, 'b worktree edit\n')
+      expect(await git(linked, ['show', ':b.txt'])).toBe('b worktree edit\n')
+      expect(await git(dir, ['show', ':b.txt'])).toBe('b staged\n')
+    } finally {
+      cleanup(dir)
+      cleanup(path.dirname(linked))
+    }
+  })
+
+  test('file history reads the path literally and still follows renames', async () => {
+    const dir = await fixture()
+    try {
+      writeFileSync(path.join(dir, 'a.txt'), 'a\n')
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'add a'])
+      writeFileSync(path.join(dir, '[ab].txt'), 'glob\n')
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'add glob'])
+      await git(dir, ['mv', '[ab].txt', 'renamed.txt'])
+      await git(dir, ['commit', '-qm', 'rename glob'])
+      expect((await fileHistory(dir, '[ab].txt')).map((commit) => commit.subject)).toEqual(['rename glob', 'add glob'])
+      expect((await fileHistory(dir, 'renamed.txt')).map((commit) => commit.subject)).toEqual(['rename glob', 'add glob'])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test('the toolbar stash keeps tracked and untracked changes, leaves ignored files, and pops them back', async () => {
+    const dir = await fixture()
+    try {
+      writeFileSync(path.join(dir, '.gitignore'), 'ignored.log\n')
+      writeFileSync(path.join(dir, 'tracked.txt'), 'base\n')
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'base'])
+      writeFileSync(path.join(dir, 'tracked.txt'), 'changed\n')
+      writeFileSync(path.join(dir, 'new.txt'), 'new\n')
+      writeFileSync(path.join(dir, 'ignored.log'), 'log\n')
+      await stashPush(dir, 'BetterGit stash', true)
+      expect(await git(dir, ['status', '--porcelain'])).toBe('')
+      expect(existsSync(path.join(dir, 'new.txt'))).toBe(false)
+      expect(readFileSync(path.join(dir, 'ignored.log'), 'utf8')).toBe('log\n')
+      await stashAction(dir, 'pop', 'stash@{0}')
+      expect(readFileSync(path.join(dir, 'tracked.txt'), 'utf8')).toBe('changed\n')
+      expect(readFileSync(path.join(dir, 'new.txt'), 'utf8')).toBe('new\n')
+      expect(await git(dir, ['stash', 'list'])).toBe('')
+    } finally {
+      cleanup(dir)
+    }
   })
 })

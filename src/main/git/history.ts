@@ -166,8 +166,9 @@ export function parseNumstat(output: string): NonNullable<CommitDetails['stats']
 }
 
 
+// The path is a file name, never a pattern, so `[ab].txt` cannot match `a.txt`. --follow still tracks its renames.
 export async function fileHistory(repo: string, path: string, limit = 200): Promise<Commit[]> {
-  const output = await git(repo, ['log', '--follow', '--topo-order', `-n`, String(limit), `--format=${LOG_FORMAT}`, '--', path], {
+  const output = await git(repo, ['--literal-pathspecs', 'log', '--follow', '--topo-order', `-n`, String(limit), `--format=${LOG_FORMAT}`, '--', path], {
     optionalLocks: true,
   })
   return parseLog(output)

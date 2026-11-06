@@ -49,6 +49,8 @@ react.useEffect = (effect, deps) => {
 }
 react.useLayoutEffect = react.useEffect
 react.useSyncExternalStore = (_subscribe, snapshot) => snapshot()
+// No provider is mounted here, so each context gives its default value.
+react.useContext = (context) => context._currentValue
 
 const { ChangesView } = await import('./src/renderer/src/ChangesView')
 let Component = ChangesView
@@ -905,17 +907,39 @@ if (process.env.CHECK_MODE === 'membership') {
   assert.equal(selected.stage.staged, true)
   assert.equal(selected.edit, undefined, 'staged files cannot edit the working tree')
   assert.equal(text(selected.files.find((file) => file.newPath === 'b.ts')), 'staged b.ts')
-  // The selection follows its file when it leaves the staged section, then follows it back after staging.
-  props = { ...props, status: { changes: [side('a.ts', false), side('b.ts', false), side('c.ts', true), side('c.ts', false)] } }
+  // Picking a file opens it in the diff, even one collapsed by hand.
+  assert.equal(selected.fileChoices.choices['b.ts'], true)
+  // A picked file that leaves its section keeps the view on that section and hands the pick to the file below it.
+  const shown = () => find(tree, (p) => Array.isArray(p.files) && p.stage)
+  const picked = () => findAll(tree, (p) => typeof p.title === 'string' && Array.isArray(p.changes))[0].selection
+  const status = (...entries) => { props = { ...props, status: { changes: entries } } }
+  status(side('a.ts', false), side('b.ts', false), side('c.ts', true), side('c.ts', false))
   render(); await respond()
-  let moved = find(tree, (p) => Array.isArray(p.files) && p.stage)
-  assert.equal(moved.stage.staged, false)
-  assert.equal(text(moved.files.find((file) => file.newPath === 'b.ts')), 'working b.ts')
-  props = { ...props, status: { changes: [side('a.ts', false), side('b.ts', true), side('c.ts', true), side('c.ts', false)] } }
+  assert.equal(shown().stage.staged, true)
+  assert.deepEqual(picked(), { path: 'c.ts', staged: true })
+  assert.deepEqual(shown().files.map((file) => file.newPath), ['c.ts'])
+  // Staging part of the picked file keeps it picked in Changes.
+  findAll(tree, (p) => p.title === 'Changes')[0].onSelect(side('a.ts', false)); render(); await respond()
+  status(side('a.ts', true), side('a.ts', false), side('b.ts', false), side('c.ts', true), side('c.ts', false))
   render(); await respond()
-  moved = find(tree, (p) => Array.isArray(p.files) && p.stage)
-  assert.equal(moved.stage.staged, true)
-  assert.equal(text(moved.files.find((file) => file.newPath === 'b.ts')), 'staged b.ts')
+  assert.deepEqual(picked(), { path: 'a.ts', staged: false })
+  // Staging the rest moves the pick to the next unstaged file, not to Staged.
+  status(side('a.ts', true), side('b.ts', false), side('c.ts', true), side('c.ts', false))
+  render(); await respond()
+  assert.deepEqual(picked(), { path: 'b.ts', staged: false })
+  assert.equal(shown().stage.staged, false)
+  // Staging the last unstaged file leaves Changes on screen, empty.
+  status(side('a.ts', true), side('b.ts', true), side('c.ts', true))
+  render(); await respond()
+  assert.deepEqual(picked(), { path: 'b.ts', staged: false })
+  assert.equal(shown().stage.staged, false)
+  assert.deepEqual(shown().files, [])
+  // A file gone from both sections clears the pick.
+  status(side('a.ts', true), side('c.ts', true))
+  render(); await respond()
+  assert.equal(picked(), null)
+  status(side('a.ts', false), side('b.ts', true), side('c.ts', true), side('c.ts', false))
+  render(); await respond()
   // Clearing the selection shows conflicts before both diff sections in the continuous all-files pane.
   window.bettergit.conflictLoad = () => new Promise(() => {})
   props = { ...props, status: { changes: [...props.status.changes, { path: 'd.ts', staged: false, unstaged: false, conflicted: true, kind: 'modified' }] } }
@@ -1026,7 +1050,7 @@ test('while new options load, old hunks, counts and stats are hidden behind a lo
 test('a scrolled diff keeps its place through an option reload, and a file picked meanwhile is not moved to it', () => check('option-scroll'))
 test('a toggled-back option and a picked file reuse the loads of the current status', () => check('toggle-cache'))
 test('collapsed Changes rails retain the draft, selection, diff container and loaded files through preview and expansion', () => check('rails'))
-test('Changes contains only unstaged files and follows selections across staging', () => check('membership'))
+test('Changes contains only unstaged files and keeps a pick in its section as files are staged and unstaged', () => check('membership'))
 test('a large Changes section shows its list with counts and loads only the picked file, dropping replies for earlier picks', () => check('large'))
 test('confirmed conflict reset keeps choices on refusal, clears them on success, and drops replies for another target; Stage and taking a side reach their writes', () => check('conflict-reset'))
 

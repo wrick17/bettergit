@@ -24,6 +24,8 @@ export interface GitOptions {
   interactive?: boolean
   // Fails the command after this long and stops git. Fetch and clone otherwise time out after two idle minutes.
   timeoutMs?: number
+  // An index file to read and write in place of the repo's own (GIT_INDEX_FILE), for a change prepared under its lock.
+  indexFile?: string
 }
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024
@@ -152,6 +154,7 @@ function gitEnv(options: GitOptions): NodeJS.ProcessEnv {
     SSH_ASKPASS_REQUIRE: 'never',
   }
   if (options.interactive) delete env.GIT_TERMINAL_PROMPT
+  if (options.indexFile) env.GIT_INDEX_FILE = options.indexFile
   return env
 }
 

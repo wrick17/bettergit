@@ -11,6 +11,8 @@ export interface GraphCommit {
 export interface Lane {
   hash: string
   color: number
+  // A slot held for HEAD before any line reaches it. It keeps HEAD's place but has nothing to draw.
+  reserved?: true
 }
 
 // input and output are the slots at the top and bottom edge of the row. A null slot is free; slots keep their index.
@@ -40,12 +42,12 @@ export interface GraphState {
 // color HEAD (or, for a new HEAD commit, its parent) had there instead.
 export function startGraph(commits: GraphCommit[], head: string | null, previous?: { rows: GraphRow[]; state: GraphState }): GraphState {
   const headCommit = head ? commits.find((commit) => commit.hash === head) : undefined
-  if (!previous?.rows.length) return headCommit ? { lanes: [{ hash: headCommit.hash, color: 0 }], nextColor: 1 } : { lanes: [], nextColor: 0 }
+  if (!previous?.rows.length) return headCommit ? { lanes: [{ hash: headCommit.hash, color: 0, reserved: true }], nextColor: 1 } : { lanes: [], nextColor: 0 }
   const rows = new Map(previous.rows.map((row) => [row.commit.hash, row]))
   const state: GraphState = { lanes: [], nextColor: previous.state.nextColor, previous: rows }
   if (headCommit) {
     const was = rows.get(headCommit.hash) ?? rows.get(headCommit.parents[0] ?? '')
-    put(state.lanes, was?.lane ?? 0, { hash: headCommit.hash, color: was?.color ?? 0 })
+    put(state.lanes, was?.lane ?? 0, { hash: headCommit.hash, color: was?.color ?? 0, reserved: true })
   }
   return state
 }
@@ -108,6 +110,8 @@ export function layoutGraph<T extends GraphCommit>(commits: T[], state: GraphSta
     for (let index = 0; index < lanes.length; index++) if (lanes[index]?.hash === commit.hash) lanes[index] = null
     commit.parents.forEach((parent, index) => {
       const at = lanes.findIndex((slot) => slot?.hash === parent)
+      // A line joining HEAD's reserved slot makes it a real line from here down.
+      if (at !== -1 && lanes[at]!.reserved) lanes[at] = { hash: parent, color: lanes[at]!.color }
       if (index === 0) {
         // The first parent stays in the commit's lane. A lane already waiting for it further right moves over into this
         // one, so a line never drifts right; one further left takes this line in instead, and this lane frees.

@@ -600,7 +600,7 @@ test.skipIf(!playwright)('saved working hunks keep stage and discard actions in 
   await page.setViewportSize({ width: 800, height: 600 })
 })
 
-test.skipIf(!playwright)('file headers match the Files pane fill and remain full width, square and sticky in Changes and History', async () => {
+test.skipIf(!playwright)('file headers tint the Files pane fill with the accent and remain full width, square and sticky in Changes and History', async () => {
   for (const view of ['changes', 'history']) for (const theme of ['light', 'dark', 'custom-light', 'custom-dark']) {
     await page.evaluate(({ view, theme }: { view: string; theme: string }) => {
       const w = window as any
@@ -623,8 +623,10 @@ test.skipIf(!playwright)('file headers match the Files pane fill and remain full
     })
     expect([result.left, result.width, result.radius, result.border]).toEqual([0, 0, '0px', '0px'])
     // Files sit flush, so no canvas shows between them.
-    expect([result.gap, result.overflow, result.horizontal, result.visibility, result.image]).toEqual([0, 'auto', 0, 'auto', 'none'])
+    expect([result.gap, result.overflow, result.horizontal, result.visibility]).toEqual([0, 'auto', 0, 'auto'])
+    // The header sets itself apart from its code: an accent tint over the same fill as the Files pane.
     expect(result.headerFill).toBe(result.filesFill)
+    expect(result.image).toMatch(/^linear-gradient\(color\(srgb [^)]+\/ 0\.\d+\), color\(srgb [^)]+\/ 0\.\d+\)\), none$/)
     await page.locator('.diff-pane').evaluate((pane: HTMLElement) => { pane.scrollTop = 100 })
     const sticky = await page.evaluate(() => document.querySelector('.diff-file > header')!.getBoundingClientRect().top - document.querySelector('.diff-pane')!.getBoundingClientRect().top)
     expect(Math.abs(sticky - 40)).toBeLessThan(1)
@@ -2413,5 +2415,139 @@ test.skipIf(!playwright)('commit options fit the narrow file list and remain key
       w.confirm = w.menuConfirm
       if (width === null) localStorage.removeItem('bettergit.changesListWidth'); else localStorage.setItem('bettergit.changesListWidth', width)
     }, priorWidth)
+  }
+})
+
+test.skipIf(!playwright)('file headers toggle on click but not from their controls, a pick opens its file, and every file row and header opens its menu from the keyboard', async () => {
+  await page.setViewportSize({ width: 1400, height: 900 })
+  const previousView = await page.evaluate(() => localStorage.getItem('bettergit.changesView'))
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, ChangesView } = w.under
+    localStorage.setItem('bettergit.changesView', 'list')
+    const file = (path: string, text: string) => ({ oldPath: path, newPath: path, status: 'modified', binary: false, hunks: [{ header: '@@ -1 +1 @@', lines: [
+      { type: 'del', text: 'old', oldNo: 1, newNo: null }, { type: 'add', text, oldNo: null, newNo: 1 }] }] })
+    w.menuStages = []
+    w.menuHistory = []
+    w.menuErrors = []
+    Object.assign(w.bettergit, {
+      commitIdentity: async () => ({ name: 'Test', email: 'test@example.test', error: null }),
+      working: async (_repo: string, staged: boolean) => ({ files: staged ? [file('b.txt', 'staged'), file('c.txt', 'renamed')] : [file('a.txt', 'working')], moves: [] }),
+      readFile: async () => 'old\n',
+      stage: async (_repo: string, paths: string[]) => { w.menuStages.push(paths) },
+      fileHistory: async (_repo: string, path: string) => { w.menuHistory.push(path); return [] },
+      stagedRead: async () => ({ text: 'one\n', blob: 'b'.repeat(40) }),
+      stagedWrite: (_repo: string, path: string, blob: string, text: string) => new Promise((resolve) => { w.menuWrite = { path, blob, text, resolve } }),
+    })
+    document.getElementById('root')!.style.cssText = 'display:flex;height:850px;width:1400px'
+    w.renderFileMenu = (changes = [
+      { path: 'a.txt', kind: 'modified', staged: false, unstaged: true, conflicted: false },
+      { path: 'b.txt', kind: 'modified', staged: true, unstaged: false, conflicted: false },
+      { path: 'c.txt', originalPath: 'old c.txt', kind: 'renamed', staged: true, unstaged: false, conflicted: false }]) => {
+      w.fileMenuRoot ??= createRoot(document.getElementById('root'))
+      flushSync(() => w.fileMenuRoot.render(createElement(ChangesView, {
+        repo: '/menu-repo', revision: 0, listOpen: true, detailOpen: true, onChanged: () => {}, onError: (error: unknown) => w.menuErrors.push(String(error)),
+        status: { headHash: 'a'.repeat(40), changes },
+      })))
+    }
+    w.renderFileMenu()
+  })
+  const toggle = (path: string) => page.locator(`.diff-file[data-path="${path}"] > header .diff-file-toggle`)
+  const menu = page.locator('.file-menu')
+  const labels = () => menu.getByRole('menuitem').allInnerTexts()
+  const unstaged = ['Stage File', 'Discard File…', 'Save Patch…', 'File History', 'Blame', 'Reveal in Finder', 'Copy File Path']
+  const staged = ['Unstage File', 'Save Patch…', 'Edit Staged Contents…', 'File History', 'Blame', 'Reveal in Finder', 'Copy File Path']
+  try {
+    await toggle('a.txt').waitFor()
+    // The header toggles from anywhere on it, but its own buttons keep their own actions.
+    expect(await toggle('a.txt').getAttribute('aria-expanded')).toBe('true')
+    await page.locator('.diff-file[data-path="a.txt"] > header .kind').click()
+    expect(await toggle('a.txt').getAttribute('aria-expanded')).toBe('false')
+    await page.getByRole('button', { name: 'Find in a.txt' }).click()
+    expect(await toggle('a.txt').getAttribute('aria-expanded')).toBe('false')
+    // The menu key on a header's chevron opens that file's menu; Escape closes it and returns focus.
+    await toggle('b.txt').focus()
+    await page.keyboard.press('Shift+F10')
+    expect(await labels()).toEqual(staged)
+    await page.keyboard.press('Escape')
+    expect(await menu.count()).toBe(0)
+    expect(await toggle('b.txt').evaluate((el: Element) => document.activeElement === el)).toBe(true)
+    // A list row opens the unstaged menu from the keyboard, and its first item stages the file.
+    const row = page.locator('.file-list button.file', { hasText: 'a.txt' })
+    await row.focus()
+    await page.keyboard.press('Shift+F10')
+    expect(await labels()).toEqual(unstaged)
+    await page.keyboard.press('Enter')
+    expect(await page.evaluate(() => (window as any).menuStages)).toEqual([['a.txt']])
+    expect(await menu.count()).toBe(0)
+    // Picking the collapsed file opens it.
+    await row.click()
+    await page.waitForFunction(() => document.querySelector('.diff-file[data-path="a.txt"] > header .diff-file-toggle')?.getAttribute('aria-expanded') === 'true')
+    // Tree rows open the same menu by right-click and by keyboard.
+    await page.getByRole('button', { name: /^Tree view: off/ }).click()
+    await page.locator('.tree-row', { hasText: 'b.txt' }).click({ button: 'right' })
+    expect(await labels()).toEqual(staged)
+    await page.keyboard.press('Escape')
+    await page.locator('.tree-row button.file', { hasText: 'a.txt' }).focus()
+    await page.keyboard.press('Shift+F10')
+    expect(await labels()).toEqual(unstaged)
+    await page.keyboard.press('Escape')
+    // A staged rename has no commits under its new name yet, so its history is read under the old one.
+    await page.locator('.tree-row', { hasText: 'c.txt' }).click({ button: 'right' })
+    await menu.getByRole('menuitem', { name: 'File History' }).click()
+    await page.getByRole('dialog', { name: 'File History' }).waitFor()
+    expect(await page.evaluate(() => (window as any).menuHistory)).toEqual(['old c.txt'])
+    await page.keyboard.press('Escape')
+    // Unsaved staged edits outlive the view, as when an outside commit switches to History, and hold an update restart.
+    const openStaged = async () => {
+      await page.locator('.tree-row', { hasText: 'b.txt' }).click({ button: 'right' })
+      await menu.getByRole('menuitem', { name: 'Edit Staged Contents…' }).click()
+      await page.locator('.staged-text').waitFor()
+    }
+    await openStaged()
+    await page.locator('.staged-text').fill('two\n')
+    await page.evaluate(() => { const w = window as any; w.fileMenuRoot.unmount(); w.fileMenuRoot = null })
+    expect(await page.evaluate(() => (window as any).under.hasUnsavedStagedDrafts())).toBe(true)
+    await page.evaluate(() => (window as any).renderFileMenu())
+    await openStaged()
+    expect(await page.locator('.staged-text').inputValue()).toBe('two\n')
+    // The text is read-only while it saves, so what is saved is what is on screen.
+    await page.getByRole('button', { name: 'Save to Index' }).click()
+    await page.waitForFunction(() => (window as any).menuWrite)
+    expect(await page.locator('.staged-text').evaluate((box: HTMLTextAreaElement) => box.readOnly)).toBe(true)
+    expect(await page.evaluate(() => { const { path, blob, text } = (window as any).menuWrite; return [path, blob, text] })).toEqual(['b.txt', 'b'.repeat(40), 'two\n'])
+    await page.evaluate(() => (window as any).menuWrite.resolve())
+    await page.getByRole('dialog', { name: 'Edit Staged Contents' }).waitFor({ state: 'detached' })
+    expect(await page.evaluate(() => (window as any).under.hasUnsavedStagedDrafts())).toBe(false)
+    expect(await page.evaluate(() => (window as any).menuErrors)).toEqual([])
+    // A draft whose file an outside commit took out of the changes is still listed, opens, and can be copied or discarded.
+    await openStaged()
+    await page.locator('.staged-text').fill('kept\n')
+    await page.evaluate(() => {
+      const w = window as any
+      w.fileMenuRoot.unmount(); w.fileMenuRoot = null
+      w.bettergit.stagedRead = async () => { throw new Error('b.txt is not in the index, so it has no staged contents to edit.') }
+      w.menuConfirm = w.confirm
+      w.confirm = () => true
+      w.renderFileMenu([])
+    })
+    expect(await page.evaluate(() => (window as any).under.hasUnsavedStagedDrafts())).toBe(true)
+    await page.locator('.file-list-empty', { hasText: 'Unsaved staged edits to b.txt.' }).getByRole('button', { name: 'Open' }).click()
+    const sheet = page.getByRole('dialog', { name: 'Edit Staged Contents' })
+    await sheet.locator('.dialog-note').waitFor()
+    expect(await page.locator('.staged-text').inputValue()).toBe('kept\n')
+    expect(await sheet.getByRole('button', { name: 'Save to Index' }).isDisabled()).toBe(true)
+    await sheet.getByRole('button', { name: 'Discard' }).click()
+    await sheet.waitFor({ state: 'detached' })
+    expect(await page.evaluate(() => (window as any).under.hasUnsavedStagedDrafts())).toBe(false)
+    expect(await page.locator('.file-list-empty', { hasText: 'Unsaved staged edits' }).count()).toBe(0)
+    await page.evaluate(() => { const w = window as any; w.confirm = w.menuConfirm })
+  } finally {
+    await page.evaluate((view: string | null) => {
+      const w = window as any
+      w.fileMenuRoot?.unmount()
+      w.fileMenuRoot = null
+      if (view === null) localStorage.removeItem('bettergit.changesView'); else localStorage.setItem('bettergit.changesView', view)
+    }, previousView)
   }
 })

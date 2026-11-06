@@ -57,6 +57,8 @@ interface Props {
   refreshOf?: string
   // Called once the files passed in are the ones on screen, after the deferred render and any refresh wait.
   onShown?: (files: DiffFile[]) => void
+  // Opens a file's context menu at a point, from a right-click on its header or the keyboard's menu key on its toggle.
+  onFileMenu?: (file: DiffFile, at: { x: number; y: number }) => void
 }
 
 // A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
@@ -121,7 +123,7 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, fileChoices, section, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown }: Props) {
+export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, fileChoices, section, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown, onFileMenu }: Props) {
   const layoutNow = useDiffLayout()
   const containerRef = useRef<HTMLDivElement>(null)
   const [limited, setLimited] = useState(false)
@@ -196,8 +198,8 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
     return () => { fileOpeners.delete(entry) }
   }, [])
   // File sections are memoised, so the callbacks they get stay the same object and always call the caller's latest one.
-  const latest = useRef({ stage, onExpand, edit })
-  latest.current = { stage, onExpand, edit }
+  const latest = useRef({ stage, onExpand, edit, onFileMenu })
+  latest.current = { stage, onExpand, edit, onFileMenu }
   const stageFor = useMemo(() => stage && {
     staged: stage.staged,
     busy: stage.busy,
@@ -207,6 +209,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
     onHunk: stage.onHunk && ((path: string, hunk: DiffHunk, action: HunkAction) => latest.current.stage?.onHunk?.(path, hunk, action)),
   }, [!!stage, stage?.staged, stage?.busy, !!stage?.onDiscard, !!stage?.onDelete, !!stage?.onHunk])
   const expand = useMemo(() => onExpand && ((file: DiffFile) => latest.current.onExpand?.(file)), [!!onExpand])
+  const fileMenu = useMemo(() => onFileMenu && ((file: DiffFile, at: { x: number; y: number }) => latest.current.onFileMenu?.(file, at)), [!!onFileMenu])
   const editFor = useMemo<EditBridge | undefined>(() => edit && {
     repo: edit.repo,
     disabled: edit.disabled,
@@ -388,6 +391,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             stage={stageFor}
             edit={editFor}
             onExpand={expand}
+            onMenu={fileMenu}
             context={contextFor?.(file) ?? context}
           />
         )
@@ -424,7 +428,7 @@ export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, onFind, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, context }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, onFind, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, onMenu, context }: {
   file: DiffFile
   context: number
   fileIndex: number
@@ -443,6 +447,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   stage?: Props['stage']
   edit?: EditBridge
   onExpand?: (file: DiffFile) => void
+  onMenu?: (file: DiffFile, at: { x: number; y: number }) => void
 }) {
   const path = pathOf(file)
   const toggle = () => onToggle(path, open)
@@ -554,7 +559,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   return (
     <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
       <FileHeader unsaved={unsaved} file={file} stat={stat} open={open} onToggle={toggle} onFind={file.hunks.length ? () => onFind(path) : undefined} stage={stage} untracked={untracked}
-        actions={text && <DraftActions edit={text} path={path} />} />
+        actions={text && <DraftActions edit={text} path={path} />} onMenu={onMenu && ((at) => onMenu(file, at))} />
       {file.binary && <p className="hint">Binary file.</p>}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
@@ -962,11 +967,12 @@ function MarkdownHunkView({ hunk, layout, prefix, labels, anchors }: MarkdownHun
 
 // The sticky header for one file: collapse toggle, status, its repo-relative path (the name emphasized), how many lines
 // were added and removed, then its actions.
-function FileHeader({ file, stat, open, onToggle, onFind, stage, untracked = false, actions, unsaved }: {
+function FileHeader({ file, stat, open, onToggle, onFind, stage, untracked = false, actions, unsaved, onMenu }: {
   file: DiffFile
   stat: { adds: number; dels: number }
   open: boolean
   onToggle: () => void
+  onMenu?: (at: { x: number; y: number }) => void
   onFind?: () => void
   stage?: Props['stage']
   untracked?: boolean
@@ -976,10 +982,25 @@ function FileHeader({ file, stat, open, onToggle, onFind, stage, untracked = fal
   const path = pathOf(file)
   const { name, dir } = splitPath(path)
   const editor = useContext(EditorContext)
+  // A click anywhere on the header toggles the file, except on its controls or at the end of selecting its path.
+  // The chevron stays the keyboard's way to toggle, and its menu key opens the file's menu.
   return (
-    <header>
+    <header
+      onClick={(event) => {
+        if ((event.target as Element).closest('button, a, input, textarea, select, [role="menu"]')) return
+        if (window.getSelection()?.toString()) return
+        onToggle()
+      }}
+      onContextMenu={onMenu && ((event) => { event.preventDefault(); onMenu({ x: event.clientX, y: event.clientY }) })}
+    >
       <button className="diff-file-toggle" aria-expanded={open} aria-label={open ? toggleLabel(`${path}: expanded`, 'collapse it') : toggleLabel(`${path}: collapsed`, 'expand it')}
-        title={open ? 'Expanded — click to collapse' : 'Collapsed — click to expand'} onClick={onToggle}>
+        title={open ? 'Expanded — click to collapse' : 'Collapsed — click to expand'} onClick={onToggle}
+        onKeyDown={onMenu && ((event) => {
+          if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return
+          event.preventDefault()
+          const box = event.currentTarget.getBoundingClientRect()
+          onMenu({ x: box.left, y: box.bottom })
+        })}>
         <Icon name={open ? 'chevronDown' : 'chevron'} />
       </button>
       <span className={`kind kind-${file.status}`}>{STATUS_LETTER[file.status]}</span>

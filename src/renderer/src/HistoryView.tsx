@@ -6,7 +6,7 @@ import { Avatar } from './Avatar'
 import type { DiffFile, MovedBlock, Patch } from '../../main/git/diff'
 import { CommitDialogs, commitItems, remoteWebBase, type CommitInput, type Prompt } from './CommitMenu'
 import { CommitStat, inListOrder, useFilesView } from './CommitStat'
-import { DiffView, countLines } from './DiffView'
+import { DiffView, countLines, type FileChoices } from './DiffView'
 import { DiffRail } from './DiffRail'
 import { Icon } from './Icons'
 import { EmptyState } from './EmptyState'
@@ -543,6 +543,18 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     onError,
   } : null
 
+  // Each file's open or closed choice for the selected commit, saved like the diff's own, so a file picked in the details
+  // can open even when collapsed by hand or by default. Choices come back only for the same commit.
+  const filesId = `${repo}|history-files`
+  const filesKey = selected ?? ''
+  const [fileState, setFileState] = useState(() => ({ id: filesId, key: filesKey, choices: savedView<Record<string, boolean>>(filesId, filesKey, {}) }))
+  const filesState = fileState.id === filesId && fileState.key === filesKey ? fileState : { id: filesId, key: filesKey, choices: savedView<Record<string, boolean>>(filesId, filesKey, {}) }
+  if (filesState !== fileState) setFileState(filesState)
+  useEffect(() => { saveView(fileState.id, fileState.key, fileState.choices) }, [fileState])
+  // One identity for the view's life, as DiffView expects of its setter.
+  const setFileChoices = useMemo<FileChoices['setChoices']>(() => (action) => setFileState((prev) => ({ ...prev, choices: typeof action === 'function' ? action(prev.choices) : action })), [])
+  const fileChoices = useMemo<FileChoices>(() => ({ choices: filesState.choices, setChoices: setFileChoices }), [filesState.choices, setFileChoices])
+
   // A file picked in the details scrolls the code diff to it. With the code diff hidden, it is shown first, and the file is
   // scrolled to once its rows lay out, after the pane's own scroll restore.
   const pendingFile = useRef<string | null>(null)
@@ -551,6 +563,8 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       .find((element) => element.dataset.path === path)?.scrollIntoView({ block: 'start' })
   }
   const showFile = (path: string) => {
+    // A picked file opens in the diff, as in the Changes view.
+    setFileChoices((prev) => (prev[path] ? prev : { ...prev, [path]: true }))
     if (large) {
       setOnlyPath(path)
       return diffOpen ? undefined : onShowDiff()
@@ -733,7 +747,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   {body && <pre className="commit-body">{body}</pre>}
                   </header>
                   {compareBar}
-                  <DiffView files={diffShown?.files ?? []} moves={diffShown?.moves ?? []} persist={{ id: `${repo}|history-files`, key: selected ?? '' }} emptyHint={emptyHint} />
+                  <DiffView files={diffShown?.files ?? []} moves={diffShown?.moves ?? []} fileChoices={fileChoices} emptyHint={emptyHint} />
                   </>}
                 </div>
               </DiffRail>
@@ -768,7 +782,7 @@ function graphSegments(row: GraphRow<Commit>, rowHeight: number): Segment[] {
   const outputOf = (hash: string) => row.output.findIndex((slot) => slot?.hash === hash)
   const segments: Segment[] = []
   row.input.forEach((slot, index) => {
-    if (!slot) return
+    if (!slot || slot.reserved) return
     if (slot.hash === commit.hash) {
       segments.push({ d: index === lane ? `M${x(lane)} 0V${MID}` : elbow(x(index), 0, x(lane), MID, MID), color: color(slot.color) })
       return

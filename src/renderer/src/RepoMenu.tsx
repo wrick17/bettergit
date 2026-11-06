@@ -83,6 +83,17 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     { key: 'push-no-verify', icon: 'push', ...state('push-no-verify', 'push --no-verify'), detail: 'Push without running the pre-push hook', group: 'push', onClick: () => void run('push-no-verify', () => api.push(repo, 'no-verify')) },
   ]
 
+  // Stashes tracked and untracked changes, as the Repository menu's Stash Changes does. Ignored files stay.
+  const stash = () => void run('stash', () => api.stash(repo, 'BetterGit stash'))
+  const noChanges = !status?.changes.length
+  const stashMenu: BarItem[] = [
+    { key: 'stashChanges', icon: 'stash', ...state('stash', 'Stash Changes'), detail: 'Stashes tracked and untracked changes', group: 'stash', shortcut: '⇧⌘H', disabled: noChanges, onClick: stash },
+    { key: 'stashList', icon: 'stashList', label: 'View Stash…', group: 'stashMore', onClick: () => onDialog('view') },
+    { key: 'applyStash', icon: 'applyStash', label: 'Apply Stash…', group: 'stashMore', blocked, onClick: () => onDialog('apply') },
+    { key: 'popStash', icon: 'popStash', label: 'Pop Stash…', group: 'stashMore', blocked, onClick: () => onDialog('pop') },
+    { key: 'popLatest', icon: 'popLatest', ...state('pop', 'Pop Latest Stash'), group: 'stashMore', onClick: () => void run('pop', () => api.stashAction(repo, 'pop', 'stash@{0}')) },
+  ]
+
   return [
     { key: 'graph', icon: 'graph', label: 'Show Commit Graph', group: 'view', onClick: () => onTab('history') },
     { key: 'copy', icon: 'copy', label: 'Copy Branch Name', group: 'view', disabled: !status?.head, onClick: copyBranch },
@@ -92,12 +103,9 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     { key: 'pullFrom', icon: 'pullFrom', ...state('pull', 'Pull from…'), group: 'sync', onClick: () => onDialog('pull-from') },
     { key: 'push', icon: 'push', ...state('push', 'Push', ['push-force', 'push-lease', 'push-no-verify']), group: 'sync', shortcut: '⇧⌘P', menu: pushMenu, onClick: () => void run('push', () => api.push(repo)) },
     { key: 'reset', icon: 'reset', ...state('reset', resetLabel), group: 'reset', danger: true, disabled: !status?.upstream, onClick: resetToUpstream },
-    { key: 'stash', icon: 'stash', ...state('stash', 'Stash Changes'), group: 'stash', shortcut: '⇧⌘H', onClick: () => void run('stash', () => api.stash(repo, 'BetterGit stash')) },
-    // Less common stash actions sit in their own group, after the stash itself. View Stash only reads, so it stays usable while busy.
-    { key: 'stashList', icon: 'stashList', label: 'View Stash…', group: 'stashMore', onClick: () => onDialog('view') },
-    { key: 'applyStash', icon: 'applyStash', label: 'Apply Stash…', group: 'stashMore', blocked, onClick: () => onDialog('apply') },
-    { key: 'popStash', icon: 'popStash', label: 'Pop Stash…', group: 'stashMore', blocked, onClick: () => onDialog('pop') },
-    { key: 'popLatest', icon: 'popLatest', ...state('pop', 'Pop Latest Stash'), group: 'stashMore', onClick: () => void run('pop', () => api.stashAction(repo, 'pop', 'stash@{0}')) },
+    // Stash and its management share one toolbar button and dropdown. The button stashes; the dropdown also reaches the
+    // existing stashes, so it stays usable on a clean tree. View Stash only reads, so it stays usable while busy.
+    { key: 'stash', icon: 'stash', ...state('stash', 'Stash Changes', ['pop']), group: 'stash', shortcut: '⇧⌘H', disabled: noChanges, menu: stashMenu, onClick: stash },
   ]
 }
 

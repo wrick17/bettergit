@@ -179,7 +179,7 @@ const detail = (hash) => answer(calls.commit, hash, () => ({ files: files(hash),
 const shown = () => ({
   heading: find(tree, (p) => p.className === 'commit-subject')?.children,
   bar: find(tree, (p) => p.className === 'compare-bar') ? 'compare' : null,
-  files: find(tree, (p) => Array.isArray(p.files) && p.persist)?.files.map((file) => file.path),
+  files: find(tree, (p) => Array.isArray(p.files) && p.fileChoices)?.files.map((file) => file.path),
 })
 const savedCompare = () => JSON.parse(stored.get('bettergit.session')).views['/repo|compare']
 async function mount(session) {
@@ -484,12 +484,12 @@ console.log('show current branch cases passed')
   assert.ok(find(scroller.children, (p) => p.className === 'commit-head'), 'commit metadata does not share the diff scroller')
   assert.equal(find(find(tree, (p) => p.className?.startsWith('commit-info')).children, (p) => p.className === 'commit-head'), undefined, 'metadata remained in the file column')
   assert.equal(find(tree, (p) => p.className === 'commit-subject')?.children, 'subject A')
-  const files = find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)
+  const files = find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.fileChoices)
   assert.deepEqual(files.files.map((file) => file.path), ['A.ts'])
   files.onSelect('A.ts')
   assert.equal(shows, 1, 'a file click did not show the code diff')
   // A comparison keeps its label and exit with the code diff hidden, so its files are not read as the commit's own.
-  const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist).files.map((file) => file.path)
+  const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.fileChoices).files.map((file) => file.path)
   compareBase()
   await answer(calls.mergeBase, 'H', () => 'BASE-A')
   await answer(calls.compare, 'A', () => ({ files: [{ path: 'vs-base.ts', hunks: [] }], moves: [] }))
@@ -521,8 +521,8 @@ console.log('code diff visibility cases passed')
 // A whitespace toggle refetches the commit. Until that reply, hunks fetched with the other option are not shown;
 // the heading and the diff toolbar stay. A reply for an option already left is dropped.
 const { setContextLines, setIgnoreWhitespace } = await import('./src/renderer/src/prefs')
-const diffView = () => find(tree, (p) => Array.isArray(p.files) && p.persist)
-const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.persist)?.files.map((file) => file.path)
+const diffView = () => find(tree, (p) => Array.isArray(p.files) && p.fileChoices)
+const stat = () => find(tree, (p) => Array.isArray(p.files) && p.onSelect && !p.fileChoices)?.files.map((file) => file.path)
 const reply = (hash, option, label) => {
   const call = calls.commit.find((c) => !c.done && c.args[1] === hash && c.args[3] === option)
   call.done = true
@@ -860,7 +860,7 @@ console.log('whitespace scroll cases passed')
   window.requestIdleCallback = (callback) => { callback(); return 0 }
   const file = (oldPath, newPath, status, adds) => ({ oldPath, newPath, path: newPath, status, binary: false, hunks: [], counts: { adds, dels: 1 } })
   const big = (label) => ({ large: true, moves: [], files: [file('old [ab].ts', 'new [ab].ts', 'renamed', 2), file(label + '.ts', label + '.ts', 'modified', 5)] })
-  const diff = () => find(tree, (p) => Array.isArray(p.files) && p.persist)
+  const diff = () => find(tree, (p) => Array.isArray(p.files) && p.fileChoices)
   const stat = () => find(tree, (p) => p.onSelect && p.view)
   const pick = async (path) => { stat().onSelect(path); render(); await flush() }
   await mount({ places: { '/repo': { commit: 'A' } } })
@@ -903,6 +903,28 @@ console.log('whitespace scroll cases passed')
   delete window.requestIdleCallback
 }
 console.log('large diff cases passed')
+
+// A file picked in the details opens in the diff, whether it was collapsed by hand or by default (a lock file). The
+// choices belong to the selected commit: another commit starts without them, and only its own are saved.
+{
+  const diff = () => find(tree, (p) => Array.isArray(p.files) && p.fileChoices)
+  const pick = async (path) => { find(tree, (p) => p.onSelect && p.view).onSelect(path); render(); await flush() }
+  const savedFiles = () => JSON.parse(stored.get('bettergit.session')).views['/repo|history-files']
+  await mount({ places: { '/repo': { commit: 'A' } }, views: { '/repo|history-files': { key: 'A', value: { 'A.ts': false } } } })
+  await answer(calls.commit, 'A', () => ({ files: [{ path: 'A.ts', hunks: [] }, { path: 'package-lock.json', hunks: [] }], moves: [], details: { body: 'subject A' } }))
+  assert.deepEqual(diff().fileChoices.choices, { 'A.ts': false }, 'the saved choice for the commit was not restored')
+  await pick('A.ts')
+  assert.deepEqual(diff().fileChoices.choices, { 'A.ts': true }, 'a file collapsed by hand stayed closed when picked')
+  await pick('package-lock.json')
+  assert.deepEqual(diff().fileChoices.choices, { 'A.ts': true, 'package-lock.json': true }, 'a file collapsed by default stayed closed when picked')
+  assert.deepEqual(savedFiles(), { key: 'A', value: { 'A.ts': true, 'package-lock.json': true } })
+  find(tree, (p) => p.rows && p.onSelect).onSelect('B'); render()
+  await detail('B')
+  assert.deepEqual(diff().fileChoices.choices, {}, "one commit's choices carried over to another")
+  assert.deepEqual(savedFiles(), { key: 'B', value: {} })
+  unmount()
+}
+console.log('file pick opening cases passed')
 `
 
 test('History compares only the selected commit, restores a saved compare, and shows a diff only for the whitespace option it was fetched with', () => {
@@ -923,6 +945,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('whitespace toggle cases passed')
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
   expect(child.stdout.toString()).toContain('large diff cases passed')
+  expect(child.stdout.toString()).toContain('file pick opening cases passed')
 })
 
 // The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old

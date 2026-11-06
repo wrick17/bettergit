@@ -122,14 +122,15 @@ export function PullFromDialog({ repo, branch, run, onError, onClose }: {
   )
 }
 
-// The Dialogs.tsx shell, repeated here because that module does not export it.
+// The Dialogs.tsx shell, repeated here because that module does not export it. The changed-file menu reuses it.
 // The portal keeps the sheet out of the drag-region toolbar, where inputs would not take clicks.
-function Sheet({ title, subtitle, footer, onClose, children }: {
+export function Sheet({ title, subtitle, footer, onClose, children, className }: {
   title: string
   subtitle: string
   footer: ReactNode
   onClose: () => void
   children: ReactNode
+  className?: string
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -142,7 +143,7 @@ function Sheet({ title, subtitle, footer, onClose, children }: {
 
   return createPortal(
     <div className="scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={dialogRef} className={`dialog${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className="dialog-head">
           <h2>{title}</h2>
           <p className="dialog-sub">{subtitle}</p>
