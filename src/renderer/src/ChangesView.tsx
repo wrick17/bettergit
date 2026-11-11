@@ -750,7 +750,8 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
       label: busy === key ? workingLabel(key) : label, busy: busy === key, blocked: busy !== null && busy !== key ? blockedReason(busy) : undefined,
     })
     const failed = (action: string) => (failure: unknown) => errorRef.current(new ActionError(action, failure, repo))
-    const paths = [change.originalPath, path].filter((name): name is string => !!name)
+    // Only a rename on this side needs its source: an unstaged edit of a staged rename would also pick up an untracked file at the old path.
+    const paths = [change.kind === 'renamed' ? change.originalPath : undefined, path].filter((name): name is string => !!name)
     const stage = async () => { if (await confirmDropEdits(repo, [path])) void togglePath(path, true) }
     const discardFile = async () => {
       if (await confirmOverBlur(`Discard the unstaged changes to ${path}?\n\nThe file goes back to its staged version, or to the last commit when nothing is staged. This cannot be undone.`)) void discardPath(path)

@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.21] - 2026-11-11
+
+### Fixed
+- Save Patch on the unstaged edits of a staged rename saves only those edits. It no longer adds an untracked file that sits at the rename's old path. (#66)
+
 ## [0.1.20] - 2026-11-06
 
 ### New

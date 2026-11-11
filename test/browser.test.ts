@@ -2542,6 +2542,22 @@ test.skipIf(!playwright)('file headers toggle on click but not from their contro
     expect(await page.evaluate(() => (window as any).under.hasUnsavedStagedDrafts())).toBe(false)
     expect(await page.locator('.file-list-empty', { hasText: 'Unsaved staged edits' }).count()).toBe(0)
     await page.evaluate(() => { const w = window as any; w.confirm = w.menuConfirm })
+    // A staged rename takes its old path, but the new file's unstaged edits do not: an untracked file there is unrelated.
+    await page.evaluate(() => {
+      const w = window as any
+      w.menuPatches = []
+      w.bettergit.savePatch = async (_repo: string, staged: boolean, paths: string[]) => { w.menuPatches.push([staged, paths]); return null }
+      w.renderFileMenu([
+        { path: 'c.txt', originalPath: 'old c.txt', kind: 'renamed', staged: true, unstaged: false, conflicted: false },
+        { path: 'c.txt', originalPath: 'old c.txt', kind: 'modified', staged: false, unstaged: true, conflicted: false },
+        { path: 'old c.txt', kind: 'untracked', staged: false, unstaged: true, conflicted: false }])
+    })
+    for (const title of [/^Staged/, /^Changes/]) {
+      await page.locator('section.group', { has: page.locator('h3', { hasText: title }) }).locator('.tree-row', { hasText: /^c\.txt/ }).click({ button: 'right' })
+      await menu.getByRole('menuitem', { name: 'Save Patch…' }).click()
+    }
+    await page.waitForFunction(() => (window as any).menuPatches.length === 2)
+    expect(await page.evaluate(() => (window as any).menuPatches)).toEqual([[true, ['old c.txt', 'c.txt']], [false, ['c.txt']]])
   } finally {
     await page.evaluate((view: string | null) => {
       const w = window as any
