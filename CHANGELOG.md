@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.22] - 2026-11-12
+
+### Improved
+- Diffs are easier to read. A line that changed almost entirely keeps a plain red or green tint, with no word highlights on top. A line with a small edit gets a lighter tint and highlights only the changed words. Added lines use a softer green. (#68)
+
 ## [0.1.21] - 2026-11-11
 
 ### Fixed

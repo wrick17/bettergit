@@ -74,21 +74,27 @@ export function intralineSpans(lines: DiffLine[]): Map<number, Span[]> {
     for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
       const pair = changedSpans(lines[dels[k]].text, lines[adds[k]].text)
       if (!pair) continue
-      spans.set(dels[k], pair.before)
-      spans.set(adds[k], pair.after)
+      // A side that is mostly changed reads as rewritten, so it keeps the plain line tint, as the editor does.
+      if (!wholeLine(lines[dels[k]].text, pair.before, 1)) spans.set(dels[k], pair.before)
+      if (!wholeLine(lines[adds[k]].text, pair.after, 1)) spans.set(adds[k], pair.after)
     }
   }
   return spans
 }
 
-// A line of a change is changed as a whole when the change has nothing on the other side, the line is empty, or its
-// changed text covers all of it. Such a line takes the changed-text strength over its full width.
-export function wholeLine(length: number, marks: Span[], otherSide: number): boolean {
-  if (otherSide === 0 || length === 0) return true
-  let covered = 0
-  for (const [from, to] of marks) covered += to - from
-  return covered >= length
+// A line of a change is changed as a whole when the change has nothing on the other side, or its changed text is at
+// least half of its non-blank text. Such a line shows only the line tint: marking most of it says nothing more.
+export function wholeLine(text: string, marks: Span[], otherSide: number): boolean {
+  return otherSide === 0 || mostlyChanged(text, marks.map(([from, to]) => text.slice(from, to)).join(''))
 }
+
+// Whether the changed text of a line is at least half of its non-blank text. Indentation never counts either way.
+export function mostlyChanged(text: string, changed: string): boolean {
+  const all = visible(text)
+  return all === 0 || 2 * visible(changed) >= all
+}
+
+const visible = (text: string) => text.replace(/\s+/g, '').length
 
 export type Piece = Segment & { changed: boolean }
 
