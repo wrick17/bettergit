@@ -4,7 +4,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndI
 import { Change, Chunk, diff, getChunks, getOriginalDoc, MergeView, originalDocChangeEffect, uncollapseUnchanged, unifiedMergeView } from '@codemirror/merge'
 import { cachedTokens, tokenize, type Segment } from './highlight'
 import { onRecolour } from './prefs'
-import { emphasize, wholeLine, type Span } from './intraline'
+import { emphasize, mostlyChanged, wholeLine, type Span } from './intraline'
 
 // One mounted diff editor. `replace` is an undoable edit; `sync` brings in a reload without touching the undo history.
 // `reveal` marks a find match: on the old side (split) or the current text, by 1-based line and offsets in that line.
@@ -314,9 +314,8 @@ function common(language: string | null, wrapping: Compartment, wrap: boolean, d
   return [lineNumbers(), wrapping.of(wrap ? EditorView.lineWrapping : []), shikiColours(language, deletions), findField, wholeChanges]
 }
 
-// Whole changed lines take the changed-text strength, by the same rule as the static rows (wholeLine). The unified
-// editor's removed lines are drawn by the merge widget, so they are tagged once drawn: a removed line is whole when all
-// of its text is changed text.
+// Whole changed lines show only the line tint, by the same rule as the static rows (wholeLine). The unified editor's
+// removed lines are drawn by the merge widget, so they are tagged once drawn, by the same share of changed text.
 const wholeChange = Decoration.line({ class: 'cm-fullChange' })
 const wholeChanges = ViewPlugin.fromClass(class {
   decorations: DecorationSet
@@ -334,8 +333,8 @@ const wholeChanges = ViewPlugin.fromClass(class {
       read: () => undefined,
       write: () => {
         for (const line of this.view.contentDOM.querySelectorAll('.cm-deletedChunk > .cm-deletedLine')) {
-          const changed = [...line.querySelectorAll('.cm-deletedText')].reduce((length, node) => length + (node.textContent?.length ?? 0), 0)
-          line.classList.toggle('cm-fullChange', changed === line.textContent?.length)
+          const changed = [...line.querySelectorAll('.cm-deletedText')].map((node) => node.textContent ?? '').join('')
+          line.classList.toggle('cm-fullChange', mostlyChanged(line.textContent ?? '', changed))
         }
         // Removed lines are not in the document, so an editor selection across them marks them here and copies them in
         // the copy handler below. A press on them selects natively instead (mountEditor).
@@ -389,9 +388,9 @@ function wholeLines(state: EditorState): DecorationSet {
       for (const change of chunk.changes) {
         const start = Math.max(from + (isA ? change.fromA : change.fromB), line.from)
         const end = Math.min(from + (isA ? change.toA : change.toB), line.to)
-        if (start < end) marks.push([start, end])
+        if (start < end) marks.push([start - line.from, end - line.from])
       }
-      if (wholeLine(line.length, marks, other)) builder.add(line.from, line.from, wholeChange)
+      if (wholeLine(line.text, marks, other)) builder.add(line.from, line.from, wholeChange)
     }
   }
   return builder.finish()

@@ -579,8 +579,8 @@ function previewRows(model: Preview, layout: 'unified' | 'split', opened: Set<nu
       rows.push(stretch)
     }
     if (stretch.kind !== 'chunk') continue
-    const wholeA = stretch.marksA.map((marks, index) => wholeLine((model.old[stretch.a + index - 1] ?? '').length, marks, stretch.countB))
-    const wholeB = stretch.marksB.map((marks, index) => wholeLine((model.lines[stretch.b + index - 1] ?? '').length, marks, stretch.countA))
+    const wholeA = stretch.marksA.map((marks, index) => wholeLine(model.old[stretch.a + index - 1] ?? '', marks, stretch.countB))
+    const wholeB = stretch.marksB.map((marks, index) => wholeLine(model.lines[stretch.b + index - 1] ?? '', marks, stretch.countA))
     if (layout === 'unified') {
       for (let index = 0; index < stretch.countA; index++) rows.push({ kind: 'del', a: stretch.a + index, marks: stretch.marksA[index], whole: wholeA[index] })
       for (let index = 0; index < stretch.countB; index++) rows.push({ kind: 'add', b: stretch.b + index, marks: stretch.marksB[index], whole: wholeB[index] })

@@ -1,3 +1,6 @@
+/* A paired line with a small edit takes a lighter tint, so its marked words stand out and fully changed lines read stronger. */
+.line.add:has(.intra), .split-cell.add:has(.intra) { background: color-mix(in srgb, var(--add-bg) 50%, transparent); }
+.line.del:has(.intra), .split-cell.del:has(.intra) { background: color-mix(in srgb, var(--del-bg) 50%, transparent); }
 /* Changed words inside a paired removed or added line. Same hue as the line tint, but stronger, so only the edited text stands out. */
 .line.add .intra, .split-cell.add .intra { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .line.del .intra, .split-cell.del .intra { background: color-mix(in srgb, var(--del) 30%, transparent); }

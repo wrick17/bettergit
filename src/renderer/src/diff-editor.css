@@ -23,10 +23,16 @@
 
 /* Added and changed lines on the current side, removed lines and the old side. */
 .diff-editor .cm-editor .cm-changedLine, .diff-editor .cm-merge-b .cm-changedLine { background: var(--add-bg); }
-.diff-editor .cm-editor .cm-deletedChunk, .diff-editor .cm-merge-a .cm-changedLine { background: var(--del-bg); }
-.diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 8px; }
+.diff-editor .cm-merge-a .cm-changedLine, .diff-editor .cm-editor .cm-deletedLine { background-color: var(--del-bg); }
+/* Each removed line carries its own tint, so a partly changed one can be lighter. It reaches across the chunk's padding. */
+.diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 8px; background: none; }
+.diff-editor .cm-editor .cm-deletedLine { margin: 0 -20px 0 -8px; padding: 0 20px 0 8px; }
 .diff-editor .cm-editor .cm-changedText, .diff-editor .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .diff-editor .cm-editor .cm-deletedChunk .cm-deletedText, .diff-editor .cm-merge-a .cm-changedText { background: color-mix(in srgb, var(--del) 30%, transparent); }
+/* Partly changed lines take a lighter tint under their marks, as in the read-only diff. Only the colour changes, so a
+   selection's overlay image on removed lines survives. */
+.diff-editor .cm-editor .cm-changedLine:not(.cm-fullChange):has(.cm-changedText), .diff-editor .cm-merge-b .cm-changedLine:not(.cm-fullChange):has(.cm-changedText) { background-color: color-mix(in srgb, var(--add-bg) 50%, transparent); }
+.diff-editor .cm-merge-a .cm-changedLine:not(.cm-fullChange):has(.cm-changedText), .diff-editor .cm-editor .cm-deletedLine:not(.cm-fullChange):has(.cm-deletedText) { background-color: color-mix(in srgb, var(--del-bg) 50%, transparent); }
 /* Whole changed lines keep the line tint; changed-text marks add nothing on top. */
 .diff-editor .cm-editor .cm-fullChange :is(.cm-changedText, .cm-deletedText) { background: none; }
 .diff-editor .cm-editor ins.cm-insertedLine, .diff-editor .cm-editor del.cm-deletedLine, .diff-editor .cm-editor .cm-deletedLine del { text-decoration: none; }
@@ -65,6 +71,8 @@
 .ed-line.add .ed-changed { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .ed-line:is(.del, .old) .ed-changed { background: color-mix(in srgb, var(--del) 30%, transparent); }
 .ed-line.full .ed-changed { background: none; }
+.ed-line.add:not(.full):has(.ed-changed) > code { background: color-mix(in srgb, var(--add-bg) 50%, transparent); }
+.ed-line:is(.del, .old):not(.full):has(.ed-changed) > code { background: color-mix(in srgb, var(--del-bg) 50%, transparent); }
 .ed-fold-bar { flex: 1; min-width: 0; height: 28px; margin: 0; padding: 0 20px; border: 0; border-radius: 0; box-shadow: none; background: var(--sunken); color: var(--text-3); font: 12px/28px var(--font-code); text-align: left; cursor: pointer; }
 /* Split: two equal columns like the merge view; a change's shorter side ends in blank space, as the editor's spacer does. */
 .ed-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }

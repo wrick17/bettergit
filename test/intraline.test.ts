@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from 'bun:test'
 import { parseDiff, type DiffLine } from '../src/main/git/diff'
-import { changedSpans, emphasize, intralineSpans, type Span } from '../src/renderer/src/intraline'
+import { changedSpans, emphasize, intralineSpans, wholeLine, type Span } from '../src/renderer/src/intraline'
 
 // The changed text of one side, so assertions read as the words a reader sees highlighted.
 const changedText = (text: string, spans: Span[] = []) => spans.map(([start, end]) => text.slice(start, end))
@@ -46,6 +46,27 @@ test('a replacement block pairs its lines in order and leaves the extra line pla
   expect(changedText(lines[0].text, spans.get(0))).toEqual(['old'])
   expect(changedText(lines[2].text, spans.get(2))).toEqual(['new'])
   expect(spans.has(1)).toBe(false)
+})
+
+test('a mostly rewritten side drops its word marks while a small edit keeps them (#68)', () => {
+  const lines: DiffLine[] = [
+    { type: 'del', text: '    return alpha(one, two) + beta(three)', oldNo: 1, newNo: null },
+    { type: 'add', text: '    return gamma(one, two) + delta(three)', oldNo: null, newNo: 1 },
+    { type: 'del', text: '    const parsed = Number(value);', oldNo: 2, newNo: null },
+    { type: 'context', text: '}', oldNo: 3, newNo: 2 },
+    { type: 'del', text: '    const parsed = Number(value);', oldNo: 4, newNo: null },
+    { type: 'add', text: '    const parsed = Number(raw);', oldNo: null, newNo: 3 },
+  ]
+  // The first pair shares enough words to pair, but its one changed block spans most of each line.
+  expect(changedSpans(lines[0].text, lines[1].text)).not.toBeNull()
+  const spans = intralineSpans(lines)
+  expect([...spans.keys()]).toEqual([4, 5])
+  expect(changedText(lines[5].text, spans.get(5))).toEqual(['raw'])
+  // Indentation is ignored: an edit to every word of an indented line is whole, one word of four is not.
+  expect(wholeLine('    a b', [[4, 7]], 1)).toBe(true)
+  expect(wholeLine('    aa bb cc dd', [[4, 6]], 1)).toBe(false)
+  expect(wholeLine('', [], 1)).toBe(true)
+  expect(wholeLine('kept', [], 0)).toBe(true)
 })
 
 test('a last line that gains or loses its final newline still pairs across git\'s note', () => {
@@ -130,8 +151,9 @@ const { SplitCell, UnifiedLine } = await import('./src/renderer/src/DiffView')
 const { intralineSpans } = await import('./src/renderer/src/intraline')
 const { previewOf } = await import('./src/renderer/src/cm-editor')
 const lines = [
-  { type: 'del', text: 'const a = foo("😀", 1) + preserveMiddle(value) + bar(2)', oldNo: 1, newNo: null },
-  { type: 'add', text: 'const a = foo("😀", 9) + preserveMiddle(value) + baz(2)', oldNo: null, newNo: 1 },
+  // The unchanged tail keeps the inner block under half of each line, so the lines are not changed as a whole.
+  { type: 'del', text: 'const a = foo("😀", 1) + preserveMiddle(value) + bar(2) + keepTheTailUnchanged(value)', oldNo: 1, newNo: null },
+  { type: 'add', text: 'const a = foo("😀", 9) + preserveMiddle(value) + baz(2) + keepTheTailUnchanged(value)', oldNo: null, newNo: 1 },
 ]
 const spans = intralineSpans(lines)
 const intraCount = (html) => (html.match(/class="intra"/g) ?? []).length
