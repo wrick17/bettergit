@@ -23,16 +23,17 @@
 
 /* Added and changed lines on the current side, removed lines and the old side. */
 .diff-editor .cm-editor .cm-changedLine, .diff-editor .cm-merge-b .cm-changedLine { background: var(--add-bg); }
-.diff-editor .cm-merge-a .cm-changedLine, .diff-editor .cm-editor .cm-deletedLine { background-color: var(--del-bg); }
-/* Each removed line carries its own tint, so a partly changed one can be lighter. It reaches across the chunk's padding. */
+.diff-editor .cm-merge-a .cm-changedLine, .diff-editor .cm-deletedChunk > .cm-deletedLine { background-color: var(--del-bg); }
+/* Each unified removed line carries its own tint, so a partly changed one can be lighter. It reaches across the chunk's
+   padding. The split old side's inline del.cm-deletedLine marks are left alone. */
 .diff-editor .cm-editor .cm-deletedChunk { padding: 0 20px 0 8px; background: none; }
-.diff-editor .cm-editor .cm-deletedLine { margin: 0 -20px 0 -8px; padding: 0 20px 0 8px; }
+.diff-editor .cm-deletedChunk > .cm-deletedLine { margin: 0 -20px 0 -8px; padding: 0 20px 0 8px; }
 .diff-editor .cm-editor .cm-changedText, .diff-editor .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--add) 30%, transparent); }
 .diff-editor .cm-editor .cm-deletedChunk .cm-deletedText, .diff-editor .cm-merge-a .cm-changedText { background: color-mix(in srgb, var(--del) 30%, transparent); }
 /* Partly changed lines take a lighter tint under their marks, as in the read-only diff. Only the colour changes, so a
    selection's overlay image on removed lines survives. */
 .diff-editor .cm-editor .cm-changedLine:not(.cm-fullChange):has(.cm-changedText), .diff-editor .cm-merge-b .cm-changedLine:not(.cm-fullChange):has(.cm-changedText) { background-color: color-mix(in srgb, var(--add-bg) 50%, transparent); }
-.diff-editor .cm-merge-a .cm-changedLine:not(.cm-fullChange):has(.cm-changedText), .diff-editor .cm-editor .cm-deletedLine:not(.cm-fullChange):has(.cm-deletedText) { background-color: color-mix(in srgb, var(--del-bg) 50%, transparent); }
+.diff-editor .cm-merge-a .cm-changedLine:not(.cm-fullChange):has(.cm-changedText), .diff-editor .cm-deletedChunk > .cm-deletedLine:not(.cm-fullChange):has(.cm-deletedText) { background-color: color-mix(in srgb, var(--del-bg) 50%, transparent); }
 /* Whole changed lines keep the line tint; changed-text marks add nothing on top. */
 .diff-editor .cm-editor .cm-fullChange :is(.cm-changedText, .cm-deletedText) { background: none; }
 .diff-editor .cm-editor ins.cm-insertedLine, .diff-editor .cm-editor del.cm-deletedLine, .diff-editor .cm-editor .cm-deletedLine del { text-decoration: none; }
