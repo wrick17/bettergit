@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.23] - 2026-11-17
+
+### New
+- Changed images show as pictures instead of "Binary file." A modified image shows before and after side by side; an added or deleted image shows on its own. This covers PNG, JPEG, GIF, WebP, AVIF, BMP and ICO files in Changes, History and compares. (#70)
+
 ## [0.1.22] - 2026-11-12
 
 ### Improved

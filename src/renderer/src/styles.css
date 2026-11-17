@@ -588,6 +588,17 @@ input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
    a file laid out late as it scrolls in hardly moves what is on screen; `auto` then keeps its last real height. */
 .diff-file { content-visibility: auto; contain-intrinsic-size: auto var(--file-estimate, 480px); scroll-margin-top: var(--diff-toolbar-height); margin: 0; }
 .diff-file.editable { content-visibility: visible; }
+.image-preview { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.image-side { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; }
+.image-side figcaption { font-size: calc(12px + var(--ui-delta)); color: var(--text-2); }
+.image-side.old figcaption { color: var(--del); }
+.image-side.new figcaption { color: var(--add); }
+/* A checkerboard behind the picture shows where it is transparent. */
+.image-side img {
+  display: block; max-width: 100%; max-height: 480px; object-fit: contain; align-self: flex-start;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: repeating-conic-gradient(var(--sunken) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
 /* An editor measures its own lines, so its file is always laid out. */
 /* A file picked in the list flashes its header once as the diff scrolls to it. */
 .diff-file.revealed > header { animation: file-revealed 900ms ease-out; }

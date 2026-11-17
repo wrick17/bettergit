@@ -1015,6 +1015,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   contextFor={(file) => extra[levelKey(false, pathOf(file))] ?? context}
                   fileChoices={fileChoices}
                   section="unstaged"
+                  images={{ repo, old: 'index', new: 'worktree' }}
                   onFileMenu={rowHandlers.unstagedMenu}
                   refreshOf={`${repo} unstaged`}
                   onShown={shownHandlers.unstaged}
@@ -1033,6 +1034,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
                   contextFor={(file) => extra[levelKey(true, pathOf(file))] ?? context}
                   fileChoices={fileChoices}
                   section="staged"
+                  images={{ repo, old: 'HEAD', new: 'index' }}
                   onFileMenu={rowHandlers.stagedMenu}
                   refreshOf={`${repo} staged`}
                   onShown={shownHandlers.staged}
@@ -1052,6 +1054,7 @@ export function ChangesView({ repo, status, revision, listOpen, detailOpen: deta
               contextFor={(file) => extra[levelKey(selection.staged, pathOf(file))] ?? context}
               fileChoices={fileChoices}
               section={(listed.selection?.staged ?? selection.staged) ? 'staged' : 'unstaged'}
+              images={(listed.selection?.staged ?? selection.staged) ? { repo, old: 'HEAD', new: 'index' } : { repo, old: 'index', new: 'worktree' }}
               onFileMenu={(listed.selection?.staged ?? selection.staged) ? rowHandlers.stagedMenu : rowHandlers.unstagedMenu}
               refreshOf={`${repo} ${selection.staged ? 'staged' : 'unstaged'}`}
               onShown={shownHandlers.selection}

@@ -52,6 +52,8 @@ const api = {
   commitRefs: (repo: string, hash: string) => invoke('repo:commit-refs', repo, hash) as Promise<{ branches: string[]; remotes: string[]; tags: string[] }>,
   working: (repo: string, staged: boolean, context: number, path?: string | string[], ignoreWhitespace = false) =>
     invoke('repo:working', repo, staged, context, path, ignoreWhitespace),
+  // One side of a binary image diff as a data URL, or null when that side has none. `at` is 'worktree', 'index' or a commit ref.
+  image: (repo: string, at: string, path: string) => invoke('repo:image', repo, at, path) as Promise<string | null>,
   stage: (repo: string, paths: string[]) => invoke('repo:stage', repo, paths),
   unstage: (repo: string, paths: string[]) => invoke('repo:unstage', repo, paths),
   discard: (repo: string, paths: string[]) => invoke('repo:discard', repo, paths),

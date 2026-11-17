@@ -12,7 +12,7 @@ import { commandLogPath, logAction, openCommandLog } from './command-log'
 import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
-import { commitDiff, compare, detectMoves, filePatch, listOnly, workingDiff } from './git/diff'
+import { commitDiff, compare, detectMoves, filePatch, listOnly, readImage, workingDiff } from './git/diff'
 import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors, fileHistory } from './git/history'
 import { readStagedFile, writeStagedFile } from './git/index-file'
 import { avatars } from './avatar'
@@ -301,6 +301,14 @@ function registerIpc() {
     const only = fileList(path)
     const files = await workingDiff(assertKnownRepo(repoPath), staged, context, only, ignoreWhitespace === true)
     return only ? { files, moves: detectMoves(files) } : listOnly(files)
+  })
+  // One side of a binary image diff. `at` is 'worktree', 'index' or a commit ref, which resolves here; a missing one, such as
+  // a root commit's parent, shows no image.
+  ipcMain.handle('repo:image', async (_event, repoPath: string, at: unknown, relPath: unknown) => {
+    const repo = assertKnownRepo(repoPath)
+    if (typeof at !== 'string' || typeof relPath !== 'string') throw new Error('Pick an image to show.')
+    const resolved = at === 'worktree' || at === 'index' ? at : await ops.resolveCommit(repo, at).catch(() => null)
+    return resolved ? readImage(repo, resolved, relPath) : null
   })
   handleWrite('repo:stage', (_event, repoPath: string, paths: string[]) => ops.stagePaths(repoPath, paths))
   handleWrite('repo:unstage', async (_event, repoPath: string, paths: string[]) => {

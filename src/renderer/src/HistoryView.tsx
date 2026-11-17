@@ -747,7 +747,8 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
                   {body && <pre className="commit-body">{body}</pre>}
                   </header>
                   {compareBar}
-                  <DiffView files={diffShown?.files ?? []} moves={diffShown?.moves ?? []} fileChoices={fileChoices} emptyHint={emptyHint} />
+                  <DiffView files={diffShown?.files ?? []} moves={diffShown?.moves ?? []} fileChoices={fileChoices} emptyHint={emptyHint}
+                    images={compare ? { repo, old: selected, new: compare.ref } : { repo, old: `${selected}^`, new: selected }} />
                   </>}
                 </div>
               </DiffRail>
