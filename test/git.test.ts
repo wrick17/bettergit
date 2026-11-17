@@ -7,7 +7,7 @@ import { git, gitRaw } from '../src/main/git/exec'
 import { logAction, openCommandLog } from '../src/main/command-log'
 import { applyHunk, parseHunk, type HunkRequest } from '../src/main/git/hunks'
 import { loadConflict, previewConflict, saveConflict } from '../src/main/git/conflict'
-import { commitDiff, compare, detectMoves, filePatch, LARGE_DIFF_FILES, listOnly, parseDiff, workingDiff, type DiffFile } from '../src/main/git/diff'
+import { commitDiff, compare, detectMoves, filePatch, LARGE_DIFF_FILES, listOnly, parseDiff, readImage, workingDiff, type DiffFile } from '../src/main/git/diff'
 import { readStagedFile, writeStagedFile } from '../src/main/git/index-file'
 import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
@@ -2686,6 +2686,35 @@ describe('changed-file menu', () => {
       expect(await git(dir, ['stash', 'list'])).toBe('')
     } finally {
       cleanup(dir)
+    }
+  })
+})
+
+describe('binary image previews', () => {
+  test('reads each side from its commit, the index or the working copy, and never through a symlink', async () => {
+    const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'bettergit-image-')))
+    try {
+      const png = (byte: number) => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, byte])
+      const url = (bytes: Buffer) => `data:image/png;base64,${bytes.toString('base64')}`
+      await git(dir, ['init', '-q'])
+      writeFileSync(path.join(dir, 'pic.png'), png(1))
+      await git(dir, ['add', '.'])
+      await git(dir, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'one'])
+      const first = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      writeFileSync(path.join(dir, 'pic.png'), png(2))
+      await git(dir, ['add', '.'])
+      writeFileSync(path.join(dir, 'pic.png'), png(3))
+      expect(await readImage(dir, first, 'pic.png')).toBe(url(png(1)))
+      expect(await readImage(dir, 'index', 'pic.png')).toBe(url(png(2)))
+      expect(await readImage(dir, 'worktree', 'pic.png')).toBe(url(png(3)))
+      expect(await readImage(dir, first, 'gone.png')).toBeNull()
+      symlinkSync(path.join(dir, 'pic.png'), path.join(dir, 'link.png'))
+      expect(await readImage(dir, 'worktree', 'link.png')).toBeNull()
+      await expect(readImage(dir, 'worktree', 'notes.txt')).rejects.toThrow()
+      await expect(readImage(dir, 'worktree', '/etc/x.png')).rejects.toThrow()
+      expect(await readImage(dir, 'worktree', '../x.png')).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

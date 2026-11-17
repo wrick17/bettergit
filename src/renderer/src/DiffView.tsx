@@ -9,6 +9,7 @@ import { charWidth, columns, hscrollOf, useCodeMetrics } from './hscroll'
 import { cachedFileTokens, highlightFile, languageFor, warmColours, type Segment } from './highlight'
 import { emphasize, intralineSpans, type Piece, type Span } from './intraline'
 import { savedView, saveView } from './session'
+import { imageType } from '../../shared/images'
 import { isMarkdownPath, MarkdownContent, markdownHunk, type MarkdownSide } from './MarkdownLine'
 import { DraftActions, EditableDiff, prepareSource, useUnsaved, type EditBridge } from './DiffEditor'
 import { blockedReason, workingLabel } from './repo-busy'
@@ -59,6 +60,14 @@ interface Props {
   onShown?: (files: DiffFile[]) => void
   // Opens a file's context menu at a point, from a right-click on its header or the keyboard's menu key on its toggle.
   onFileMenu?: (file: DiffFile, at: { x: number; y: number }) => void
+  // Where each side of a binary image is read from, so an open image file shows both pictures: 'worktree', 'index' or a commit ref.
+  images?: ImageSides
+}
+
+export interface ImageSides {
+  repo: string
+  old: string
+  new: string
 }
 
 // A row may get a class, and a plain row (a conflict marker) keeps its raw text uncoloured. Controls render above a row,
@@ -123,7 +132,9 @@ export function useDiffLayout(): DiffLayout {
 
 // Moved lines get a tint and a label that names the other end of the move, so a block that
 // left one place and landed in another can be followed by reading the labels.
-export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, fileChoices, section, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown, onFileMenu }: Props) {
+export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMoves, stage, onExpand, contextFor, persist, fileChoices, section, conflict, emptyHint, edit, toolbar = true, refreshOf, onShown, onFileMenu, images }: Props) {
+  // Kept by value, so a caller's new object with the same sides does not re-render every file.
+  const imageSides = useMemo(() => images, [images?.repo, images?.old, images?.new])
   const layoutNow = useDiffLayout()
   const containerRef = useRef<HTMLDivElement>(null)
   const [limited, setLimited] = useState(false)
@@ -393,6 +404,7 @@ export const DiffView = memo(function DiffView({ files: nextFiles, moves: nextMo
             onExpand={expand}
             onMenu={fileMenu}
             context={contextFor?.(file) ?? context}
+            images={imageSides}
           />
         )
       })}
@@ -428,7 +440,7 @@ export function LayoutToggles({ autoUnified = false }: { autoUnified?: boolean }
 
 // One file: its sticky header and, while open, its hunks. Memoised, so a collapse, a file's colours arriving or a draft
 // changing re-renders only that file.
-const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, onFind, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, onMenu, context }: {
+const FileSection = memo(function FileSection({ file, fileIndex, stat, open, untracked, onToggle, onFind, layout, formatted, language, tokens, labels, anchors, conflict, stage, edit, onExpand, onMenu, context, images }: {
   file: DiffFile
   context: number
   fileIndex: number
@@ -448,6 +460,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
   edit?: EditBridge
   onExpand?: (file: DiffFile) => void
   onMenu?: (file: DiffFile, at: { x: number; y: number }) => void
+  images?: ImageSides
 }) {
   const path = pathOf(file)
   const toggle = () => onToggle(path, open)
@@ -560,7 +573,7 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
     <section ref={sectionRef} className={`diff-file${editor ? ' editable' : ''}`} data-path={path} data-file-index={fileIndex}>
       <FileHeader unsaved={unsaved} file={file} stat={stat} open={open} onToggle={toggle} onFind={file.hunks.length ? () => onFind(path) : undefined} stage={stage} untracked={untracked}
         actions={text && <DraftActions edit={text} path={path} />} onMenu={onMenu && ((at) => onMenu(file, at))} />
-      {file.binary && <p className="hint">Binary file.</p>}
+      {file.binary && (open && images && imageType(path) ? <ImagePreview file={file} sides={images} /> : <p className="hint">Binary file.</p>)}
       {open && conflict && layout === 'split' && <div className="split-row conflict-sides"><span>Incoming</span><span>Current</span></div>}
       {open && (editor
         ? <EditableDiff edit={editor} path={path} hunks={file.hunks} layout={layout} language={language} context={context} fallback={hunks()} fileIndex={fileIndex} onExtent={setEditorExtent} hunkActions={hunkActions} />
@@ -569,6 +582,35 @@ const FileSection = memo(function FileSection({ file, fileIndex, stat, open, unt
     </section>
   )
 })
+
+// Both sides of a binary image, before and after. Each refresh brings a new file object and reads the images again; the
+// pictures on screen stay until the new ones arrive, so a refresh does not flash.
+function ImagePreview({ file, sides }: { file: DiffFile; sides: ImageSides }) {
+  const shown = [
+    file.status !== 'added' && file.oldPath ? { label: 'Before', at: sides.old, path: file.oldPath } : null,
+    file.status !== 'deleted' && file.newPath ? { label: 'After', at: sides.new, path: file.newPath } : null,
+  ].filter((side) => side !== null)
+  const [urls, setUrls] = useState<(string | null)[] | null>(null)
+  useEffect(() => {
+    let stale = false
+    Promise.all(shown.map((side) => window.bettergit.image(sides.repo, side.at, side.path).catch(() => null)))
+      .then((next) => { if (!stale) setUrls(next) })
+    return () => { stale = true }
+  }, [file, sides])
+  if (!urls) return <p className="hint">Loading image…</p>
+  return (
+    <div className="image-preview">
+      {shown.map((side, index) => (
+        <figure key={side.label} className={`image-side ${side.label === 'Before' ? 'old' : 'new'}`}>
+          {shown.length > 1 && <figcaption>{side.label}</figcaption>}
+          {urls[index]
+            ? <img src={urls[index]} alt={`${side.label}: ${side.path}`} />
+            : <p className="hint">Image too large or not available to show.</p>}
+        </figure>
+      ))}
+    </div>
+  )
+}
 
 // A conflict's controls by the row they sit above. They stay mounted between the row chunks, so Tab reaches every
 // conflict and a focused control is never unmounted by scrolling.

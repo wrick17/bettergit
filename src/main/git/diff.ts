@@ -3,6 +3,8 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { GitError, git, gitRaw } from './exec'
 import { assertHash } from './history'
+import { imageType } from '../../shared/images'
+import { resolveFileTarget } from '../editor'
 
 // "All" in the UI. Git reads it as more context than any file has, so the diff shows the whole file.
 const MAX_CONTEXT = 100000
@@ -308,6 +310,30 @@ export async function headDiff(repo: string, relPath: string): Promise<DiffFile[
   const output = await gitRaw(repo, args)
   if (output.code !== 0) throw new GitError(output.stderr || `git diff failed with code ${output.code}`, args, output.code, output.stderr)
   return parseDiff(output.stdout.toString('utf8'), output.stdout)
+}
+
+// One side of an image's binary diff as a data URL. `at` is 'worktree', 'index' or a commit hash the caller resolved.
+// Null when that side has no such file, or it is too large to show. Git diffs a symlink as its link text, so a link is
+// never read through.
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+export async function readImage(repo: string, at: string, relPath: string): Promise<string | null> {
+  const type = imageType(relPath)
+  if (!type || path.isAbsolute(relPath) || relPath.includes('\0')) throw new Error(`Not an image path: ${relPath}`)
+  let bytes: Buffer
+  if (at === 'worktree') {
+    const full = await resolveFileTarget(repo, relPath).catch(() => null)
+    if (!full || (await fs.lstat(path.join(repo, relPath))).isSymbolicLink() || (await fs.stat(full)).size > MAX_IMAGE_BYTES) return null
+    bytes = await fs.readFile(full)
+  } else {
+    // :0: is the index's merged entry; a hash names a commit's tree.
+    const spec = `${at === 'index' ? ':0' : at}:${relPath}`
+    const size = await gitRaw(repo, ['cat-file', '-s', spec])
+    if (size.code !== 0 || Number(size.stdout.toString('utf8')) > MAX_IMAGE_BYTES) return null
+    const blob = await gitRaw(repo, ['cat-file', 'blob', spec])
+    if (blob.code !== 0) return null
+    bytes = blob.stdout
+  }
+  return `data:${type};base64,${bytes.toString('base64')}`
 }
 
 async function untrackedFiles(repo: string, only?: string[]): Promise<DiffFile[]> {
