@@ -23,6 +23,7 @@ import { markAllRead, notify, parseNotifications } from '../src/renderer/src/not
 import { UpdateStatus } from '../src/renderer/src/UpdateStatus'
 import { NotificationHub } from '../src/renderer/src/NotificationHub'
 import { IconButton } from '../src/renderer/src/Icons'
+import { ActionMenu } from '../src/renderer/src/OverflowBar'
 import { hasUnsavedStagedDrafts } from '../src/renderer/src/FileSheets'
 
 // A diff container that registers its files with find, as DiffView does.
@@ -53,5 +54,5 @@ function Choices({ branches, query: initial }: { branches: Branch[]; query: stri
 }
 
 Object.assign(window, {
-  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, setFindScope, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub, mountEditor, Choices, hasUnsavedStagedDrafts },
+  under: { IconButton, bufferedKey, lineColumnAt, setFindQuery, setFindScope, watchFind, typeKeys, setSyntaxThemes, EditorState, EditorSelection, createElement, flushSync, createRoot, EditableDiff, FindBar, FindDiff, revealMatch, clearHighlight, mountedEditors, SettingsDialog, applyAppearance, DiffView, ChangesView, setDiffLayout, setContextLines, setIgnoreWhitespace, ActiveDiff, StrictMode, App, markAllRead, notify, parseNotifications, UpdateStatus, NotificationHub, mountEditor, Choices, hasUnsavedStagedDrafts, ActionMenu },
 })

@@ -2418,6 +2418,28 @@ test.skipIf(!playwright)('commit options fit the narrow file list and remain key
   }
 })
 
+// #72: History's right-click menu shares .commit-menu with the Changes commit options, whose rules once stretched it
+// across the window and collapsed it to no height, so its items spilled out with no background.
+test.skipIf(!playwright)('the History commit context menu opens at the pointer at its own size', async () => {
+  await page.evaluate(() => {
+    const w = window as any
+    const { createElement, createRoot, flushSync, ActionMenu } = w.under
+    const items = ['Copy Commit Hash', 'Copy Commit Message', 'Cherry-Pick'].map((label) => ({ key: label, label, icon: 'copy', onClick: () => {} }))
+    w.historyMenuRoot = createRoot(document.getElementById('root'))
+    flushSync(() => w.historyMenuRoot.render(createElement(ActionMenu, { className: 'context-menu commit-menu', at: { x: 120, y: 80 }, items, onPick: () => {} })))
+  })
+  try {
+    expect(await page.evaluate(() => {
+      // Layout boxes, not client rects: the opening scale animation would skew those.
+      const menu = document.querySelector<HTMLElement>('.context-menu')!
+      const last = menu.querySelector<HTMLElement>('button:last-of-type')!
+      return { left: menu.offsetLeft, top: menu.offsetTop, narrow: menu.offsetWidth < window.innerWidth / 2, holdsItems: last.offsetTop + last.offsetHeight <= menu.offsetHeight }
+    })).toEqual({ left: 120, top: 80, narrow: true, holdsItems: true })
+  } finally {
+    await page.evaluate(() => (window as any).historyMenuRoot.unmount())
+  }
+})
+
 test.skipIf(!playwright)('file headers toggle on click but not from their controls, a pick opens its file, and every file row and header opens its menu from the keyboard', async () => {
   await page.setViewportSize({ width: 1400, height: 900 })
   const previousView = await page.evaluate(() => localStorage.getItem('bettergit.changesView'))
