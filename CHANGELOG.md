@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.25] - 2026-11-18
+
+### Fixed
+- fetch --prune now also deletes local branches whose remote branch is gone, when none of their commits would be lost. It keeps the checked-out branch, branches open in another worktree, and branches with commits found nowhere else, and tells you which branches it deleted or kept. (#73)
+
 ## [0.1.24] - 2026-11-18
 
 ### Fixed

@@ -336,7 +336,7 @@ function registerIpc() {
   handleWrite('repo:unset-upstream', (_event, repoPath: string, selection: ops.BranchSelection) => ops.unsetUpstream(repoPath, selection))
   handleWrite('repo:fetch', async (_event, repoPath: string, mode?: ops.FetchMode) => {
     try {
-      await ops.fetchAll(repoPath, mode)
+      return await ops.fetchAll(repoPath, mode)
     } finally {
       // Linked worktrees can update refs outside watched sources; recount each display alias even after a partial fetch.
       dirty.invalidate(Object.entries(repoLockSnapshot().identities ?? {})

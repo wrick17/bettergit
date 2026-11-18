@@ -543,10 +543,96 @@ async function repairCaseCollision(repo: string, stderr: string, before: Map<str
   }
 }
 
+export type KeptReason = 'current' | 'worktree' | 'unmerged' | 'moved' | 'failed'
+export interface PruneReport {
+  deleted: string[]
+  kept: { name: string; reason: KeptReason }[]
+  // Deleted branches whose tracking settings are still set: Git could not remove them (a held config lock), or they come
+  // from an included file, which Git never edits.
+  settingsLeft: string[]
+}
+
 // With no mode, as the background fetch, native menu and Fetch All call it, every remote is fetched and pruned without tags.
-export async function fetchAll(repo: string, mode?: FetchMode): Promise<void> {
+// Only 'prune' also deletes local branches, and only it returns a report.
+export async function fetchAll(repo: string, mode?: FetchMode): Promise<PruneReport | undefined> {
   if (mode !== undefined) assertMode('fetch', mode, Object.keys(FETCH_ARGS) as FetchMode[])
   await fetchSerially(repo, mode === undefined ? ['fetch', '--all', '--prune', '--no-tags'] : FETCH_ARGS[mode])
+  return mode === 'prune' ? pruneGoneBranches(repo) : undefined
+}
+
+// Deletes local branches whose upstream is gone, but only when another branch, remote-tracking branch or tag contains the
+// tip, so every commit on it stays and a squash-merged branch is kept. One at a time, so two gone branches on the same
+// unmerged commit never vouch for each other.
+async function pruneGoneBranches(repo: string): Promise<PruneReport> {
+  const report: PruneReport = { deleted: [], kept: [], settingsLeft: [] }
+  for (const branch of (await readBranches(repo)).filter((candidate) => !candidate.remote && candidate.gone)) {
+    const keep = (reason: KeptReason) => report.kept.push({ name: branch.name, reason })
+    if (branch.current) { keep('current'); continue }
+    const witness = await findWitness(repo, branch)
+    if (!witness) { keep('unmerged'); continue }
+    // Read just before the delete. Accepted races, each without losing a commit: a checkout in another worktree after this
+    // (as with git branch -D), the witness turned into a symbolic ref at the same commit, case-fold aliases beyond
+    // toLowerCase (Σ/ς, unnormalised é), an upstream unset meanwhile, and a recreated branch show-ref cannot yet read.
+    if ((await branchesInUse(repo)).has(branch.name.toLowerCase())) { keep('worktree'); continue }
+    const outcome = await deleteWithWitness(repo, branch.fullRef, branch.hash, witness.ref, witness.oid)
+    if (outcome !== 'deleted') { keep(outcome); continue }
+    report.deleted.push(branch.name)
+    // Like git branch -d, drop the tracking settings, unless a branch of that name was created again since.
+    if (await gitOk(repo, ['show-ref', '--verify', '--quiet', branch.fullRef])) continue
+    const removed = await git(repo, ['config', '--local', '--remove-section', `branch.${branch.name}`])
+      .then(() => true, (error) => error instanceof GitError && /no such section/i.test(error.stderr))
+    // Keys are section.subsection.variable; only the variable is lower-cased and it has no dot.
+    const prefix = `branch.${branch.name}.`
+    const left = !removed || await git(repo, ['config', '-z', '--name-only', '--list']).then((keys) => keys.split('\0')
+      .some((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('.')), () => true)
+    if (left) report.settingsLeft.push(branch.name)
+  }
+  return report
+}
+
+// A ref other than the branch whose commit contains its tip, preferring a remote-tracking ref or tag over a local branch.
+// Symbolic refs only alias another ref, and replace objects and grafts fake history Git does not have, so none counts.
+async function findWitness(repo: string, branch: Branch): Promise<{ ref: string; oid: string } | null> {
+  const out = await git(repo, ['--no-replace-objects', 'for-each-ref', '--contains', branch.hash,
+    '--format=%(refname)%00%(objectname)%00%(symref)', 'refs/heads', 'refs/remotes', 'refs/tags'], { noGrafts: true })
+  const refs = out.split('\n').map((line) => line.split('\0')).filter(([ref, oid, symref]) =>
+    ref && oid && !symref && ref.toLowerCase() !== branch.fullRef.toLowerCase())
+  const [ref, oid] = refs.find(([name]) => !name.startsWith('refs/heads/')) ?? refs[0] ?? []
+  return ref ? { ref, oid } : null
+}
+
+// One transaction: Git refuses the delete if the branch moved from the checked commit or the witness ref changed. Any
+// other refusal, such as a held ref lock, is 'failed'.
+export async function deleteWithWitness(repo: string, ref: string, oid: string, witness: string, witnessOid: string): Promise<'deleted' | 'moved' | 'failed'> {
+  const input = `start\nverify ${witness} ${witnessOid}\ndelete ${ref} ${oid}\nprepare\ncommit\n`
+  return git(repo, ['--no-replace-objects', 'update-ref', '--no-deref', '--stdin'], { input, noGrafts: true }).then(() => 'deleted' as const,
+    (error) => error instanceof GitError && /but expected|unable to resolve reference/.test(error.stderr) ? 'moved' : 'failed')
+}
+
+// Branches checked out in any worktree, that a rebase or bisect there checks out again when it ends (worktree list shows
+// those as detached), or that a symbolic ref under refs/heads points at, with the symbolic refs themselves. Lower-cased,
+// as a case-insensitive disk can check out a branch under another spelling of its name.
+async function branchesInUse(repo: string): Promise<Set<string>> {
+  const names = (await readWorktrees(repo)).flatMap((worktree) => worktree.branch ? [worktree.branch] : [])
+  for (const line of (await git(repo, ['for-each-ref', '--format=%(refname)%00%(symref)', 'refs/heads'])).split('\n')) {
+    const [ref, target] = line.split('\0')
+    if (target) names.push(ref.slice('refs/heads/'.length), target.replace(/^refs\/heads\//, ''))
+  }
+  // Only the line ends are stripped: a path or name read here may end in other whitespace.
+  const common = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).replace(/\n+$/, '')
+  const linked = await fs.readdir(path.join(common, 'worktrees')).catch(() => [] as string[])
+  const read = (file: string) => fs.readFile(file, 'utf8').then((text) => text.replace(/\n+$/, ''), () => '')
+  for (const dir of [common, ...linked.map((id) => path.join(common, 'worktrees', id))]) {
+    // rebase --update-refs lists every branch it will move, one ref name per entry.
+    for (const file of ['rebase-merge/head-name', 'rebase-apply/head-name', 'rebase-merge/update-refs']) {
+      for (const line of (await read(path.join(dir, file))).split('\n')) {
+        if (line.startsWith('refs/heads/')) names.push(line.slice('refs/heads/'.length))
+      }
+    }
+    // BISECT_START holds the branch name bisect returns to.
+    names.push(await read(path.join(dir, 'BISECT_START')))
+  }
+  return new Set(names.map((name) => name.toLowerCase()))
 }
 
 // Git pull fetches and merges in one step, and takes no --no-overwrite-ignore. So this fetches once, then merges or

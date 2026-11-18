@@ -26,6 +26,8 @@ export interface GitOptions {
   timeoutMs?: number
   // An index file to read and write in place of the repo's own (GIT_INDEX_FILE), for a change prepared under its lock.
   indexFile?: string
+  // Ignores a legacy info/grafts file, so only the real parents decide which commits a ref contains.
+  noGrafts?: boolean
 }
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024
@@ -155,6 +157,7 @@ function gitEnv(options: GitOptions): NodeJS.ProcessEnv {
   }
   if (options.interactive) delete env.GIT_TERMINAL_PROMPT
   if (options.indexFile) env.GIT_INDEX_FILE = options.indexFile
+  if (options.noGrafts) env.GIT_GRAFT_FILE = '/dev/null'
   return env
 }
 

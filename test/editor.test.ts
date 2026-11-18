@@ -466,7 +466,11 @@ test('native menu shortcuts do not collide after Electron role defaults and modi
 test('title-bar Actions menu keeps the sync icons and lists every repo action with groups, danger, and shortcuts', async () => {
   const calls: unknown[][] = []
   const bettergit = {
-    fetch: async (...args: unknown[]) => { calls.push(['fetch', ...args]) },
+    fetch: async (...args: unknown[]) => {
+      calls.push(['fetch', ...args])
+      // Only fetch --prune reports what it did to local branches whose upstream is gone.
+      return args[1] === 'prune' ? { deleted: ['merged'], kept: [{ name: 'squashed', reason: 'unmerged' }], settingsLeft: [] } : undefined
+    },
     pull: async (...args: unknown[]) => { calls.push(['pull', ...args]) },
   }
   const menu = await loadEntry('../src/renderer/src/RepoMenu.tsx', {
@@ -476,11 +480,11 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
     react: React, 'react/jsx-runtime': jsxRuntime, 'react/jsx-dev-runtime': jsxDevRuntime, './Icons': await import('../src/renderer/src/Icons'),
   }) as typeof import('../src/renderer/src/OverflowBar')
   const noop = () => {}
-  const runs: string[] = []
+  const runs: string[] = [], notes: string[] = []
   const itemsWith = (busy: string | null) => menu.repoItems({
     repo: '/repo', status: { head: 'main', upstream: 'origin/main', changes: [{ path: 'a.txt' }] } as never, busy,
     run: async (key, action) => { runs.push(key); await action(); return true },
-    onTab: noop, onNote: noop, onError: noop, onDialog: noop,
+    onTab: noop, onNote: (note) => notes.push(note), onError: noop, onDialog: noop,
   })
   const items = itemsWith(null)
 
@@ -512,6 +516,13 @@ test('title-bar Actions menu keeps the sync icons and lists every repo action wi
   for (const item of options('fetch')) item.onClick()
   await Promise.resolve()
   expect(runs).toEqual(['fetch', 'fetch-plain', 'fetch-tags', 'fetch-prune', 'pull-merge', 'pull-ff', 'pull-rebase', 'pull-autostash'])
+  // Only the prune names the local branches it deleted and kept; the other fetches add no note.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(notes).toEqual(['Local branches whose remote branch is gone: Deleted merged. Kept squashed (has commits on no other branch).'])
+  expect(menu.pruneNote({ deleted: [], kept: [], settingsLeft: [] })).toBeNull()
+  // A delete whose settings stayed behind says so instead of passing as a clean delete.
+  expect(menu.pruneNote({ deleted: ['merged'], kept: [], settingsLeft: ['merged'] }))
+    .toBe('Local branches whose remote branch is gone: Deleted merged. Could not remove the upstream settings of merged.')
   expect(calls).toEqual([
     ['fetch', '/repo'], ['fetch', '/repo', 'fetch'], ['fetch', '/repo', 'tags'], ['fetch', '/repo', 'prune'],
     ['pull', '/repo', 'merge'], ['pull', '/repo', 'ff-only'], ['pull', '/repo', 'rebase'], ['pull', '/repo', 'rebase-autostash'],
