@@ -13,7 +13,7 @@ import { DirtyCounter } from '../src/main/git/dirty'
 import { readHistory, fileHistory, readAuthors, searchHistory, commitDetails, commitRefs, parseNumstat } from '../src/main/git/history'
 import { readStatus } from '../src/main/git/status'
 import { readBranches, switchBranch, createBranch, branchFromCommit, readStashes, createBackupRef, restoreBackup, stagePaths, unstagePaths, commit, readWorktrees, checkoutDetached, pull, pullFrom, resetToUpstream, cherryPick, stashAction } from '../src/main/git/ops'
-import { deleteUntracked, discardPaths, fetchAll, push, stashPush } from '../src/main/git/ops'
+import { deleteUntracked, deleteWithWitness, discardPaths, fetchAll, push, stashPush } from '../src/main/git/ops'
 import { deleteBranch, renameBranch, setUpstream, unsetUpstream } from '../src/main/git/ops'
 import { abortOperation, continueOperation, deleteRemoteBranch, mergeBranch, rebaseBranch } from '../src/main/git/ops'
 import { DEFAULT_CONFIG, saveConfig } from '../src/main/config'
@@ -1929,6 +1929,117 @@ describe('writes that could overwrite untracked or ignored files', () => {
     expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(true)
     await fetchAll(local, 'prune')
     expect((await git(local, ['branch', '-r'])).includes('origin/gone')).toBe(false)
+  })
+
+  test('fetch --prune deletes local branches whose upstream is gone only when no commit is lost; other fetches keep them', async () => {
+    const { dir, local } = await fixture()
+    const branch = async (name: string, unique = false) => {
+      await git(local, ['branch', name, 'main'])
+      if (unique) {
+        await git(local, ['switch', '-q', name])
+        await commitFile(local, `${name}.txt`, `${name}\n`)
+        await git(local, ['switch', '-q', 'main'])
+      }
+      await git(local, ['push', '-q', '-u', 'origin', name])
+    }
+    await branch('merged')
+    await branch('squashed', true)
+    // Two gone branches on one unpushed commit: the first can go, as the second still has it; the second then cannot.
+    await branch('twin-a', true)
+    await git(local, ['branch', '-f', 'twin-b', 'twin-a'])
+    await git(local, ['push', '-q', '-u', 'origin', 'twin-b'])
+    await branch('in-worktree')
+    await git(local, ['worktree', 'add', '-q', path.join(dir, 'wt'), 'in-worktree'])
+    // A branch mid-rebase shows as detached in the worktree list, but Git checks it out again when the rebase ends.
+    await branch('rebasing', true)
+    await git(local, ['tag', 'keep-rebasing', 'rebasing'])
+    await git(local, ['worktree', 'add', '-q', path.join(dir, 'wt-rebase'), 'rebasing'])
+    await expect(git(path.join(dir, 'wt-rebase'), ['rebase', '-q', '--no-ff', '--exec', 'false', 'main'])).rejects.toThrow()
+    // rebase --update-refs moves every branch in the range when it ends, so those count as in use too.
+    await branch('stacked', true)
+    await git(local, ['tag', 'keep-stacked', 'stacked'])
+    await git(local, ['branch', 'stack-top', 'stacked'])
+    await git(local, ['worktree', 'add', '-q', path.join(dir, 'wt-stack'), 'stack-top'])
+    await commitFile(path.join(dir, 'wt-stack'), 'top.txt', 'top\n')
+    await expect(git(path.join(dir, 'wt-stack'), ['rebase', '-q', '--update-refs', '--no-ff', '--exec', 'false', 'main'])).rejects.toThrow()
+    // A symbolic ref only aliases the branch, so it never vouches for the branch's commits.
+    await branch('aliased', true)
+    await git(local, ['symbolic-ref', 'refs/heads/alias', 'refs/heads/aliased'])
+    // A replace graft makes main appear to contain this commit, but the real history decides.
+    await branch('grafted', true)
+    // On a case-insensitive disk, switching to CASED checks out the ref file cased, and worktree list reports CASED.
+    const caseless = existsSync(path.join(local, '.GIT'))
+    if (caseless) {
+      await branch('cased')
+      await git(local, ['worktree', 'add', '-q', '--detach', path.join(dir, 'wt-case')])
+      await git(path.join(dir, 'wt-case'), ['switch', '-q', 'CASED'])
+    }
+    // A legacy info/grafts file fakes the same history and must not count either.
+    await branch('legacy-grafted', true)
+    // A worktree whose HEAD names a symbolic branch has its target checked out. The alias's own upstream is gone too, and
+    // deleting it would leave the worktree on a missing branch and hide that via-alias is checked out.
+    await branch('via-alias')
+    await git(local, ['symbolic-ref', 'refs/heads/head-alias', 'refs/heads/via-alias'])
+    await git(local, ['config', 'branch.head-alias.remote', 'origin'])
+    await git(local, ['config', 'branch.head-alias.merge', 'refs/heads/via-alias'])
+    await git(local, ['worktree', 'add', '-q', '--detach', path.join(dir, 'wt-alias')])
+    await git(path.join(dir, 'wt-alias'), ['symbolic-ref', 'HEAD', 'refs/heads/head-alias'])
+    await branch('current')
+    await git(local, ['branch', 'no-upstream', 'main'])
+    // Settings from an included file outlive the delete, as Git only edits the repository's own config.
+    writeFileSync(path.join(dir, 'included.cfg'), '[branch "merged"]\n\tpushRemote = origin\n')
+    await git(local, ['config', 'include.path', path.join(dir, 'included.cfg')])
+    const goneNames = ['aliased', ...caseless ? ['cased'] : [], 'current', 'grafted', 'in-worktree', 'legacy-grafted', 'merged', 'rebasing', 'squashed', 'stacked', 'twin-a', 'twin-b', 'via-alias']
+    await git(local, ['push', '-q', 'origin', '--delete', ...goneNames])
+    await git(local, ['replace', '--graft', await sha(local, 'main'), await sha(local, 'grafted')])
+    writeFileSync(path.join(local, '.git', 'info', 'grafts'), `${await sha(local, 'main')} ${await sha(local, 'legacy-grafted')}\n`)
+    await git(local, ['switch', '-q', 'current'])
+    const heads = async () => (await git(local, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])).trim().split('\n')
+    const all = await heads()
+
+    // The default fetch, as the background fetch runs it, prunes remote refs only.
+    expect(await fetchAll(local)).toBeUndefined()
+    expect((await readBranches(local)).filter((b) => b.gone).map((b) => b.name).sort())
+      .toEqual([...goneNames, 'head-alias'].sort())
+    expect(await fetchAll(local, 'fetch')).toBeUndefined()
+    expect(await heads()).toEqual(all)
+
+    expect(await fetchAll(local, 'prune')).toEqual({
+      deleted: ['merged', 'twin-a'],
+      kept: [
+        { name: 'aliased', reason: 'unmerged' },
+        ...caseless ? [{ name: 'cased', reason: 'worktree' as const }] : [],
+        { name: 'current', reason: 'current' },
+        { name: 'grafted', reason: 'unmerged' },
+        { name: 'head-alias', reason: 'worktree' },
+        { name: 'in-worktree', reason: 'worktree' },
+        { name: 'legacy-grafted', reason: 'unmerged' },
+        { name: 'rebasing', reason: 'worktree' },
+        { name: 'squashed', reason: 'unmerged' },
+        { name: 'stacked', reason: 'worktree' },
+        { name: 'twin-b', reason: 'unmerged' },
+        { name: 'via-alias', reason: 'worktree' },
+      ],
+      settingsLeft: ['merged'],
+    })
+    expect(await heads()).toEqual(all.filter((name) => name !== 'merged' && name !== 'twin-a'))
+    // Like git branch -d, the deleted branch's tracking settings go with it.
+    expect(await git(local, ['config', '--local', '--no-includes', '--get-regexp', '^branch\\.(merged|twin-a)\\.']).catch(() => '')).toBe('')
+    // Nothing gone is left, so a second prune reports nothing to delete.
+    expect((await fetchAll(local, 'prune'))!.deleted).toEqual([])
+
+    // The delete and the witness check are one transaction, so a witness that moved since the check refuses the delete.
+    const base = await sha(local, 'main')
+    await git(local, ['branch', 'raced', base])
+    await git(local, ['tag', 'raced-witness', await sha(local, 'twin-b')])
+    expect(await deleteWithWitness(local, 'refs/heads/raced', base, 'refs/tags/raced-witness', base)).toBe('moved')
+    expect(await sha(local, 'refs/heads/raced')).toBe(base)
+    // A held ref lock is a failure, not a moved branch.
+    writeFileSync(path.join(local, '.git', 'refs', 'heads', 'raced.lock'), '')
+    expect(await deleteWithWitness(local, 'refs/heads/raced', base, 'refs/heads/main', base)).toBe('failed')
+    unlinkSync(path.join(local, '.git', 'refs', 'heads', 'raced.lock'))
+    expect(await deleteWithWitness(local, 'refs/heads/raced', base, 'refs/heads/main', base)).toBe('deleted')
+    expect(await git(local, ['show-ref', 'refs/heads/raced']).catch(() => '')).toBe('')
   })
 
   test('fetches from linked worktrees of one repo run one at a time, so they never collide on ref locks', async () => {

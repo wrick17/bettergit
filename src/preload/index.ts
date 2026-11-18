@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DiffFile, MovedBlock, Patch } from '../main/git/diff'
 import type { HunkAction, HunkRequest } from '../main/git/hunks'
 import type { Branch, BranchSelection, Stash, Tag, Worktree } from '../main/git/ops'
-import type { FetchMode, PullMode, PushMode } from '../main/git/ops'
+import type { FetchMode, PruneReport, PullMode, PushMode } from '../main/git/ops'
 import type { RepoOperation } from '../main/git/status'
 import type { Commit } from '../main/git/history'
 import type { StagedText } from '../main/git/index-file'
@@ -74,7 +74,8 @@ const api = {
   renameBranch: (repo: string, branch: BranchSelection, name: string) => invoke('repo:rename-branch', repo, branch, name) as Promise<void>,
   setUpstream: (repo: string, branch: BranchSelection, upstream: BranchSelection) => invoke('repo:set-upstream', repo, branch, upstream) as Promise<void>,
   unsetUpstream: (repo: string, branch: BranchSelection) => invoke('repo:unset-upstream', repo, branch) as Promise<void>,
-  fetch: (repo: string, mode?: FetchMode) => invoke('repo:fetch', repo, mode),
+  // Only 'prune' returns a report: the local branches it deleted, and the gone ones it kept and why.
+  fetch: (repo: string, mode?: FetchMode) => invoke('repo:fetch', repo, mode) as Promise<PruneReport | undefined>,
   pull: (repo: string, mode?: PullMode) => invoke('repo:pull', repo, mode),
   pullFrom: (repo: string, remote: string, branch: string) => invoke('repo:pull-from', repo, remote, branch),
   remotes: (repo: string) => invoke('repo:remotes', repo) as Promise<{ name: string; url: string }[]>,

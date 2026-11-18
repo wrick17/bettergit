@@ -3,9 +3,27 @@ import { PullFromDialog, StashDialog, type StashMode } from './StashDialog'
 import type { BarItem } from './OverflowBar'
 import { confirmOverBlur } from './confirm'
 import { ActionError, blockedReason, workingLabel } from './repo-busy'
-import type { FetchMode, PullMode } from '../../main/git/ops'
+import type { FetchMode, KeptReason, PruneReport, PullMode } from '../../main/git/ops'
 
 const api = window.bettergit
+
+const KEPT: Record<KeptReason, string> = {
+  current: 'checked out',
+  worktree: 'in use',
+  unmerged: 'has commits on no other branch',
+  moved: 'changed during the fetch',
+  failed: 'could not be deleted',
+}
+
+// What fetch --prune did to local branches whose remote branch is gone. Null when there were none.
+export function pruneNote(report: PruneReport | undefined): string | null {
+  if (!report || (!report.deleted.length && !report.kept.length)) return null
+  const parts: string[] = []
+  if (report.deleted.length) parts.push(`Deleted ${report.deleted.join(', ')}.`)
+  if (report.settingsLeft.length) parts.push(`Could not remove the upstream settings of ${report.settingsLeft.join(', ')}.`)
+  if (report.kept.length) parts.push(`Kept ${report.kept.map(({ name, reason }) => `${name} (${KEPT[reason]})`).join(', ')}.`)
+  return `Local branches whose remote branch is gone: ${parts.join(' ')}`
+}
 
 export type Run = (label: string, action: () => Promise<unknown>) => Promise<boolean>
 
@@ -52,13 +70,16 @@ export function repoItems({ repo, status, busy, run, onTab, onNote, onError, onD
     onClick: () => void run(key, () => api.pull(repo, mode)),
   })
   const fetchOption = (key: string, label: string, mode: FetchMode, detail: string): BarItem => ({
-    key, icon: 'refresh', ...state(key, label), detail, group: 'fetch', onClick: () => void run(key, () => api.fetch(repo, mode)),
+    key, icon: 'refresh', ...state(key, label), detail, group: 'fetch', onClick: () => void run(key, async () => {
+      const note = pruneNote(await api.fetch(repo, mode))
+      if (note) onNote(note)
+    }),
   })
   // The dropdowns name each option by the git command it runs, as Sublime Merge does.
   const fetchMenu: BarItem[] = [
     fetchOption('fetch-plain', 'fetch', 'fetch', 'Retrieves changes from the remote'),
     fetchOption('fetch-tags', 'fetch --tags', 'tags', 'Retrieves changes from the remote including all tags'),
-    fetchOption('fetch-prune', 'fetch --prune', 'prune', 'Retrieves changes from the remote and removes deleted remote branches'),
+    fetchOption('fetch-prune', 'fetch --prune', 'prune', 'Retrieves changes from the remote, removes deleted remote branches, and deletes local branches whose remote branch is gone if no commits would be lost'),
     pullOption('pull-merge', 'pull', 'merge', 'Retrieves changes from the remote and merges them into the current branch'),
     pullOption('pull-ff', 'pull --ff-only', 'ff-only', 'Retrieves changes from the remote and fast-forwards the current branch'),
     pullOption('pull-rebase', 'pull --rebase', 'rebase', 'Retrieves changes from the remote and rebases the current branch onto them'),
