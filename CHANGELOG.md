@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.24] - 2026-11-18
+
+### Fixed
+- Right-clicking a commit in History opens its menu at the pointer again, at its normal size and with its background. It no longer spreads across the left of the window with its items overlapping the sidebar. (#72)
+
 ## [0.1.23] - 2026-11-17
 
 ### New
