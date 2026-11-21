@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.26] - 2026-11-21
+
+### Fixed
+- Untracked symlinks show in Changes again, including links to folders, which were missing. Each one shows its link text, as Git records it, instead of the linked file's contents, and Save Patch includes them. (#76)
+
 ## [0.1.25] - 2026-11-18
 
 ### Fixed
