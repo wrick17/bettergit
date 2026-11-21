@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { GitError, git, gitRaw } from './exec'
 import { assertHash } from './history'
@@ -293,15 +294,34 @@ export async function filePatch(repo: string, staged: boolean, paths: string[]):
   const parts = [output.stdout]
   if (!staged) {
     const untracked = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...pathspec(paths)])).split('\0').filter(Boolean)
+    const links: string[] = []
     for (const name of untracked) {
+      if ((await fs.lstat(path.join(repo, name)).catch(() => null))?.isSymbolicLink()) {
+        links.push(name)
+        continue
+      }
       const extra = ['diff', '--no-index', ...PATCH_FORMAT, '--', '/dev/null', name]
       // --no-index exits 1 when the files differ, which they always do here.
       const result = await gitRaw(repo, extra)
       if (result.code > 1) throw new GitError(result.stderr || `git diff failed with code ${result.code}`, extra, result.code, result.stderr)
       parts.push(result.stdout)
     }
+    if (links.length) parts.push(await linkPatch(repo, links))
   }
   return Buffer.concat(parts)
+}
+
+// git diff --no-index follows a symlink to a folder and fails, so untracked links are diffed through a scratch index
+// that marks them intent-to-add. Git then writes each one as its link text, as it does for a tracked link.
+async function linkPatch(repo: string, links: string[]): Promise<Buffer> {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'bettergit-index-'))
+  try {
+    const options = { indexFile: path.join(scratch, 'index') }
+    await git(repo, ['--literal-pathspecs', 'add', '--intent-to-add', '--', ...links], options)
+    return Buffer.from(await git(repo, ['--literal-pathspecs', 'diff', ...PATCH_FORMAT, '--', ...links], options))
+  } finally {
+    await fs.rm(scratch, { recursive: true, force: true })
+  }
 }
 
 // One unmerged file against HEAD: the change staging it would record. Plain `git diff` prints a combined diff for it.
@@ -340,7 +360,9 @@ async function untrackedFiles(repo: string, only?: string[]): Promise<DiffFile[]
   const names = (await git(repo, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', ...pathspec(only)])).split('\0').filter(Boolean)
   const files: DiffFile[] = []
   for (const name of names) {
-    const content = await fs.readFile(path.join(repo, name)).catch(() => null)
+    // Git diffs a symlink as its link text. Reading through it would show the target, or fail on a folder.
+    const full = path.join(repo, name)
+    const content = await fs.lstat(full).then((info) => info.isSymbolicLink() ? fs.readlink(full, { encoding: 'buffer' }) : fs.readFile(full)).catch(() => null)
     if (!content) continue
     if (content.length > MAX_UNTRACKED_BYTES || content.includes(0)) {
       files.push({ oldPath: null, newPath: name, status: 'added', binary: true, hunks: [] })

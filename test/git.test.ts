@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { git, gitRaw } from '../src/main/git/exec'
 import { logAction, openCommandLog } from '../src/main/command-log'
@@ -2689,6 +2689,16 @@ describe('changed-file menu', () => {
       await apply(await filePatch(dir, false, ['f.txt']), false)
       await apply(await filePatch(dir, false, ['u.txt']), false)
       for (const file of ['f.txt', 'u.txt']) expect(readFileSync(path.join(copy, file), 'utf8')).toBe(readFileSync(path.join(dir, file), 'utf8'))
+      // Untracked symlinks, to a folder or to a file, show and save as their link text, never their target. (#76)
+      mkdirSync(path.join(dir, 'skills/guide'), { recursive: true })
+      writeFileSync(path.join(dir, 'skills/guide/SKILL.md'), 'skill\n')
+      mkdirSync(path.join(dir, 'links'))
+      symlinkSync('../skills/guide', path.join(dir, 'links/guide'))
+      symlinkSync('../u.txt', path.join(dir, 'links/u'))
+      const shown = (await workingDiff(dir, false, 3, ['links/guide', 'links/u'])).map((file) => [file.newPath, file.hunks[0]?.lines.map((line) => line.text)])
+      expect(shown).toEqual([['links/guide', ['../skills/guide']], ['links/u', ['../u.txt']]])
+      await apply(await filePatch(dir, false, ['links/guide', 'links/u']), false)
+      for (const link of ['links/guide', 'links/u']) expect(readlinkSync(path.join(copy, link))).toBe(readlinkSync(path.join(dir, link)))
     } finally {
       cleanup(dir)
       cleanup(copy)
