@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { GitError, git, gitRaw } from './exec'
-import { assertHash } from './history'
+import { assertHash, changeRevisions, stashParts, type StashParts } from './history'
 import { imageType } from '../../shared/images'
 import { resolveFileTarget } from '../editor'
 
@@ -256,10 +256,23 @@ function contextArg(context: number): string {
 // `ignoreWhitespace` is git's --ignore-all-space. A file with only whitespace edits drops out of the patch, and
 // whitespace-only lines inside a hunk become context. It also hides a space removed inside a line ("a b" to "ab").
 // `paths` limits the diff to those files, as names, never patterns.
-export async function commitDiff(repo: string, hash: string, context = 3, ignoreWhitespace = false, paths?: string[]): Promise<DiffFile[]> {
+// `stash` is the commit's stash parts when the caller already read them.
+export async function commitDiff(repo: string, hash: string, context = 3, ignoreWhitespace = false, paths?: string[], stash?: StashParts): Promise<DiffFile[]> {
   assertHash(hash)
-  const output = await git(repo, ['--literal-pathspecs', 'diff-tree', '-p', '--root', '-m', '--first-parent', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', hash, ...pathspec(paths)])
-  return parseDiff(output)
+  const parts = stash === undefined ? await stashParts(repo, hash) : stash
+  const revisions = changeRevisions(hash, parts)
+  const [outputs, tracked] = await Promise.all([
+    Promise.all(revisions.map((revs) => git(repo, ['--literal-pathspecs', 'diff-tree', '-p', '--find-renames', contextArg(context), ...(ignoreWhitespace ? ['--ignore-all-space'] : []), '--no-color', ...revs, ...pathspec(paths)]))),
+    // Ignoring whitespace drops a whitespace-only tracked change, but its path still belongs to the tracked part.
+    parts?.untracked && ignoreWhitespace ? git(repo, ['diff-tree', '-r', '-z', '--name-only', '--find-renames', parts.base, hash]) : '',
+  ])
+  // A stash path in both its tracked and its untracked part is kept once, from the tracked part, as changeRevisions says.
+  const trackedPaths = new Set(tracked.split('\0'))
+  return outputs.flatMap((output, part) => parseDiff(output).filter((file) => {
+    const name = file.newPath ?? file.oldPath ?? ''
+    if (part === 0) trackedPaths.add(name)
+    return part === 0 || !trackedPaths.has(name)
+  }))
 }
 
 // Callers pass resolved commit hashes, so refs never reach git as raw input. With `paths`, only those files, always whole.
@@ -348,6 +361,11 @@ export async function readImage(repo: string, at: string, relPath: string): Prom
     // :0: is the index's merged entry; a hash names a commit's tree.
     const spec = `${at === 'index' ? ':0' : at}:${relPath}`
     const size = await gitRaw(repo, ['cat-file', '-s', spec])
+    // A stash keeps its untracked files in a commit of their own, so an image missing from a stash is read from there.
+    if (size.code !== 0 && at !== 'index') {
+      const untracked = (await stashParts(repo, at).catch(() => null))?.untracked
+      return untracked ? readImage(repo, untracked, relPath) : null
+    }
     if (size.code !== 0 || Number(size.stdout.toString('utf8')) > MAX_IMAGE_BYTES) return null
     const blob = await gitRaw(repo, ['cat-file', 'blob', spec])
     if (blob.code !== 0) return null

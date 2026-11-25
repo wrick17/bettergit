@@ -181,7 +181,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
   const [listReplies, setListReplies] = useState(0)
   // Bumped to scroll the selected row into view again, as when HEAD is focused while already selected.
   const [reveal, setReveal] = useState(0)
-  shownCount.current = commits.length
+  shownCount.current = gitCount(commits)
   useEffect(() => {
     const gen = ++generation.current
     pageBusy.current = true
@@ -202,7 +202,7 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
       // lays out again, so an explicit refresh drops lanes kept from earlier background refreshes.
       relayout.current = fresh
       setCommits((shown) => !fresh && JSON.stringify(shown) === JSON.stringify(rows) ? shown : rows)
-      setExhausted(rows.length < limit)
+      setExhausted(gitCount(rows) < limit)
     }).catch((failure: unknown) => {
       if (gen !== generation.current) return
       // A failed read ends a HEAD search, so it reports once instead of retrying on its own. A new HEAD, or the user, starts another.
@@ -594,13 +594,13 @@ export function HistoryView({ repo, head, branch, revision, refreshes, listOpen,
     if (pageBusy.current) return
     const gen = generation.current
     pageBusy.current = true
-    api.history(repo, commits.length, size, authors, hidden).then((more: Commit[]) => {
+    api.history(repo, gitCount(commits), size, authors, hidden).then((more: Commit[]) => {
       if (gen !== generation.current) return
       setCommits((shown) => {
         const seen = new Set(shown.map((commit) => commit.hash))
         return [...shown, ...more.filter((commit) => !seen.has(commit.hash))]
       })
-      setExhausted(more.length < size)
+      setExhausted(gitCount(more) < size)
     }).catch((failure: unknown) => {
       if (gen !== generation.current) return
       // As for the list: a failed page ends a HEAD search rather than asking for the same page again. Load more retries.
@@ -901,6 +901,8 @@ type Graph = { commits: Commit[]; rows: GraphRow<Commit>[]; state: GraphState }
 const EMPTY_GRAPH: Graph = { commits: [], rows: [], state: { lanes: [], nextColor: 0 } }
 // The checked-out commit, as git log decorates it: "HEAD -> branch", or "HEAD" when detached.
 const pathOf = (file: DiffFile) => file.newPath ?? file.oldPath ?? ''
+// Pages are offsets into Git's log, which stash rows are not part of, so paging counts only the other rows.
+const gitCount = (rows: Commit[]) => rows.reduce((count, commit) => count + (commit.stash ? 0 : 1), 0)
 const isHeadCommit = (commit: Commit) => commit.refs.some((ref) => ref === 'HEAD' || ref.startsWith('HEAD -> '))
 
 // The commit listbox. Rows are a fixed height, so only the window near the pane's viewport mounts, with padding standing in
@@ -1005,9 +1007,9 @@ const CommitRow = memo(function CommitRow({ row, rowHeight, active, isHead, onSe
         {graphSegments(row, rowHeight).map((segment, index) => (
           <path key={index} d={segment.d} stroke={segment.color} strokeWidth={1.25} fill="none" strokeLinecap="round" />
         ))}
-        <CommitMarker x={x} y={rowHeight / 2} color={nodeColor} merge={commit.parents.length > 1} tip={refs.length > 0} head={isHead} />
+        <CommitMarker x={x} y={rowHeight / 2} color={nodeColor} merge={commit.parents.length > 1} tip={refs.length > 0 || !!commit.stash} head={isHead} />
       </svg>
-      {/* Two lines, like Sublime Merge: the subject, then the author with the refs at right, or the time when there are none. */}
+      {/* Two lines, like Sublime Merge: the subject, then the author with the refs or the stash badge at right, or the time when there are none. */}
       <span className="text">
         <span className="commit-line">
           <span className="subject">{commit.subject}</span>
@@ -1019,7 +1021,8 @@ const CommitRow = memo(function CommitRow({ row, rowHeight, active, isHead, onSe
           {isHead && <span className="ref head">HEAD</span>}
           {refs.length > 0 && <span className="ref" title={refs.join(', ')} style={{ borderLeftColor: nodeColor }}>{refs[0]}</span>}
           {refs.length > 1 && <span className="ref" title={refs.join(', ')}>+{refs.length - 1}</span>}
-          {!isHead && !refs.length && (
+          {commit.stash && <span className="ref" title={commit.stash} style={{ borderLeftColor: nodeColor }}>stash</span>}
+          {!isHead && !refs.length && !commit.stash && (
             <span className="commit-meta date" title={new Date(commit.date * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>{formatListDate(commit.date)}</span>
           )}
         </span>

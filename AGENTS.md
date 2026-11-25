@@ -1,9 +1,10 @@
 ## Live app window
-- When starting work on this repo, stop the release build and start a dev build. Keep exactly one BetterGit dev window running the latest completed change or merge so the user can check progress live.
+- When starting work on this repo, stop the release build and start a dev build. While work is in progress, keep exactly one BetterGit dev window running the latest completed change or merge so the user can check progress live.
 - Renderer-only changes: let the dev server reload the window. Main or preload changes: quit and relaunch BetterGit with the same command it was started with.
 - Before closing or relaunching BetterGit, record its monitor, macOS Space, and window bounds. Restore and verify all three after reopening, including when switching between dev and installed builds.
 - Keep exactly one BetterGit window. Never open a second instance or leave stale BetterGit processes running; kill only BetterGit processes.
 - When work happens in a separate worktree, update the window at verified checkpoints and say whether it is running master or the worktree branch.
+- When the work is done, quit every BetterGit window and process, dev or installed. Do not leave BetterGit open.
 
 ## Testing
 - Test changes only in disposable temporary projects with isolated app configuration. Never use the user's existing projects as test fixtures or run test Git operations against them. Delete temporary projects and test configuration after verification.
@@ -15,4 +16,4 @@
 
 ## Releases
 - Before pushing a `v<version>` tag, add a `## [<version>] - <date>` section to CHANGELOG.md in the release PR. List user-visible changes under New, Improved, Changed or Fixed. The Release workflow publishes that section as the GitHub Release notes and fails without it.
-- Once a release is ready, stop the dev build, install the new BetterGit version in `~/Applications`, and open the final installed build with exactly one window.
+- Once a release is ready, stop the dev build and install the new BetterGit version in `~/Applications`. Do not open it afterwards.

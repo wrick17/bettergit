@@ -2,6 +2,11 @@
 
 Each release publishes its section below as the GitHub Release notes. Add the section before you push the `v<version>` tag.
 
+## [0.1.27] - 2026-11-25
+
+### New
+- Stashes show in History. Each stash is its own row with a stash badge, branching off the commit it was made on. Select one to see its changes, or right-click it to apply it. A stash on a commit that only hidden branches reach stays hidden, and a search leaves stashes out. (#78)
+
 ## [0.1.26] - 2026-11-21
 
 ### Fixed

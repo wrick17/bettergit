@@ -4,7 +4,7 @@ import { confirmOverBlur } from './confirm'
 import type { BarItem } from './OverflowBar'
 import { hiddenBranches, setHiddenBranches } from './prefs'
 import { PromptDialog } from './PromptDialog'
-import { ActionError, blockedReason, busyKey, REPO_WORKING_LABELS, runRepoWrite } from './repo-busy'
+import { ActionError, blockedReason, busyKey, runRepoWrite, workingLabel } from './repo-busy'
 
 const api = window.bettergit
 
@@ -58,11 +58,21 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
   // The running state change shows its working label and spinner. The others wait for it and say why.
   const state = (key: string, label: string) => {
     const running = pending === key
-    return { label: running ? REPO_WORKING_LABELS[key] : label, busy: running, blocked: pending !== null && !running ? blockedReason(pending) : undefined }
+    return { label: running ? workingLabel(key) : label, busy: running, blocked: pending !== null && !running ? blockedReason(pending) : undefined }
   }
 
   const run = (key: string, action: () => Promise<unknown>) => runGit(input, key, action)
   const copy = (what: string, text: string) => navigator.clipboard.writeText(text).catch((failure: unknown) => onError(new ActionError(`Copying the ${what}`, failure)))
+  const showDiff: BarItem = { key: 'changes', icon: 'diff', label: 'Show diff', group: 'open', onClick: onOpenChanges }
+  const copyHash: BarItem = { key: 'hash', icon: 'hash', label: 'Copy Commit Hash', group: 'copy', onClick: () => copy('commit hash', hash) }
+  const copyMessage: BarItem = { key: 'message', icon: 'copy', label: 'Copy Commit Message', group: 'copy', onClick: () => copy('commit message', message) }
+  // A stash is no branch commit: it offers Apply, by the stash commit History listed. Pop and Drop stay in the Stash dialog,
+  // out of the app on purpose.
+  const ref = commit.stash
+  if (ref) {
+    const apply: BarItem = { key: 'apply', icon: 'applyStash', ...state(`apply:${ref}`, 'Apply Stash'), group: 'stash', onClick: () => void run(`apply:${ref}`, () => api.stashAction(repo, 'apply', ref, hash)) }
+    return [apply, showDiff, copyHash, copyMessage]
+  }
   const openRemote = () => api.openExternal(`${webBase}/commit/${hash}`).catch((failure: unknown) => onError(new ActionError('Opening the commit on the remote', failure)))
   const compareRemote = () => { if (upstream) onCompare(upstream, upstream) }
   const compareBase = () => {
@@ -125,10 +135,10 @@ export function commitItems(input: CommitInput, ui: CommitUi): BarItem[] {
 
   return [
     ...branchItems,
-    { key: 'changes', icon: 'diff', label: 'Show diff', group: 'open', onClick: onOpenChanges },
+    showDiff,
     { key: 'remote', icon: 'externalLink', label: 'Open Changes on Remote', disabled: !webBase, group: 'open', onClick: openRemote },
-    { key: 'hash', icon: 'hash', label: 'Copy Commit Hash', group: 'copy', onClick: () => copy('commit hash', hash) },
-    { key: 'message', icon: 'copy', label: 'Copy Commit Message', group: 'copy', onClick: () => copy('commit message', message) },
+    copyHash,
+    copyMessage,
     { key: 'link', icon: 'link', label: 'Copy Commit Remote Link', disabled: !webBase, group: 'copy', onClick: () => copy('commit link', `${webBase}/commit/${hash}`) },
     { key: 'compareRemote', icon: 'compare', label: 'Compare with Remote', disabled: !upstream, group: 'compare', onClick: compareRemote },
     { key: 'compareBase', icon: 'mergeBase', label: 'Compare with Merge Base', disabled: !head, group: 'compare', onClick: compareBase },

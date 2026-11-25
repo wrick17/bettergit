@@ -163,6 +163,112 @@ describe('history and diffs', () => {
     expect(subjects(await searchHistory(dir, 'FIX', ['Ann', 'A.n (x)']))).toEqual(['fix: one'])
     expect(await readAuthors(dir)).toEqual([{ name: 'Ann', count: 2 }, { name: 'A.n (x)', count: 1 }, { name: 'JoAnn', count: 1 }])
   })
+
+  test('lists each stash once directly above its base, never its index or untracked commits, and pages by commits only', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bettergit-stash-history-'))
+    try {
+      const write = (text: string, file = 'a.txt') => writeFileSync(path.join(dir, file), text)
+      const head = async () => (await git(dir, ['rev-parse', 'HEAD'])).trim()
+      await git(dir, ['init', '-q', '-b', 'main'])
+      await git(dir, ['config', 'user.name', 'Ann'])
+      await git(dir, ['config', 'user.email', 'a@example.com'])
+      write('one\n')
+      await git(dir, ['add', '.'])
+      await git(dir, ['commit', '-qm', 'c1'])
+      await git(dir, ['checkout', '-qb', 'side'])
+      write('side\n')
+      await git(dir, ['commit', '-qam', 's1'])
+      const s1 = await head()
+      write('stash a\n')
+      await git(dir, ['stash', 'push', '-q', '-m', 'A'])
+      await git(dir, ['checkout', '-q', 'main'])
+      await git(dir, ['-c', 'user.name=Bob', 'commit', '-q', '--allow-empty', '-m', 'c2'])
+      const c2 = await head()
+      // B has an index commit and an untracked-files commit, which must stay out of History.
+      write('staged\n')
+      await git(dir, ['add', 'a.txt'])
+      write('unstaged\n')
+      write('new\n', 'new.txt')
+      await git(dir, ['-c', 'user.name=Bob', 'stash', 'push', '-q', '-u', '-m', 'B'])
+      const internal = [(await git(dir, ['rev-parse', 'stash@{0}^2'])).trim(), (await git(dir, ['rev-parse', 'stash@{0}^3'])).trim()]
+
+      const rows = await readHistory(dir, 0, 10)
+      const stashes = rows.filter((row) => row.stash)
+      expect(stashes.map((row) => [row.stash, row.subject, row.parents]).sort()).toEqual([['stash@{0}', 'On main: B', [c2]], ['stash@{1}', 'On side: A', [s1]]])
+      for (const stash of stashes) expect(rows[rows.indexOf(stash) + 1].hash).toBe(stash.parents[0])
+      expect(rows.filter((row) => !row.stash)).toHaveLength(3)
+      expect(rows.some((row) => internal.includes(row.hash) || /^(index on|untracked files on) /.test(row.subject))).toBe(false)
+
+      // Offsets count Git's commits, so two pages hold every commit and every stash exactly once.
+      const pages = [...await readHistory(dir, 0, 1), ...await readHistory(dir, 1, 10)]
+      expect(pages.filter((row) => !row.stash).map((row) => row.hash)).toEqual(rows.filter((row) => !row.stash).map((row) => row.hash))
+      expect(pages.filter((row) => row.stash).map((row) => row.stash).sort()).toEqual(['stash@{0}', 'stash@{1}'])
+
+      // A stash shows only with its base: hiding the branch that alone reaches it hides it too.
+      expect((await readHistory(dir, 0, 10, [], ['refs/heads/side'])).filter((row) => row.stash).map((row) => row.stash)).toEqual(['stash@{0}'])
+      expect((await readHistory(dir, 0, 10, ['Bob'])).map((row) => row.subject)).toEqual(['On main: B', 'c2'])
+      expect((await searchHistory(dir, 'On')).some((row) => row.stash)).toBe(false)
+
+      const [b, a] = ['stash@{0}', 'stash@{1}'].map((name) => stashes.find((row) => row.stash === name)!.hash)
+      // A stash's diff and stats run from its base to its saved files, one patch per file, with untracked files added.
+      const changes = async (hash: string) => (await commitDiff(dir, hash)).map((file) => [file.newPath ?? file.oldPath, file.status])
+      expect(await changes(b)).toEqual([['a.txt', 'modified'], ['new.txt', 'added']])
+      expect(await commitDetails(dir, b)).toMatchObject({ parents: [c2], stats: { files: 2, additions: 2, deletions: 1 } })
+
+      // Apply acts only on the stash History listed. Pop and drop never take a commit, and every call takes only a real stash
+      // action and a stash@{n} name.
+      await expect(stashAction(dir, 'apply', 'stash@{0}', a)).rejects.toThrow('changed since History listed it')
+      await expect(stashAction(dir, 'apply', 'stash@{0}', 'HEAD')).rejects.toThrow('Invalid commit hash.')
+      for (const action of ['pop', 'drop'] as const) await expect(stashAction(dir, action, 'stash@{0}', b)).rejects.toThrow('Only Apply')
+      await expect(stashAction(dir, 'show' as 'pop', 'stash@{0}')).rejects.toThrow('Unknown stash action')
+      for (const ref of ['stash@{0}^', '--index', 'HEAD']) await expect(stashAction(dir, 'apply', ref)).rejects.toThrow('Invalid stash')
+      await stashAction(dir, 'apply', 'stash@{0}', b)
+      expect(readFileSync(path.join(dir, 'new.txt'), 'utf8')).toBe('new\n')
+      expect((await readStashes(dir)).map((stash) => stash.message)).toEqual(['On main: B', 'On side: A'])
+      await git(dir, ['stash', 'drop', '-q', 'stash@{0}'])
+
+      // A stash of untracked files only shows them as added, not deleted.
+      await git(dir, ['checkout', '--', 'a.txt'])
+      await git(dir, ['stash', 'push', '-q', '-u', '-m', 'C'])
+      const untrackedOnly = (await git(dir, ['rev-parse', 'stash@{0}'])).trim()
+      expect(await changes(untrackedOnly)).toEqual([['new.txt', 'added']])
+      expect((await commitDetails(dir, untrackedOnly)).stats).toEqual({ files: 1, additions: 1, deletions: 0 })
+
+      // One commit listed twice in the stash list is one row, named by its newest entry.
+      await git(dir, ['stash', 'store', '-m', 'again', a])
+      expect((await git(dir, ['stash', 'list', '--format=%H'])).split('\n').filter(Boolean)).toEqual([a, untrackedOnly, a])
+      expect((await readHistory(dir, 0, 10)).filter((row) => row.stash).map((row) => [row.stash, row.hash]).sort()).toEqual([['stash@{0}', a], ['stash@{1}', untrackedOnly]])
+
+      // An untracked image in a stash is read from the stash's untracked-files commit.
+      writeFileSync(path.join(dir, 'pic.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await git(dir, ['stash', 'push', '-q', '-u', '-m', 'image'])
+      const image = (await git(dir, ['rev-parse', 'stash@{0}'])).trim()
+      expect(await readImage(dir, image, 'pic.png')).toBe('data:image/png;base64,iVBORw==')
+
+      // A path deleted from the index and recreated untracked is one modified file, counted once.
+      await git(dir, ['rm', '-q', '--cached', 'a.txt'])
+      write('recreated\n')
+      await git(dir, ['stash', 'push', '-q', '-u', '-m', 'recreated'])
+      const recreated = (await git(dir, ['rev-parse', 'stash@{0}'])).trim()
+      expect(await changes(recreated)).toEqual([['a.txt', 'modified']])
+      expect((await commitDetails(dir, recreated)).stats).toEqual({ files: 1, additions: 1, deletions: 1 })
+      // With whitespace ignored, a whitespace-only change there hides as the tracked change does, rather than showing as added.
+      await git(dir, ['rm', '-q', '--cached', 'a.txt'])
+      write('one \n')
+      await git(dir, ['stash', 'push', '-q', '-u', '-m', 'spaced'])
+      expect(await commitDiff(dir, (await git(dir, ['rev-parse', 'stash@{0}'])).trim(), 3, true)).toEqual([])
+
+      // A branch's merge commit listed by git stash store stays one ordinary row with both parents.
+      await git(dir, ['merge', '-q', '--no-ff', 'side', '-m', 'merge side'])
+      const merge = await head()
+      await git(dir, ['stash', 'store', '-m', 'merge', merge])
+      const merged = await readHistory(dir, 0, 20)
+      expect(merged.filter((row) => row.hash === merge).map((row) => [row.stash, row.parents.length])).toEqual([[undefined, 2]])
+      expect((await commitDetails(dir, merge)).parents).toHaveLength(2)
+    } finally {
+      cleanup(dir)
+    }
+  })
 })
 
 describe('ignore whitespace', () => {
