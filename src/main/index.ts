@@ -13,7 +13,7 @@ import { createUpdater } from './updater'
 import { BackgroundFetcher, type FetchReport } from './background'
 import { canonicalRepoPath, registerRepoLockPaths, repoLockSnapshot, subscribeRepoLocks, withCloneActivity, withRepoLock } from './repo-lock'
 import { commitDiff, compare, detectMoves, filePatch, listOnly, readImage, workingDiff } from './git/diff'
-import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors, fileHistory } from './git/history'
+import { readHistory, commitDetails, commitRefs, searchHistory, readAuthors, fileHistory, assertHash, stashParts } from './git/history'
 import { readStagedFile, writeStagedFile } from './git/index-file'
 import { avatars } from './avatar'
 import { readStatus } from './git/status'
@@ -286,8 +286,11 @@ function registerIpc() {
   // The whitespace flag is strict: only a literal true turns it on, so a malformed IPC argument cannot change the diff.
   ipcMain.handle('repo:commit', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace?: boolean) => {
     const repo = assertKnownRepo(repoPath)
-    const files = await commitDiff(repo, hash, context, ignoreWhitespace === true)
-    return { ...listOnly(files), details: await commitDetails(repo, hash) }
+    assertHash(hash)
+    // Read once, for both the diff and the details.
+    const stash = await stashParts(repo, hash)
+    const [files, details] = await Promise.all([commitDiff(repo, hash, context, ignoreWhitespace === true, undefined, stash), commitDetails(repo, hash, stash)])
+    return { ...listOnly(files), details }
   })
   // One file of a commit, whole: a large commit's list comes without hunks, and a file's load when it is picked.
   ipcMain.handle('repo:commit-files', async (_event, repoPath: string, hash: string, context: number, ignoreWhitespace: unknown, paths: unknown) => {
@@ -391,8 +394,8 @@ function registerIpc() {
   ipcMain.handle('repo:stashes', async (_event, repoPath: string) => ops.readStashes(assertKnownRepo(repoPath)))
   handleWrite('repo:stash', (_event, repoPath: string, message: string) =>
     ops.stashPush(repoPath, message, true))
-  handleWrite('repo:stash-action', (_event, repoPath: string, action: 'pop' | 'apply' | 'drop', ref: string) =>
-    ops.stashAction(repoPath, action, ref))
+  handleWrite('repo:stash-action', (_event, repoPath: string, action: 'pop' | 'apply' | 'drop', ref: string, hash?: string) =>
+    ops.stashAction(repoPath, action, ref, hash))
   handleWrite('repo:backup', (_event, repoPath: string, label: string) =>
     ops.createBackupRef(repoPath, label))
   handleWrite('repo:restore', (_event, repoPath: string, ref: string) =>

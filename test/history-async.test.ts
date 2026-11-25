@@ -925,6 +925,39 @@ console.log('large diff cases passed')
   unmount()
 }
 console.log('file pick opening cases passed')
+
+// Stash rows are not in Git's log, so the next page starts after the commits shown, not after the rows.
+{
+  const skips = []
+  const history = window.bettergit.history
+  const stash = { hash: 'S', parents: ['P0'], refs: [], author: 'x', date: 0, subject: 'On main: s', stash: 'stash@{0}' }
+  window.bettergit.history = (repo, skip, limit) => { skips.push(skip); return history(repo, skip, limit).then((rows) => skip ? rows : [stash, ...rows]) }
+  pages = (skip, limit = 300) => (skip >= 600 ? [] : Array.from({ length: Math.min(limit, 600 - skip) }, (_, index) => 'P' + (skip + index)))
+  await mount({ places: { '/repo': { commit: 'P298' } } })
+  const list = () => find(tree, (p) => p.rows && p.onSelect)
+  assert.equal(list().rows.length, 301)
+  list().onKeyDown({ key: 'ArrowDown', preventDefault() {} }); render(); await flush()
+  assert.deepEqual(skips, [0, 300])
+  assert.equal(list().rows.length, 601)
+  unmount()
+  window.bettergit.history = history
+}
+
+// A stash row's menu offers Apply, its diff and copies, never Pop, Drop or commit actions, and applies the stash it listed.
+{
+  const actions = []
+  window.bettergit.stashAction = (...args) => { actions.push(args); return Promise.resolve() }
+  const commit = { hash: 'S', parents: ['B'], refs: [], author: 'x', email: '', date: 0, subject: 'On main: s', stash: 'stash@{1}' }
+  const input = { repo: '/repo', commit, message: 'On main: s', head: 'H', branch: 'main', refs: { branches: [], remotes: [] }, upstream: 'origin/main', webBase: 'https://example.com/o/r', onOpenChanges() {}, onCompare() {}, onError: (error) => { throw error } }
+  const items = commitItems(input, { setPrompt() {}, setNotice() {}, pending: null })
+  assert.deepEqual(items.map((item) => item.key), ['apply', 'changes', 'hash', 'message'])
+  items.find((item) => item.key === 'apply').onClick(); await flush()
+  assert.deepEqual(actions, [['/repo', 'apply', 'stash@{1}', 'S']])
+  assert.deepEqual([['apply:stash@{1}'], ['pop:stash@{0}']].map(([pending]) => { const [item] = commitItems(input, { setPrompt() {}, setNotice() {}, pending }); return [item.label, item.busy, !!item.blocked] }),
+    [['Applying stash…', true, false], ['Apply Stash', false, true]])
+  delete window.bettergit.stashAction
+}
+console.log('stash row cases passed')
 `
 
 test('History compares only the selected commit, restores a saved compare, and shows a diff only for the whitespace option it was fetched with', () => {
@@ -946,6 +979,7 @@ test('History compares only the selected commit, restores a saved compare, and s
   expect(child.stdout.toString()).toContain('whitespace scroll cases passed')
   expect(child.stdout.toString()).toContain('large diff cases passed')
   expect(child.stdout.toString()).toContain('file pick opening cases passed')
+  expect(child.stdout.toString()).toContain('stash row cases passed')
 })
 
 // The commit's file list in tree view: folders before files, renames under their new folder, deletions under their old

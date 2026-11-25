@@ -4,6 +4,7 @@ import { conflictBlocks, parseConflicts } from '../../shared/conflict'
 import { assertSupportedConflictFormat } from './conflict'
 import { canonicalRepoPath } from '../repo-lock'
 import { GitError, git, gitOk, gitRaw, type GitOptions } from './exec'
+import { assertHash } from './history'
 import { readStatus, REPO_OPERATIONS, type RepoOperation, type RepoStatus } from './status'
 
 export interface Branch {
@@ -441,15 +442,28 @@ export async function stashPush(repo: string, message: string, includeUntracked:
   await git(repo, args)
 }
 
-export async function stashAction(repo: string, action: 'pop' | 'apply' | 'drop', ref: string): Promise<void> {
-  if (!ref || ref.startsWith('-')) throw new Error(`Invalid stash: ${ref}`)
+const STASH_ACTIONS = ['pop', 'apply', 'drop'] as const
+
+// `hash` is the stash History listed. stash@{n} names shift when another stash is added or removed, so with a hash the
+// preview and the apply use that commit itself. Only Apply takes one: Git drops a stash by name alone, so a pop or drop
+// could remove another stash that took the name meanwhile.
+export async function stashAction(repo: string, action: 'pop' | 'apply' | 'drop', ref: string, hash?: string): Promise<void> {
+  assertMode('stash action', action, STASH_ACTIONS)
+  if (typeof ref !== 'string' || !/^stash@\{\d+\}$/.test(ref)) throw new Error(`Invalid stash: ${String(ref)}`)
+  if (hash !== undefined) {
+    if (action !== 'apply') throw new Error('Only Apply takes a stash by its commit.')
+    assertHash(hash)
+    const now = (await git(repo, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]).catch(() => '')).trim()
+    if (now !== hash) throw new Error(`${ref} changed since History listed it. Refresh and try again.`)
+  }
+  const target = hash ?? ref
   if (action !== 'drop') {
     // A stash applies its working tree and its index against its base. Git checks its untracked part itself.
-    const merged = [await previewMerge(repo, 'HEAD', ref, `${ref}^1`), await previewMerge(repo, 'HEAD', `${ref}^2`, `${ref}^1`)]
+    const merged = [await previewMerge(repo, 'HEAD', target, `${target}^1`), await previewMerge(repo, 'HEAD', `${target}^2`, `${target}^1`)]
     await assertNoUntrackedOverwrite(repo, [...await treePaths(repo, merged[0].tree), ...await treePaths(repo, merged[1].tree)],
       [...merged[0].moved, ...merged[1].moved])
   }
-  await git(repo, ['stash', action, ref])
+  await git(repo, ['stash', action, target])
 }
 
 export type FetchMode = 'fetch' | 'tags' | 'prune'

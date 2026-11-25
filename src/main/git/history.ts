@@ -8,6 +8,8 @@ export interface Commit {
   email: string
   date: number
   subject: string
+  // Set on a stash row, as stash@{n}. Its parents hold only its base, never Git's index and untracked commits.
+  stash?: string
 }
 
 // Git's %G? result for a commit's signature: G good, B bad, U good with unknown validity, X good but expired, Y good by
@@ -85,21 +87,82 @@ async function historyTips(repo: string, hidden: string[]): Promise<{ args: stri
 export async function readHistory(repo: string, skip: number, limit: number, authors: string[] = [], hidden: string[] = []): Promise<Commit[]> {
   const tips = await historyTips(repo, hidden)
   if (!tips) return []
-  const output = await git(repo, ['log', ...tips.args, '--date-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
-    optionalLocks: true, input: tips.input,
+  const [output, stashes] = await Promise.all([
+    git(repo, ['log', ...tips.args, '--date-order', ...authorArgs(authors), `--skip=${skip}`, `-n`, String(limit), `--format=${LOG_FORMAT}`], {
+      optionalLocks: true, input: tips.input,
+    }),
+    // A stash that cannot be read must not hide the history around it.
+    readStashCommits(repo).catch(() => []),
+  ])
+  const shown = authors.length ? stashes.filter((stash) => authors.includes(stash.author)) : stashes
+  // A stash row's only parent is the commit it was made on.
+  return placeStashes(parseLog(output), shown.map((stash) => ({ ...stash, parents: stash.parents.slice(0, 1) })))
+}
+
+// Every stash, newest first, with all its parents. This is the one place that decides what a stash is: an entry in the
+// stash list whose commit has a base and an index commit, and is on no branch, so a commit that git stash store listed
+// stays an ordinary commit. Rows are keyed by hash, so a stash listed twice under one hash is one row, named by its newest entry.
+async function readStashCommits(repo: string): Promise<Commit[]> {
+  const output = await git(repo, ['stash', 'list', `--format=%gd${FIELD}${LOG_FORMAT}`], { optionalLocks: true })
+  const seen = new Set<string>()
+  const stashes = output.split(RECORD).flatMap((record) => {
+    const cut = record.indexOf(FIELD)
+    const [commit] = cut < 0 ? [] : parseLog(`${record.slice(cut + 1)}${RECORD}`)
+    if (!commit || commit.parents.length < 2 || seen.has(commit.hash)) return []
+    seen.add(commit.hash)
+    return [{ ...commit, refs: [], stash: record.slice(0, cut).trim() }]
   })
-  return parseLog(output)
+  const off = await offBranches(repo, stashes.map((stash) => stash.hash))
+  return stashes.filter((stash) => off.has(stash.hash))
+}
+
+// The given commits that no local or remote branch reaches. It walks back to where they meet a branch, so callers pass
+// only stash commits.
+async function offBranches(repo: string, hashes: string[]): Promise<Set<string>> {
+  if (!hashes.length) return new Set()
+  return new Set((await git(repo, ['rev-list', ...hashes, '--not', '--branches', '--remotes'], { optionalLocks: true })).split('\n'))
+}
+
+// Each stash goes directly above its base, newest first, so it shows only with its base, never brings in history a hidden
+// branch alone reaches, and sits in the same place whatever the page size. Stash rows are extra rows: callers page by the
+// commits Git listed, not by rows.
+function placeStashes(commits: Commit[], stashes: Commit[]): Commit[] {
+  if (!stashes.length) return commits
+  const above = new Map<string, Commit[]>()
+  for (const stash of stashes) above.set(stash.parents[0], [...(above.get(stash.parents[0]) ?? []), stash])
+  return commits.flatMap((commit) => [...(above.get(commit.hash) ?? []), commit])
+}
+
+export type StashParts = { base: string; untracked?: string } | null
+
+// A stash's base, and the commit holding its untracked files when it has one. Null for any other commit.
+// The same rule as readStashCommits, but the branch walk runs only for a hash the stash list holds, so selecting an
+// ordinary commit costs one cheap stash list read.
+export async function stashParts(repo: string, hash: string): Promise<StashParts> {
+  const line = (await git(repo, ['stash', 'list', '--format=%H %P'], { optionalLocks: true })).split('\n').find((entry) => entry.startsWith(`${hash} `))
+  const parents = line?.split(' ').slice(1) ?? []
+  if (parents.length < 2 || !(await offBranches(repo, [hash])).has(hash)) return null
+  return { base: parents[0], untracked: parents[2] }
+}
+
+// The diff-tree revisions for a commit's own change: its first parent, or the empty tree for a root. A stash's change is
+// its base to its saved working tree, then its untracked files as additions, never Git's internal index commit. Callers
+// keep a path once, from the first part that has it: a tracked path is compared with its base, which the untracked copy is not.
+export function changeRevisions(hash: string, stash: StashParts): string[][] {
+  if (!stash) return [['--root', '-m', '--first-parent', hash]]
+  return [[stash.base, hash], ...(stash.untracked ? [['--root', stash.untracked]] : [])]
 }
 
 // The selected commit's metadata. The message is last, so a field separator inside it cannot shift the other fields.
 // The signature and stats are separate reads, so a failing GPG check or a huge commit still shows the rest.
-export async function commitDetails(repo: string, hash: string): Promise<CommitDetails> {
+export async function commitDetails(repo: string, hash: string, known?: StashParts): Promise<CommitDetails> {
   assertHash(hash)
   const format = ['%H', '%T', '%P', '%an', '%ae', '%cn', '%ce', '%aI', '%cI', '%B'].join(FIELD)
+  const stash = known === undefined ? await stashParts(repo, hash) : known
   const [meta, signature, stats] = await Promise.all([
     git(repo, ['show', '-s', '--no-show-signature', `--format=${format}`, hash]),
     readSignature(repo, hash).catch(() => null),
-    readStats(repo, hash).catch(() => null),
+    readStats(repo, hash, stash).catch(() => null),
   ])
   const fields = meta.split(FIELD)
   const [full, tree, parents, authorName, authorEmail, committerName, committerEmail, authorDate, committerDate] = fields
@@ -107,7 +170,8 @@ export async function commitDetails(repo: string, hash: string): Promise<CommitD
     body: fields.slice(9).join(FIELD).trim(),
     hash: full,
     tree,
-    parents: parents ? parents.split(' ') : [],
+    // A stash's other parents are Git's internal index and untracked commits.
+    parents: stash ? [stash.base] : parents ? parents.split(' ') : [],
     author: { name: authorName, email: authorEmail },
     committer: { name: committerName, email: committerEmail },
     authorDate,
@@ -146,10 +210,17 @@ async function readSignature(repo: string, hash: string): Promise<CommitDetails[
   return SIGNATURE_CODES.has(code) ? { code: code as SignatureCode, signer: signer.trim() } : null
 }
 
-// Same comparison as the commit's diff (commitDiff): the first parent, or the empty tree for a root, with renames found.
-async function readStats(repo: string, hash: string): Promise<CommitDetails['stats']> {
-  const output = await git(repo, ['diff-tree', '--numstat', '-r', '--root', '-m', '--first-parent', '--find-renames', '--no-commit-id', '--no-color', hash])
-  return parseNumstat(output)
+// Same comparison as the commit's diff (commitDiff), with renames found.
+async function readStats(repo: string, hash: string, stash: StashParts): Promise<CommitDetails['stats']> {
+  const outputs = await Promise.all(changeRevisions(hash, stash).map((revisions) =>
+    git(repo, ['diff-tree', '--numstat', '-r', '--find-renames', '--no-commit-id', '--no-color', ...revisions])))
+  // A numstat line is added, deleted, then the path.
+  const seen = new Set<string>()
+  return parseNumstat(outputs.map((output) => {
+    const lines = output.split('\n').filter((line) => !seen.has(line.split('\t').slice(2).join('\t')))
+    for (const line of lines) seen.add(line.split('\t').slice(2).join('\t'))
+    return lines.join('\n')
+  }).join('\n'))
 }
 
 export function parseNumstat(output: string): NonNullable<CommitDetails['stats']> {
